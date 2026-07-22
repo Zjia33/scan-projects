@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.SemanticCallEdgeMapper">
+    <resultMap id="SemanticCallEdgeResultMap" type="com.deepaudit.domain.SemanticCallEdge">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="caller_symbol_id" property="callerSymbolId"/>
+        <result column="callee_symbol_id" property="calleeSymbolId"/>
+        <result column="caller_chunk_id" property="callerChunkId"/>
+        <result column="callee_chunk_id" property="calleeChunkId"/>
+        <result column="call_site_line" property="callSiteLine"/>
+        <result column="called_name" property="calledName"/>
+        <result column="expression" property="expression"/>
+        <result column="edge_type" property="edgeType"/>
+        <result column="confidence" property="confidence"/>
+        <result column="resolution_reason" property="resolutionReason"/>
+        <result column="argument_mapping" property="argumentMapping"/>
+    </resultMap>
+
+    <delete id="deleteByTaskId">DELETE FROM semantic_call_edge WHERE task_id = #{taskId}</delete>
+
+    <insert id="insertBatch">
+        INSERT INTO semantic_call_edge
+            (id, task_id, caller_symbol_id, callee_symbol_id, caller_chunk_id, callee_chunk_id,
+             call_site_line, called_name, expression, edge_type, confidence, resolution_reason, argument_mapping)
+        VALUES
+        <foreach collection="edges" item="edge" separator=",">
+            (#{edge.id}, #{edge.taskId}, #{edge.callerSymbolId}, #{edge.calleeSymbolId},
+             #{edge.callerChunkId}, #{edge.calleeChunkId}, #{edge.callSiteLine}, #{edge.calledName},
+             #{edge.expression}, #{edge.edgeType}, #{edge.confidence}, #{edge.resolutionReason},
+             #{edge.argumentMapping})
+        </foreach>
+    </insert>
+
+    <select id="findByTaskId" resultMap="SemanticCallEdgeResultMap">
+        SELECT * FROM semantic_call_edge WHERE task_id = #{taskId} ORDER BY call_site_line, id
+    </select>
+
+    <select id="findByCallerChunkId" resultMap="SemanticCallEdgeResultMap">
+        SELECT * FROM semantic_call_edge
+        WHERE task_id = #{taskId} AND caller_chunk_id = #{chunkId}
+        ORDER BY call_site_line, id
+    </select>
+</mapper>

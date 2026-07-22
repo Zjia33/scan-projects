@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.FindingMapper">
+    <resultMap id="FindingResultMap" type="com.deepaudit.domain.Finding">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="type" property="type" javaType="com.deepaudit.domain.VulnerabilityType"/>
+        <result column="severity" property="severity" javaType="com.deepaudit.domain.Severity"/>
+        <result column="confidence" property="confidence" javaType="com.deepaudit.domain.Confidence"/>
+        <result column="title" property="title"/>
+        <result column="file_path" property="filePath"/>
+        <result column="start_line" property="startLine"/>
+        <result column="end_line" property="endLine"/>
+        <result column="endpoint" property="endpoint"/>
+        <result column="description" property="description"/>
+        <result column="evidence" property="evidence"/>
+        <result column="remediation" property="remediation"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="columns">
+        id, task_id, type, severity, confidence, title, file_path, start_line, end_line,
+        endpoint, description, evidence, remediation, created_at
+    </sql>
+
+    <select id="findByTaskIdOrderByRisk" resultMap="FindingResultMap">
+        SELECT <include refid="columns"/>
+        FROM finding
+        WHERE task_id = #{taskId}
+        ORDER BY CASE severity
+            WHEN 'CRITICAL' THEN 1
+            WHEN 'HIGH' THEN 2
+            WHEN 'MEDIUM' THEN 3
+            ELSE 4 END,
+            created_at ASC
+    </select>
+
+    <select id="countByTaskId" resultType="long">
+        SELECT COUNT(*) FROM finding WHERE task_id = #{taskId}
+    </select>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM finding WHERE task_id = #{taskId}
+    </delete>
+
+    <insert id="insertBatch">
+        INSERT INTO finding
+            (id, task_id, type, severity, confidence, title, file_path, start_line, end_line,
+             endpoint, description, evidence, remediation, created_at)
+        VALUES
+        <foreach collection="findings" item="finding" separator=",">
+            (#{finding.id}, #{finding.taskId}, #{finding.type}, #{finding.severity}, #{finding.confidence},
+             #{finding.title}, #{finding.filePath}, #{finding.startLine}, #{finding.endLine},
+             #{finding.endpoint}, #{finding.description}, #{finding.evidence}, #{finding.remediation},
+             #{finding.createdAt})
+        </foreach>
+    </insert>
+</mapper>

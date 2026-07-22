@@ -1,0 +1,7 @@
+target/
+.idea/
+.playwright-cli/
+*.iml
+*.log
+*.part-*
+data/

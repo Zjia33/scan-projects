@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="DeepAudit Java 多 Agent 代码安全审计控制台">
+    <title>DeepAudit / 智能代码审计控制台</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2311140f'/%3E%3Cpath d='M13 14h18c13 0 20 7 20 18S44 50 31 50H13V14zm11 10v16h7c6 0 9-3 9-8s-3-8-9-8h-7z' fill='%23c9ff45'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css?v=20260716-1">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<div class="app-shell">
+    <aside class="sidebar">
+        <a class="brand" href="#overview" aria-label="DeepAudit 控制台首页">
+            <span class="brand-mark">D/A</span>
+            <span><b>DEEPAUDIT</b><small>CODE FORENSICS</small></span>
+        </a>
+
+        <nav class="side-nav" aria-label="主菜单">
+            <a class="active" href="#overview"><span>01</span>态势总览</a>
+            <a href="#new-audit"><span>02</span>新建审计</a>
+            <a href="#audit-workspace"><span>03</span>审计任务</a>
+        </nav>
+
+        <div class="sidebar-foot">
+            <p>ANALYSIS NODE</p>
+            <strong><i></i> ONLINE</strong>
+            <small>AI REQUIRED / STATIC ONLY</small>
+        </div>
+    </aside>
+
+    <div class="main-frame">
+        <header class="topbar">
+            <div><span>DEEPAUDIT</span><b>/</b><strong>安全审计控制台</strong></div>
+            <div id="stream-state" class="stream-state idle"><i></i><span>等待选择任务</span></div>
+        </header>
+
+        <main>
+            <section id="overview" class="page-section overview-section">
+                <div class="section-intro">
+                    <div>
+                        <p class="kicker">SECURITY POSTURE / LIVE</p>
+                        <h1>代码风险<br><em>检测</em></h1>
+                    </div>
+                    <!-- <p class="intro-copy">从 ZIP 中提取代码事实，识别框架与安全组件，沿跨文件调用链展开多 Agent 调查，并只报告通过 Critic 反证复核的问题。</p> -->
+                </div>
+
+                <div class="metric-grid" aria-label="审计统计">
+                    <article><small>审计任务</small><strong id="metric-tasks">0</strong><span>TOTAL AUDITS</span></article>
+                    <article><small>进行中</small><strong id="metric-active">0</strong><span>ACTIVE RUNS</span></article>
+                    <article class="risk"><small>确认问题</small><strong id="metric-findings">0</strong><span>CONFIRMED</span></article>
+                    <article><small>模型调用</small><strong id="metric-model-calls">0</strong><span>MODEL CALLS</span></article>
+                </div>
+
+                <div class="overview-grid">
+                    <article class="process-panel">
+                        <div class="panel-title"><span>审计链路</span><small>EVIDENCE FIRST</small></div>
+                        <div class="process-line">
+                            <div><b>01</b><strong>RECON</strong><span>框架与攻击面</span></div>
+                            <i></i>
+                            <div><b>02</b><strong>PLAN</strong><span>智能任务规划</span></div>
+                            <i></i>
+                            <div><b>03</b><strong>INVESTIGATE</strong><span>跨文件语义调查</span></div>
+                            <i></i>
+                            <div><b>04</b><strong>CRITIC</strong><span>独立寻找反证</span></div>
+                            <i></i>
+                            <div><b>05</b><strong>REPORT</strong><span>中文报告</span></div>
+                        </div>
+                    </article>
+                    <article class="scope-panel">
+                        <div class="panel-title"><span>检测范围</span></div>
+                        <div class="scope-list">
+                            <span>越权漏洞</span><span>SQL 注入</span>
+                            <span>未授权</span><span>存储 XSS</span><span>验证绕过</span><span>资金风险</span>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section id="new-audit" class="page-section new-audit-section">
+                <div class="section-heading">
+                    <div><p class="kicker">NEW INVESTIGATION</p><h2>新建代码审计</h2></div>
+                    <p>上传 ZIP，进行项目代码漏洞审计。</p>
+                </div>
+                <form id="upload-form" class="upload-console">
+                    <div class="field-group">
+                        <label for="project-name">项目名称</label>
+                        <input id="project-name" name="name" maxlength="200" placeholder="例如：订单中心 2026-Q3">
+                    </div>
+                    <label id="drop-zone" class="drop-zone" for="zip-file">
+                        <input id="zip-file" name="file" type="file" accept=".zip,application/zip" required>
+                        <span class="drop-index">ZIP</span>
+                        <span class="drop-copy"><strong id="file-label">选择或拖入项目压缩包</strong><small>最大 200MB · Java / Spring 项目</small></span>
+                        <b>浏览文件 ↗</b>
+                    </label>
+                    <button id="submit-button" type="submit"><span>启动多 Agent 审计</span><b>RUN AUDIT →</b></button>
+                    <p id="upload-message" class="form-message" role="status"></p>
+                </form>
+            </section>
+
+            <section id="audit-workspace" class="page-section workspace-section">
+                <div class="section-heading workspace-heading">
+                    <div><p class="kicker">INVESTIGATION QUEUE</p><h2>审计任务</h2></div>
+                    <button id="refresh-button" class="refresh-button" type="button">刷新任务 ↻</button>
+                </div>
+                <div class="workbench">
+                    <div class="task-column">
+                        <div class="column-label"><span>任务队列</span><small id="task-count">0 ITEMS</small></div>
+                        <div id="task-list" class="task-list">
+                            <div class="empty-state">暂无审计任务</div>
+                        </div>
+                    </div>
+                    <section id="task-detail" class="detail-panel" aria-live="polite">
+                        <div class="detail-empty"><span>00</span><p>从左侧选择任务，查看实时 Agent 调查过程与漏洞证据。</p></div>
+                    </section>
+                </div>
+            </section>
+        </main>
+
+        <footer><span>DEEPAUDIT JAVA / DEVELOPMENT BUILD</span><span>AI 结论需要人工复核</span></footer>
+    </div>
+</div>
+<script src="/app.js?v=20260716-1" defer></script>
+</body>
+</html>

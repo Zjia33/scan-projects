@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.CodeChunkMapper">
+    <resultMap id="CodeChunkResultMap" type="com.deepaudit.domain.CodeChunk">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="file_path" property="filePath"/>
+        <result column="symbol_name" property="symbolName"/>
+        <result column="endpoint" property="endpoint"/>
+        <result column="start_line" property="startLine"/>
+        <result column="end_line" property="endLine"/>
+        <result column="content" property="content"/>
+        <result column="embedding" property="embedding"/>
+        <result column="chunk_type" property="chunkType"/>
+        <result column="parameters" property="parameters"/>
+        <result column="annotations" property="annotations"/>
+        <result column="called_symbols" property="calledSymbols"/>
+    </resultMap>
+
+    <sql id="columns">
+        id, task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
+        chunk_type, parameters, annotations, called_symbols
+    </sql>
+
+    <select id="findByTaskId" resultMap="CodeChunkResultMap">
+        SELECT <include refid="columns"/>
+        FROM code_chunk
+        WHERE task_id = #{taskId}
+        ORDER BY id
+    </select>
+
+    <select id="findById" resultMap="CodeChunkResultMap">
+        SELECT <include refid="columns"/> FROM code_chunk WHERE id = #{id}
+    </select>
+
+    <select id="countByTaskId" resultType="long">
+        SELECT COUNT(*) FROM code_chunk WHERE task_id = #{taskId}
+    </select>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM code_chunk WHERE task_id = #{taskId}
+    </delete>
+
+    <insert id="insertBatch">
+        INSERT INTO code_chunk
+            (task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
+             chunk_type, parameters, annotations, called_symbols)
+        VALUES
+        <foreach collection="chunks" item="chunk" separator=",">
+            (#{chunk.taskId}, #{chunk.filePath}, #{chunk.symbolName}, #{chunk.endpoint},
+             #{chunk.startLine}, #{chunk.endLine}, #{chunk.content}, #{chunk.embedding},
+             #{chunk.chunkType}, #{chunk.parameters}, #{chunk.annotations}, #{chunk.calledSymbols})
+        </foreach>
+    </insert>
+</mapper>

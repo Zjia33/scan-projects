@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.SecurityFlowMapper">
+    <resultMap id="SecurityFlowResultMap" type="com.deepaudit.domain.SecurityFlow">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="type" property="type"/>
+        <result column="source_symbol_id" property="sourceSymbolId"/>
+        <result column="sink_symbol_id" property="sinkSymbolId"/>
+        <result column="primary_chunk_id" property="primaryChunkId"/>
+        <result column="source_description" property="sourceDescription"/>
+        <result column="sink_description" property="sinkDescription"/>
+        <result column="guard_summary" property="guardSummary"/>
+        <result column="path_text" property="pathText"/>
+        <result column="evidence_chunk_ids" property="evidenceChunkIds"/>
+        <result column="confidence" property="confidence"/>
+        <result column="resolved_edges" property="resolvedEdges"/>
+        <result column="unresolved_edges" property="unresolvedEdges"/>
+    </resultMap>
+
+    <delete id="deleteByTaskId">DELETE FROM security_flow WHERE task_id = #{taskId}</delete>
+
+    <insert id="insertBatch">
+        INSERT INTO security_flow
+            (id, task_id, type, source_symbol_id, sink_symbol_id, primary_chunk_id,
+             source_description, sink_description, guard_summary, path_text, evidence_chunk_ids,
+             confidence, resolved_edges, unresolved_edges)
+        VALUES
+        <foreach collection="flows" item="flow" separator=",">
+            (#{flow.id}, #{flow.taskId}, #{flow.type}, #{flow.sourceSymbolId}, #{flow.sinkSymbolId},
+             #{flow.primaryChunkId}, #{flow.sourceDescription}, #{flow.sinkDescription},
+             #{flow.guardSummary}, #{flow.pathText}, #{flow.evidenceChunkIds}, #{flow.confidence},
+             #{flow.resolvedEdges}, #{flow.unresolvedEdges})
+        </foreach>
+    </insert>
+
+    <select id="findByTaskId" resultMap="SecurityFlowResultMap">
+        SELECT * FROM security_flow WHERE task_id = #{taskId} ORDER BY type, primary_chunk_id, id
+    </select>
+
+    <select id="findByTaskAndChunk" resultMap="SecurityFlowResultMap">
+        SELECT * FROM security_flow
+        WHERE task_id = #{taskId}
+          AND (primary_chunk_id = #{chunkId}
+               OR evidence_chunk_ids = CAST(#{chunkId} AS VARCHAR)
+               OR evidence_chunk_ids LIKE CONCAT(CAST(#{chunkId} AS VARCHAR), ',%')
+               OR evidence_chunk_ids LIKE CONCAT('%,', CAST(#{chunkId} AS VARCHAR), ',%')
+               OR evidence_chunk_ids LIKE CONCAT('%,', CAST(#{chunkId} AS VARCHAR)))
+        ORDER BY confidence, type, id
+    </select>
+</mapper>

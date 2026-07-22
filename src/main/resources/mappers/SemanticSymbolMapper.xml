@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.SemanticSymbolMapper">
+    <resultMap id="SemanticSymbolResultMap" type="com.deepaudit.domain.SemanticSymbol">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="chunk_id" property="chunkId"/>
+        <result column="kind" property="kind"/>
+        <result column="qualified_name" property="qualifiedName"/>
+        <result column="simple_name" property="simpleName"/>
+        <result column="owner_name" property="ownerName"/>
+        <result column="signature" property="signature"/>
+        <result column="return_type" property="returnType"/>
+        <result column="parameter_types" property="parameterTypes"/>
+        <result column="file_path" property="filePath"/>
+        <result column="start_line" property="startLine"/>
+        <result column="end_line" property="endLine"/>
+        <result column="endpoint" property="endpoint"/>
+        <result column="annotations" property="annotations"/>
+        <result column="details" property="details"/>
+    </resultMap>
+
+    <delete id="deleteByTaskId">DELETE FROM semantic_symbol WHERE task_id = #{taskId}</delete>
+
+    <insert id="insertBatch">
+        INSERT INTO semantic_symbol
+            (id, task_id, chunk_id, kind, qualified_name, simple_name, owner_name, signature,
+             return_type, parameter_types, file_path, start_line, end_line, endpoint, annotations, details)
+        VALUES
+        <foreach collection="symbols" item="symbol" separator=",">
+            (#{symbol.id}, #{symbol.taskId}, #{symbol.chunkId}, #{symbol.kind}, #{symbol.qualifiedName},
+             #{symbol.simpleName}, #{symbol.ownerName}, #{symbol.signature}, #{symbol.returnType},
+             #{symbol.parameterTypes}, #{symbol.filePath}, #{symbol.startLine}, #{symbol.endLine},
+             #{symbol.endpoint}, #{symbol.annotations}, #{symbol.details})
+        </foreach>
+    </insert>
+
+    <select id="findByTaskId" resultMap="SemanticSymbolResultMap">
+        SELECT * FROM semantic_symbol WHERE task_id = #{taskId} ORDER BY file_path, start_line
+    </select>
+</mapper>

@@ -1,0 +1,64 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: deepaudit-java
+  jackson:
+    mapper:
+      # LLM 常返回 critical、High 等不同大小写；未知枚举仍保持严格失败。
+      accept-case-insensitive-enums: true
+  datasource:
+    # 数据库连接通过环境变量注入，本地默认连接 localhost 且不提供默认密码。
+    url: ${DEEPAUDIT_DATASOURCE_URL:jdbc:postgresql://localhost:5432/deepaudit}
+    username: ${DEEPAUDIT_DATASOURCE_USERNAME:deepaudit}
+    password: ${DEEPAUDIT_DATASOURCE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/common
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 205MB
+
+deepaudit:
+  storage-root: ./data
+  ai:
+    required: true
+    base-url: https://api.deepseek.com
+    api-key: ${DEEPAUDIT_AI_API_KEY:}
+    model: deepseek-v4-flash
+    connect-timeout-seconds: 10
+    read-timeout-seconds: 120
+    # 模型偶尔会返回语法不合法的 JSON；最多追加两次格式纠正请求。
+    json-repair-attempts: 2
+    max-iterations-per-agent: 6
+    max-tool-calls-per-agent: 10
+    # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
+    professional-agent-parallelism: 4
+    planner-batch-size: 12
+    max-audit-targets: 300
+  embedding:
+    provider: remote
+    base-url: https://api.siliconflow.cn/v1
+    api-key: ${DEEPAUDIT_EMBEDDING_API_KEY:}
+    model: BAAI/bge-m3
+  semantic:
+    enabled: true
+    max-call-depth: 10
+    max-paths-per-entry: 20
+    max-states-per-entry: 1000
+
+mybatis:
+  mapper-locations: classpath*:mappers/*.xml
+  type-aliases-package: com.deepaudit.domain
+  type-handlers-package: com.deepaudit.mybatis
+  configuration:
+    map-underscore-to-camel-case: true
+    default-fetch-size: 100
+    default-statement-timeout: 30
+
+logging:
+  level:
+    com.deepaudit: INFO

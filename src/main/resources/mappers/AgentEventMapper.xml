@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.AgentEventMapper">
+    <resultMap id="AgentEventResultMap" type="com.deepaudit.domain.AgentEvent">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="run_id" property="runId"/>
+        <result column="agent_type" property="agentType" javaType="com.deepaudit.domain.AgentType"/>
+        <result column="event_type" property="eventType" javaType="com.deepaudit.domain.AgentEventType"/>
+        <result column="message" property="message"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+    <insert id="insert" parameterType="com.deepaudit.domain.AgentEvent"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO agent_event (task_id, run_id, agent_type, event_type, message, created_at)
+        VALUES (#{taskId}, #{runId}, #{agentType}, #{eventType}, #{message}, #{createdAt})
+    </insert>
+    <select id="findByTaskId" resultMap="AgentEventResultMap">
+        SELECT id, task_id, run_id, agent_type, event_type, message, created_at
+        FROM agent_event WHERE task_id=#{taskId} ORDER BY id
+    </select>
+    <delete id="deleteByTaskId">DELETE FROM agent_event WHERE task_id=#{taskId}</delete>
+</mapper>

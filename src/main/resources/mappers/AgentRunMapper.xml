@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.AgentRunMapper">
+    <resultMap id="AgentRunResultMap" type="com.deepaudit.domain.AgentRun">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="agent_type" property="agentType" javaType="com.deepaudit.domain.AgentType"/>
+        <result column="target_chunk_id" property="targetChunkId"/>
+        <result column="target_symbol" property="targetSymbol"/>
+        <result column="status" property="status" javaType="com.deepaudit.domain.AgentRunStatus"/>
+        <result column="step_count" property="stepCount"/>
+        <result column="tool_call_count" property="toolCallCount"/>
+        <result column="model_call_count" property="modelCallCount"/>
+        <result column="summary" property="summary"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="completed_at" property="completedAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.deepaudit.domain.AgentRun">
+        INSERT INTO agent_run
+            (id, task_id, agent_type, target_chunk_id, target_symbol, status, step_count,
+             tool_call_count, model_call_count, summary, started_at, completed_at)
+        VALUES
+            (#{id}, #{taskId}, #{agentType}, #{targetChunkId}, #{targetSymbol}, #{status}, #{stepCount},
+             #{toolCallCount}, #{modelCallCount}, #{summary}, #{startedAt}, #{completedAt})
+    </insert>
+
+    <update id="update" parameterType="com.deepaudit.domain.AgentRun">
+        UPDATE agent_run SET status=#{status}, step_count=#{stepCount}, tool_call_count=#{toolCallCount},
+            model_call_count=#{modelCallCount}, summary=#{summary}, completed_at=#{completedAt}
+        WHERE id=#{id}
+    </update>
+
+    <select id="findByTaskId" resultMap="AgentRunResultMap">
+        SELECT id, task_id, agent_type, target_chunk_id, target_symbol, status, step_count,
+               tool_call_count, model_call_count, summary, started_at, completed_at
+        FROM agent_run WHERE task_id=#{taskId} ORDER BY started_at, id
+    </select>
+
+    <delete id="deleteByTaskId">DELETE FROM agent_run WHERE task_id=#{taskId}</delete>
+</mapper>

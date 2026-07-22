@@ -1,0 +1,5 @@
+package com.deepaudit.domain;
+
+public enum AgentEventType {
+    STARTED, MODEL_CALL, REASONING, PLAN, TOOL_CALL, OBSERVATION, HYPOTHESIS, FINDING, REJECTED, COMPLETED, ERROR
+}
