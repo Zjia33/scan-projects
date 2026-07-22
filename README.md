@@ -51,7 +51,7 @@
 - 可访问的 OpenAI-compatible Chat Completions 服务
 - 可访问的 OpenAI-compatible Embeddings 服务
 
-默认使用 PostgreSQL，连接信息通过环境变量注入，仓库不保存开发或生产凭据：
+默认使用 PostgreSQL。应用会自动读取项目根目录的 `.env`，也支持使用同名的操作系统环境变量覆盖配置。首次运行可复制 `.env.example` 为 `.env`，然后填写真实连接信息：
 
 ```text
 DEEPAUDIT_DATASOURCE_URL=jdbc:postgresql://localhost:5432/deepaudit
@@ -59,7 +59,7 @@ DEEPAUDIT_DATASOURCE_USERNAME=deepaudit
 DEEPAUDIT_DATASOURCE_PASSWORD=<由运行环境提供>
 ```
 
-远程数据库端口应只放行受信任来源；不要把真实地址、用户名、密码或模型 API Key 写入配置文件。
+`.env` 已加入 `.gitignore`，不得强制提交；`.env.example` 只保存无效占位值。远程数据库端口应只放行受信任来源，不要把真实地址、用户名、密码或模型 API Key 写入受版本控制的配置文件。
 
 ## AI 与 Embedding 配置
 

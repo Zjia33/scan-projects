@@ -1,6 +1,9 @@
 target/
 .idea/
 .playwright-cli/
+.env
+.env.local
+.env.*.local
 *.iml
 *.log
 *.part-*

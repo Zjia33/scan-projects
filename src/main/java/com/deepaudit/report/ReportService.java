@@ -81,10 +81,10 @@ public class ReportService {
                 + "<h1>DeepAudit Java 安全审计报告</h1><p>项目：" + escape(report.project().getName()) + "</p>"
                 + "<p>任务状态：" + statusLabel(report.task().getStatus()) + "　问题数量："
                 + report.findings().size() + "</p>"
-                + "<section><h2>AI Agent 管理摘要</h2><p>" + escape(report.aiSummary() == null ? "暂无摘要"
+                + "<section><h2>摘要</h2><p>" + escape(report.aiSummary() == null ? "暂无摘要"
                 : report.aiSummary().getExecutiveSummary()) + "</p><p><b>审计覆盖：</b>"
                 + escape(report.aiSummary() == null ? "暂无覆盖说明" : report.aiSummary().getCoverageSummary())
-                + "</p><p>Agent 运行数：" + report.agentRuns().size() + "　调查假设："
+                // + "</p><p>Agent 运行数：" + report.agentRuns().size() + "　调查假设："
                 + report.hypotheses().size() + "</p></section>"
                 + "<p>说明：本报告由 AI Agents 基于静态代码事实生成；所有结果仍建议人工复核。</p>"
                 + rows + "</body></html>";
