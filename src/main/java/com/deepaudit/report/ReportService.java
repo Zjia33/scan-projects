@@ -85,8 +85,9 @@ public class ReportService {
                 : report.aiSummary().getExecutiveSummary()) + "</p><p><b>审计覆盖：</b>"
                 + escape(report.aiSummary() == null ? "暂无覆盖说明" : report.aiSummary().getCoverageSummary())
                 // + "</p><p>Agent 运行数：" + report.agentRuns().size() + "　调查假设："
-                + report.hypotheses().size() + "</p></section>"
-                + "<p>说明：本报告由 AI Agents 基于静态代码事实生成；所有结果仍建议人工复核。</p>"
+                // + report.hypotheses().size()
+                + "</p>" + "</section>"
+                + "<p>说明：本报告基于静态代码事实生成；所有结果仍建议人工复核。</p>"
                 + rows + "</body></html>";
     }
 
