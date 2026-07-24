@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.GitFileChangeMapper">
+    <resultMap id="GitFileChangeResultMap" type="com.deepaudit.domain.GitFileChange">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="old_path" property="oldPath"/>
+        <result column="new_path" property="newPath"/>
+        <result column="change_type" property="changeType"/>
+        <result column="additions" property="additions"/>
+        <result column="deletions" property="deletions"/>
+        <result column="old_ranges" property="oldRanges"/>
+        <result column="new_ranges" property="newRanges"/>
+        <result column="context_text" property="contextText"/>
+        <result column="configuration_change" property="configurationChange"/>
+    </resultMap>
+
+    <delete id="deleteByTaskId">DELETE FROM git_file_change WHERE task_id = #{taskId}</delete>
+
+    <insert id="insertBatch">
+        INSERT INTO git_file_change
+            (id, task_id, old_path, new_path, change_type, additions, deletions,
+             old_ranges, new_ranges, context_text, configuration_change)
+        VALUES
+        <foreach collection="changes" item="change" separator=",">
+            (#{change.id}, #{change.taskId}, #{change.oldPath}, #{change.newPath}, #{change.changeType},
+             #{change.additions}, #{change.deletions}, #{change.oldRanges}, #{change.newRanges},
+             #{change.contextText}, #{change.configurationChange})
+        </foreach>
+    </insert>
+
+    <select id="findByTaskId" resultMap="GitFileChangeResultMap">
+        SELECT *
+        FROM git_file_change
+        WHERE task_id = #{taskId}
+        ORDER BY COALESCE(new_path, old_path), id
+    </select>
+</mapper>
