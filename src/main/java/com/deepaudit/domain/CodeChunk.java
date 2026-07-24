@@ -1,7 +1,14 @@
 package com.deepaudit.domain;
 
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
 import java.util.UUID;
 
+@Getter
+@Setter
+@NoArgsConstructor
 public class CodeChunk {
 
     private Long id;
@@ -17,9 +24,9 @@ public class CodeChunk {
     private String parameters;
     private String annotations;
     private String calledSymbols;
-
-    public CodeChunk() {
-    }
+    private ChunkChangeType changeType;
+    private AnalysisScope analysisScope;
+    private String baseContent;
 
     public CodeChunk(UUID taskId, String filePath, String symbolName, String endpoint,
                      int startLine, int endLine, String content, String embedding) {
@@ -42,32 +49,9 @@ public class CodeChunk {
         this.parameters = parameters;
         this.annotations = annotations;
         this.calledSymbols = calledSymbols;
+        this.changeType = ChunkChangeType.UNCHANGED;
+        this.analysisScope = AnalysisScope.FULL;
+        this.baseContent = "";
     }
 
-    public Long getId() { return id; }
-    public UUID getTaskId() { return taskId; }
-    public String getFilePath() { return filePath; }
-    public String getSymbolName() { return symbolName; }
-    public String getEndpoint() { return endpoint; }
-    public int getStartLine() { return startLine; }
-    public int getEndLine() { return endLine; }
-    public String getContent() { return content; }
-    public String getEmbedding() { return embedding; }
-    public String getChunkType() { return chunkType; }
-    public String getParameters() { return parameters; }
-    public String getAnnotations() { return annotations; }
-    public String getCalledSymbols() { return calledSymbols; }
-    public void setId(Long id) { this.id = id; }
-    public void setTaskId(UUID taskId) { this.taskId = taskId; }
-    public void setFilePath(String filePath) { this.filePath = filePath; }
-    public void setSymbolName(String symbolName) { this.symbolName = symbolName; }
-    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
-    public void setStartLine(int startLine) { this.startLine = startLine; }
-    public void setEndLine(int endLine) { this.endLine = endLine; }
-    public void setContent(String content) { this.content = content; }
-    public void setEmbedding(String embedding) { this.embedding = embedding; }
-    public void setChunkType(String chunkType) { this.chunkType = chunkType; }
-    public void setParameters(String parameters) { this.parameters = parameters; }
-    public void setAnnotations(String annotations) { this.annotations = annotations; }
-    public void setCalledSymbols(String calledSymbols) { this.calledSymbols = calledSymbols; }
 }

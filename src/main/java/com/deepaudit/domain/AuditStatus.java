@@ -2,6 +2,8 @@ package com.deepaudit.domain;
 
 public enum AuditStatus {
     UPLOADED,
+    MATERIALIZING,
+    DIFFING,
     EXTRACTING,
     INVENTORY,
     INDEXING,

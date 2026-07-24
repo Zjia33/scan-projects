@@ -15,11 +15,14 @@
         <result column="parameters" property="parameters"/>
         <result column="annotations" property="annotations"/>
         <result column="called_symbols" property="calledSymbols"/>
+        <result column="change_type" property="changeType" javaType="com.deepaudit.domain.ChunkChangeType"/>
+        <result column="analysis_scope" property="analysisScope" javaType="com.deepaudit.domain.AnalysisScope"/>
+        <result column="base_content" property="baseContent"/>
     </resultMap>
 
     <sql id="columns">
         id, task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
-        chunk_type, parameters, annotations, called_symbols
+        chunk_type, parameters, annotations, called_symbols, change_type, analysis_scope, base_content
     </sql>
 
     <select id="findByTaskId" resultMap="CodeChunkResultMap">
@@ -44,12 +47,22 @@
     <insert id="insertBatch">
         INSERT INTO code_chunk
             (task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
-             chunk_type, parameters, annotations, called_symbols)
+             chunk_type, parameters, annotations, called_symbols, change_type, analysis_scope, base_content)
         VALUES
         <foreach collection="chunks" item="chunk" separator=",">
             (#{chunk.taskId}, #{chunk.filePath}, #{chunk.symbolName}, #{chunk.endpoint},
              #{chunk.startLine}, #{chunk.endLine}, #{chunk.content}, #{chunk.embedding},
-             #{chunk.chunkType}, #{chunk.parameters}, #{chunk.annotations}, #{chunk.calledSymbols})
+             #{chunk.chunkType}, #{chunk.parameters}, #{chunk.annotations}, #{chunk.calledSymbols},
+             #{chunk.changeType}, #{chunk.analysisScope}, #{chunk.baseContent})
         </foreach>
     </insert>
+
+    <update id="updateIncrementalMetadata" parameterType="com.deepaudit.domain.CodeChunk">
+        UPDATE code_chunk
+        SET embedding = #{embedding},
+            change_type = #{changeType},
+            analysis_scope = #{analysisScope},
+            base_content = #{baseContent}
+        WHERE id = #{id}
+    </update>
 </mapper>

@@ -6,6 +6,7 @@ import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.recon.ReconSummary;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -13,14 +14,10 @@ import java.util.Set;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class ReconAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
-
-    public ReconAgentService(LlmGateway llmGateway, AgentTraceService traceService) {
-        this.llmGateway = llmGateway;
-        this.traceService = traceService;
-    }
 
     // 用技术栈事实和代表性代码块生成项目架构、攻击面及安全机制概览。
     public LlmGateway.ReconInsight inspect(UUID taskId, ReconSummary summary, List<CodeChunk> chunks) {
@@ -28,7 +25,10 @@ public class ReconAgentService {
         try {
             // 优先选择接口和 Java 方法，并限制样本规模以控制模型上下文。
             List<LlmGateway.Target> representatives = chunks.stream()
-                    .sorted(java.util.Comparator.comparing((CodeChunk chunk) -> chunk.getEndpoint() == null)
+                    .sorted(java.util.Comparator
+                            .comparing((CodeChunk chunk) -> chunk.getAnalysisScope()
+                                    != com.deepaudit.domain.AnalysisScope.CHANGED)
+                            .thenComparing((CodeChunk chunk) -> chunk.getEndpoint() == null)
                             .thenComparing(chunk -> !"JAVA_METHOD".equals(chunk.getChunkType())))
                     .limit(50).map(chunk -> AgentPromptSupport.target(chunk, Set.of())).toList();
             run.setModelCallCount(1);

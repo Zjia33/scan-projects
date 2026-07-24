@@ -12,6 +12,9 @@ import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.AnalysisScope;
+import com.deepaudit.domain.AuditTask;
+import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.CodeChunkMapper;
@@ -19,8 +22,10 @@ import com.deepaudit.mapper.FindingMapper;
 import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.semantic.SemanticAnalysisService;
 import com.deepaudit.semantic.SemanticEvidenceService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.deepaudit.semantic.IncrementalScopeService;
+import com.deepaudit.recon.ReconService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
@@ -35,10 +40,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class AnalysisService {
-    private static final Logger log = LoggerFactory.getLogger(AnalysisService.class);
-
     private final List<VulnerabilityAnalyzer> hintProviders;
     private final CodeChunkMapper chunkMapper;
     private final FindingMapper findingMapper;
@@ -50,30 +55,12 @@ public class AnalysisService {
     private final ReportAgentService reportAgent;
     private final SemanticAnalysisService semanticAnalysisService;
     private final SemanticEvidenceService semanticEvidenceService;
-
-    public AnalysisService(List<VulnerabilityAnalyzer> hintProviders,
-                           CodeChunkMapper chunkMapper, FindingMapper findingMapper,
-                           AgentTraceService traceService, ReconAgentService reconAgent,
-                           OrchestratorAgentService orchestratorAgent,
-                           ProfessionalAgentRunner professionalAgentRunner,
-                           CriticAgentService criticAgent, ReportAgentService reportAgent,
-                           SemanticAnalysisService semanticAnalysisService,
-                           SemanticEvidenceService semanticEvidenceService) {
-        this.hintProviders = hintProviders;
-        this.chunkMapper = chunkMapper;
-        this.findingMapper = findingMapper;
-        this.traceService = traceService;
-        this.reconAgent = reconAgent;
-        this.orchestratorAgent = orchestratorAgent;
-        this.professionalAgentRunner = professionalAgentRunner;
-        this.criticAgent = criticAgent;
-        this.reportAgent = reportAgent;
-        this.semanticAnalysisService = semanticAnalysisService;
-        this.semanticEvidenceService = semanticEvidenceService;
-    }
+    private final IncrementalScopeService incrementalScopeService;
+    private final ReconService reconService;
 
     // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
-    public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary, String projectName) {
+    public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
+                                  String projectName, AuditTask task) {
         // 清理旧发现和 Agent 轨迹，保证重跑结果不混入历史数据。
         findingMapper.deleteByTaskId(taskId);
         traceService.reset(taskId);
@@ -82,6 +69,15 @@ public class AnalysisService {
         if (chunks.isEmpty()) throw new IllegalStateException("项目中没有可供 Agent 审查的代码块");
         // 先生成跨文件语义索引，再合并规则与语义产生的调查线索。
         SemanticAnalysisService.Summary semanticSummary = semanticAnalysisService.rebuild(taskId, projectRoot, chunks);
+        IncrementalScopeService.ScopeResult incrementalScope = null;
+        if (task.getScanMode() == ScanMode.INCREMENTAL) {
+            incrementalScope = incrementalScopeService.determine(taskId, chunks);
+            reconService.promoteImpactScope(taskId, incrementalScope.impactedChunkIds());
+            chunks = chunkMapper.findByTaskId(taskId);
+            log.info("任务 {} 增量范围：{} 个直接变更块、{} 个语义影响块，全局配置变化={}",
+                    taskId, incrementalScope.changedChunkIds().size(),
+                    incrementalScope.impactedChunkIds().size(), incrementalScope.globalConfigurationChanged());
+        }
         HintIndex hintIndex = collectHints(taskId, projectRoot, chunks);
         mergeSemanticHints(taskId, hintIndex);
         log.info("任务 {} 生成 {} 个规则调查目标，类型分布: {}", taskId,
@@ -91,7 +87,7 @@ public class AnalysisService {
                 semanticSummary.securityFlowCount(), semanticSummary.totalCallSites(),
                 semanticSummary.unresolvedCallSites());
         // 将有线索、接口和 Java 方法前置，以便规划器在目标预算内优先覆盖。
-        List<CodeChunk> targets = selectTargets(chunks, hintIndex.typesByChunk());
+        List<CodeChunk> targets = selectTargets(chunks, hintIndex.typesByChunk(), task.getScanMode());
         // Recon Agent 先理解项目，再由 Orchestrator 将目标拆给对应专业 Agent。
         LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary, chunks);
         List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, targets,
@@ -112,8 +108,7 @@ public class AnalysisService {
             try {
                 criticAgent.review(taskId, candidate, recon, chunks)
                         .filter(finding -> validateEvidence(projectRoot, finding))
-                        .filter(finding -> deduplication.add(finding.getType() + "|" + finding.getFilePath()
-                                + "|" + finding.getStartLine()))
+                        .filter(finding -> deduplication.add(finding.getFingerprint()))
                         .ifPresent(confirmed::add);
             } catch (AiResponseFormatException exception) {
                 log.warn("任务 {} 的 Critic 对候选 {} 返回不可解析 JSON，候选不进入最终报告",
@@ -124,7 +119,13 @@ public class AnalysisService {
         for (int start = 0; start < confirmed.size(); start += 200) {
             findingMapper.insertBatch(confirmed.subList(start, Math.min(start + 200, confirmed.size())));
         }
-        reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(), candidates.size() - confirmed.size());
+        String auditContext = task.getScanMode() == ScanMode.FULL
+                ? "全量扫描目标提交 " + shortSha(task.getTargetCommitSha())
+                : "增量扫描 " + shortSha(task.getBaseCommitSha()) + " → "
+                + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
+                + "；深度范围 " + (incrementalScope == null ? 0 : incrementalScope.totalDeepTargets()) + " 个代码块";
+        reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
+                candidates.size() - confirmed.size(), auditContext);
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
     }
 
@@ -169,14 +170,23 @@ public class AnalysisService {
     }
 
     // 依次按线索、接口、Java 方法和源码位置确定 Agent 规划顺序。
-    private List<CodeChunk> selectTargets(List<CodeChunk> chunks, Map<Long, Set<VulnerabilityType>> hints) {
-        return chunks.stream().sorted(Comparator
-                        .comparing((CodeChunk chunk) -> !hints.containsKey(chunk.getId()))
+    private List<CodeChunk> selectTargets(List<CodeChunk> chunks, Map<Long, Set<VulnerabilityType>> hints,
+                                          ScanMode scanMode) {
+        return chunks.stream()
+                .filter(chunk -> scanMode == ScanMode.FULL || chunk.getAnalysisScope() == AnalysisScope.CHANGED
+                        || chunk.getAnalysisScope() == AnalysisScope.IMPACTED)
+                .sorted(Comparator
+                        .comparing((CodeChunk chunk) -> chunk.getAnalysisScope() != AnalysisScope.CHANGED)
+                        .thenComparing((CodeChunk chunk) -> !hints.containsKey(chunk.getId()))
                         .thenComparing(chunk -> chunk.getEndpoint() == null)
                         .thenComparing(chunk -> !"JAVA_METHOD".equals(chunk.getChunkType()))
                         .thenComparing(CodeChunk::getFilePath)
                         .thenComparingInt(CodeChunk::getStartLine))
                 .toList();
+    }
+
+    private String shortSha(String value) {
+        return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
 
     // 在落库前确认主证据路径位于项目根目录且引用了真实有效行号。

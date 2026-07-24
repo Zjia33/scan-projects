@@ -10,7 +10,13 @@ spring:
 
 deepaudit:
   storage-root: ./target/test-data
+  git:
+    allow-local-repositories: true
+    allowed-hosts: localhost
   ai:
     required: true
   embedding:
     provider: local
+    dimensions: 128
+  vector-store:
+    provider: memory

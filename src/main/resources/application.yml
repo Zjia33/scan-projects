@@ -19,14 +19,22 @@ spring:
     driver-class-name: ${DEEPAUDIT_DATASOURCE_DRIVER:org.postgresql.Driver}
   flyway:
     enabled: true
-    locations: classpath:db/migration/common
-  servlet:
-    multipart:
-      max-file-size: 200MB
-      max-request-size: 205MB
+    locations:
+      - classpath:db/migration/common
+      - classpath:db/migration/postgresql
+    placeholders:
+      embeddingDimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
 
 deepaudit:
   storage-root: ${DEEPAUDIT_STORAGE_ROOT:./data}
+  git:
+    allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
+    allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
+    transport-timeout-seconds: ${DEEPAUDIT_GIT_TIMEOUT_SECONDS:60}
+    max-commits: ${DEEPAUDIT_GIT_MAX_COMMITS:200}
+    max-files-per-snapshot: ${DEEPAUDIT_GIT_MAX_FILES:100000}
+    max-file-bytes: ${DEEPAUDIT_GIT_MAX_FILE_BYTES:10485760}
+    max-snapshot-bytes: ${DEEPAUDIT_GIT_MAX_SNAPSHOT_BYTES:536870912}
   ai:
     required: true
     base-url: ${DEEPAUDIT_AI_BASE_URL:https://api.deepseek.com}
@@ -47,6 +55,10 @@ deepaudit:
     base-url: ${DEEPAUDIT_EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
     api-key: ${DEEPAUDIT_EMBEDDING_API_KEY:}
     model: ${DEEPAUDIT_EMBEDDING_MODEL:BAAI/bge-m3}
+    dimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
+  vector-store:
+    provider: ${DEEPAUDIT_VECTOR_STORE_PROVIDER:pgvector}
+    hnsw-ef-search: ${DEEPAUDIT_VECTOR_HNSW_EF_SEARCH:100}
   semantic:
     enabled: true
     max-call-depth: 10

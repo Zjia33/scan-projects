@@ -10,6 +10,7 @@ import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,6 +24,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class AgentRuntime {
     private final LlmGateway llmGateway;
     private final AiProperties properties;
@@ -30,17 +32,6 @@ public class AgentRuntime {
     private final AgentTraceService traceService;
     private final AuditHypothesisMapper hypothesisMapper;
     private final SemanticEvidenceService semanticEvidenceService;
-
-    public AgentRuntime(LlmGateway llmGateway, AiProperties properties, AuditToolService toolService,
-                        AgentTraceService traceService, AuditHypothesisMapper hypothesisMapper,
-                        SemanticEvidenceService semanticEvidenceService) {
-        this.llmGateway = llmGateway;
-        this.properties = properties;
-        this.toolService = toolService;
-        this.traceService = traceService;
-        this.hypothesisMapper = hypothesisMapper;
-        this.semanticEvidenceService = semanticEvidenceService;
-    }
 
     // 驱动单个专业 Agent 的“推理—工具—观察”循环并执行证据准入。
     public Optional<AgentCandidate> investigate(UUID taskId, AgentTask task,

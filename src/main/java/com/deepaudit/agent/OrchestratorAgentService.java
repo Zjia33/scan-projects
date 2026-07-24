@@ -7,8 +7,8 @@ import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -18,20 +18,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class OrchestratorAgentService {
-    private static final Logger log = LoggerFactory.getLogger(OrchestratorAgentService.class);
-
     private final LlmGateway llmGateway;
     private final AiProperties properties;
     private final AgentTraceService traceService;
-
-    public OrchestratorAgentService(LlmGateway llmGateway, AiProperties properties,
-                                    AgentTraceService traceService) {
-        this.llmGateway = llmGateway;
-        this.properties = properties;
-        this.traceService = traceService;
-    }
 
     // 将候选代码块分批规划为与漏洞类型严格匹配的专业 Agent 任务。
     public List<AgentTask> plan(UUID taskId, LlmGateway.ReconInsight recon,

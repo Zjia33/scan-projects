@@ -7,8 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
@@ -22,10 +21,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 public class RemoteLlmGateway implements LlmGateway {
-    private static final Logger log = LoggerFactory.getLogger(RemoteLlmGateway.class);
-
     private final AiProperties properties;
     private final ObjectMapper objectMapper;
     private final ObjectMapper tolerantObjectMapper;
@@ -85,7 +83,8 @@ public class RemoteLlmGateway implements LlmGateway {
     public CriticDecision critique(CriticRequest request) {
         String systemPrompt = AgentPrompts.criticAgent();
         String userPrompt = json(Map.of("candidate", request, "outputSchema",
-                Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string")));
+                Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string",
+                        "deltaStatus", "BASELINE|NEW|REGRESSED|PERSISTING|AFFECTED")));
         return call(systemPrompt, userPrompt, CriticDecision.class);
     }
 

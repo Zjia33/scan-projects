@@ -4,6 +4,7 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -15,14 +16,10 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class AuditToolService {
     private final RagService ragService;
     private final SemanticEvidenceService semanticEvidenceService;
-
-    public AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService) {
-        this.ragService = ragService;
-        this.semanticEvidenceService = semanticEvidenceService;
-    }
 
     // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
     public ToolResult execute(String tool, String query, int requestedLimit,

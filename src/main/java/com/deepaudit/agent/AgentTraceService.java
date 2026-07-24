@@ -8,29 +8,20 @@ import com.deepaudit.mapper.AgentEventMapper;
 import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class AgentTraceService {
     private final AgentRunMapper runMapper;
     private final AgentEventMapper eventMapper;
     private final AuditHypothesisMapper hypothesisMapper;
     private final AiReportSummaryMapper reportSummaryMapper;
     private final AgentEventStreamService eventStreamService;
-
-    public AgentTraceService(AgentRunMapper runMapper, AgentEventMapper eventMapper,
-                             AuditHypothesisMapper hypothesisMapper,
-                             AiReportSummaryMapper reportSummaryMapper,
-                             AgentEventStreamService eventStreamService) {
-        this.runMapper = runMapper;
-        this.eventMapper = eventMapper;
-        this.hypothesisMapper = hypothesisMapper;
-        this.reportSummaryMapper = reportSummaryMapper;
-        this.eventStreamService = eventStreamService;
-    }
 
     // 创建 Agent 运行记录并同步发布启动事件。
     public AgentRun start(UUID taskId, AgentType type, Long targetChunkId, String targetSymbol) {

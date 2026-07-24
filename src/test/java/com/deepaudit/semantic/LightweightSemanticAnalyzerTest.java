@@ -362,6 +362,35 @@ class LightweightSemanticAnalyzerTest {
                 && "UNRESOLVED".equals(edge.getEdgeType()));
     }
 
+    @Test
+    void excludesTestSourcesFromSemanticSymbolsAndCallGraph() throws Exception {
+        write("src/main/java/demo/OrderService.java", """
+                package demo;
+                class OrderService {
+                    void submit() { repository.save(); }
+                }
+                """);
+        write("src/test/java/demo/OrderServiceTest.java", """
+                package demo;
+                class OrderServiceTest {
+                    void submitUnsafeInput() { statement.execute(userInput); }
+                }
+                """);
+        UUID taskId = UUID.randomUUID();
+        CodeChunk production = chunk(70L, taskId, "src/main/java/demo/OrderService.java",
+                "OrderService#submit", null, 3, 3,
+                "void submit() { repository.save(); }", "JAVA_METHOD", "");
+
+        LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
+                .analyze(taskId, root, List.of(production));
+
+        assertThat(result.symbols()).extracting(symbol -> symbol.getFilePath())
+                .contains("src/main/java/demo/OrderService.java")
+                .noneMatch(path -> path.contains("/test/"));
+        assertThat(result.symbols()).extracting(symbol -> symbol.getSimpleName())
+                .doesNotContain("submitUnsafeInput");
+    }
+
     private CodeChunk chunk(Long id, UUID taskId, String file, String symbol, String endpoint,
                             int start, int end, String content, String type, String parameters) {
         CodeChunk chunk = new CodeChunk(taskId, file, symbol, endpoint, start, end, content, "1,0",

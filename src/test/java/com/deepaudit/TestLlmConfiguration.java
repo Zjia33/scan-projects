@@ -56,7 +56,13 @@ public class TestLlmConfiguration {
 
             @Override
             public CriticDecision critique(CriticRequest request) {
-                return new CriticDecision(true, Confidence.HIGH, "未找到能够推翻候选的权限或参数化反证");
+                com.deepaudit.domain.FindingDeltaStatus delta = "FULL".equals(request.analysisScope())
+                        ? com.deepaudit.domain.FindingDeltaStatus.BASELINE
+                        : "ADDED".equals(request.changeType()) || request.baseCodeExcerpt().contains("- ")
+                        ? com.deepaudit.domain.FindingDeltaStatus.NEW
+                        : com.deepaudit.domain.FindingDeltaStatus.AFFECTED;
+                return new CriticDecision(true, Confidence.HIGH,
+                        "未找到能够推翻候选的权限或参数化反证", delta);
             }
 
             @Override

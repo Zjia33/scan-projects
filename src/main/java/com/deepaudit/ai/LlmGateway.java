@@ -5,6 +5,7 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.recon.TechnologyProfile;
 
@@ -25,7 +26,8 @@ public interface LlmGateway {
 
     record Target(long chunkId, String filePath, String symbolName, String endpoint,
                   String chunkType, String parameters, String annotations,
-                  String calledSymbols, String codeExcerpt, List<VulnerabilityType> hints) {
+                  String calledSymbols, String codeExcerpt, String changeType,
+                  String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints) {
     }
 
     record ReconInsight(String architectureSummary, List<String> attackSurfaces,
@@ -74,10 +76,12 @@ public interface LlmGateway {
     }
 
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
-                         String evidence, String independentSemanticEvidence, ReconInsight recon) {
+                         String evidence, String independentSemanticEvidence, ReconInsight recon,
+                         String changeType, String analysisScope, String baseCodeExcerpt) {
     }
 
-    record CriticDecision(boolean confirmed, Confidence confidence, String reason) {
+    record CriticDecision(boolean confirmed, Confidence confidence, String reason,
+                          FindingDeltaStatus deltaStatus) {
     }
 
     record ReportFinding(VulnerabilityType type, Severity severity, Confidence confidence,
@@ -85,7 +89,8 @@ public interface LlmGateway {
     }
 
     record ReportRequest(UUID taskId, String projectName, ReconInsight recon,
-                         List<ReportFinding> findings, int completedAgents, int rejectedHypotheses) {
+                         List<ReportFinding> findings, int completedAgents, int rejectedHypotheses,
+                         String auditContext) {
     }
 
     record ReportNarrative(String executiveSummary, String coverageSummary) {

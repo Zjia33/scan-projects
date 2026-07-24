@@ -8,20 +8,30 @@
         <result column="progress" property="progress"/>
         <result column="current_stage" property="currentStage"/>
         <result column="error_message" property="errorMessage"/>
+        <result column="scan_mode" property="scanMode" javaType="com.deepaudit.domain.ScanMode"/>
+        <result column="base_commit_sha" property="baseCommitSha"/>
+        <result column="target_commit_sha" property="targetCommitSha"/>
+        <result column="merge_base_sha" property="mergeBaseSha"/>
+        <result column="change_summary" property="changeSummary"/>
         <result column="created_at" property="createdAt"/>
         <result column="completed_at" property="completedAt"/>
         <result column="version" property="version"/>
     </resultMap>
 
     <sql id="columns">
-        id, project_id, status, progress, current_stage, error_message, created_at, completed_at, version
+        id, project_id, status, progress, current_stage, error_message, scan_mode,
+        base_commit_sha, target_commit_sha, merge_base_sha, change_summary,
+        created_at, completed_at, version
     </sql>
 
     <insert id="insert" parameterType="com.deepaudit.domain.AuditTask">
         INSERT INTO audit_task
-            (id, project_id, status, progress, current_stage, error_message, created_at, completed_at, version)
+            (id, project_id, status, progress, current_stage, error_message, scan_mode,
+             base_commit_sha, target_commit_sha, merge_base_sha, change_summary,
+             created_at, completed_at, version)
         VALUES
-            (#{id}, #{projectId}, #{status}, #{progress}, #{currentStage}, #{errorMessage},
+            (#{id}, #{projectId}, #{status}, #{progress}, #{currentStage}, #{errorMessage}, #{scanMode},
+             #{baseCommitSha}, #{targetCommitSha}, #{mergeBaseSha}, #{changeSummary},
              #{createdAt}, #{completedAt}, #{version})
     </insert>
 
@@ -43,6 +53,7 @@
             progress = #{progress},
             current_stage = #{currentStage},
             error_message = #{errorMessage},
+            change_summary = #{changeSummary},
             completed_at = #{completedAt},
             version = version + 1
         WHERE id = #{id}

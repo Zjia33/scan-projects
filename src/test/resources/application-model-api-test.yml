@@ -23,3 +23,6 @@ deepaudit:
     base-url: https://api.siliconflow.cn/v1
     api-key: ${DEEPAUDIT_MODEL_TEST_EMBEDDING_API_KEY:}
     model: BAAI/bge-m3
+    dimensions: 1024
+  vector-store:
+    provider: memory

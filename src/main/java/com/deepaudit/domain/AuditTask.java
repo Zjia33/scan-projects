@@ -1,8 +1,15 @@
 package com.deepaudit.domain;
 
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
 import java.time.Instant;
 import java.util.UUID;
 
+@Getter
+@Setter
+@NoArgsConstructor
 public class AuditTask {
 
     private UUID id;
@@ -11,16 +18,27 @@ public class AuditTask {
     private int progress;
     private String currentStage;
     private String errorMessage;
+    private ScanMode scanMode;
+    private String baseCommitSha;
+    private String targetCommitSha;
+    private String mergeBaseSha;
+    private String changeSummary;
     private Instant createdAt;
     private Instant completedAt;
     private long version;
 
-    public AuditTask() {
+    public AuditTask(UUID projectId) {
+        this(projectId, ScanMode.FULL, null, null, null);
     }
 
-    public AuditTask(UUID projectId) {
+    public AuditTask(UUID projectId, ScanMode scanMode, String baseCommitSha,
+                     String targetCommitSha, String mergeBaseSha) {
         this.id = UUID.randomUUID();
         this.projectId = projectId;
+        this.scanMode = scanMode == null ? ScanMode.FULL : scanMode;
+        this.baseCommitSha = baseCommitSha;
+        this.targetCommitSha = targetCommitSha;
+        this.mergeBaseSha = mergeBaseSha;
         this.status = AuditStatus.UPLOADED;
         this.progress = 0;
         this.currentStage = "等待扫描";
@@ -41,22 +59,4 @@ public class AuditTask {
         moveTo(AuditStatus.FAILED, progress, "扫描失败");
     }
 
-    public UUID getId() { return id; }
-    public UUID getProjectId() { return projectId; }
-    public AuditStatus getStatus() { return status; }
-    public int getProgress() { return progress; }
-    public String getCurrentStage() { return currentStage; }
-    public String getErrorMessage() { return errorMessage; }
-    public Instant getCreatedAt() { return createdAt; }
-    public Instant getCompletedAt() { return completedAt; }
-    public long getVersion() { return version; }
-    public void setId(UUID id) { this.id = id; }
-    public void setProjectId(UUID projectId) { this.projectId = projectId; }
-    public void setStatus(AuditStatus status) { this.status = status; }
-    public void setProgress(int progress) { this.progress = progress; }
-    public void setCurrentStage(String currentStage) { this.currentStage = currentStage; }
-    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
-    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
-    public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
-    public void setVersion(long version) { this.version = version; }
 }

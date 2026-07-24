@@ -76,6 +76,9 @@ class ModelApiManualIT {
                 "@GetMapping(\"/search\")",
                 "queryForList",
                 VULNERABLE_CODE,
+                "MODIFIED",
+                "CHANGED",
+                "",
                 List.of()
         );
         LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight(

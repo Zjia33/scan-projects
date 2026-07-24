@@ -6,6 +6,7 @@ import com.deepaudit.domain.SecurityFlow;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.SemanticSymbol;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.source.AuditSourceFilter;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
@@ -27,8 +28,8 @@ import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -57,9 +58,10 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+@Slf4j
 @Component
+@RequiredArgsConstructor
 public class LightweightSemanticAnalyzer {
-    private static final Logger log = LoggerFactory.getLogger(LightweightSemanticAnalyzer.class);
     private static final Pattern MYBATIS_NAMESPACE = Pattern.compile("<mapper\\s+[^>]*namespace\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
     private static final Pattern MYBATIS_STATEMENT = Pattern.compile("<(select|insert|update|delete)\\b[^>]*\\bid\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</\\1>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern SECURITY_POLICY = Pattern.compile("requestMatchers\\s*\\(([^)]*)\\)\\s*\\.\\s*(permitAll|authenticated|hasRole|hasAuthority)\\s*\\(([^)]*)\\)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
@@ -71,11 +73,7 @@ public class LightweightSemanticAnalyzer {
 
     private final SemanticAnalysisProperties properties;
 
-    public LightweightSemanticAnalyzer(SemanticAnalysisProperties properties) {
-        this.properties = properties;
-    }
-
-    // 依次构建程序模型、跨文件调用图、方法摘要和受限安全数据流，整个过程不执行上传项目代码。
+    // 依次构建程序模型、跨文件调用图、方法摘要和受限安全数据流，整个过程不执行仓库代码。
     public Result analyze(UUID taskId, Path root, List<CodeChunk> chunks) throws IOException {
         // 第一阶段把源码目录和 Recon 代码块转换成统一的内存程序模型。
         Program program = parseProgram(taskId, root, chunks);
@@ -121,9 +119,11 @@ public class LightweightSemanticAnalyzer {
                 .setSymbolResolver(new JavaSymbolSolver(typeSolver));
         JavaParser parser = new JavaParser(configuration);
 
-        // 只静态读取 .java 文件并逐文件构建类型与方法模型，不编译也不运行上传代码。
+        // 只静态读取 .java 文件并逐文件构建类型与方法模型，不编译也不运行仓库代码。
         try (Stream<Path> files = Files.walk(root)) {
-            files.filter(Files::isRegularFile).filter(path -> path.toString().endsWith(".java"))
+            files.filter(Files::isRegularFile)
+                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(path -> path.toString().endsWith(".java"))
                     .forEach(file -> parseJavaFile(taskId, root, file, parser, program));
         }
         // Java AST 之外再从 Recon 文本块补充 MyBatis SQL 与模板 Sink。
@@ -136,9 +136,11 @@ public class LightweightSemanticAnalyzer {
     // 发现常见 Maven/Gradle 源码根目录，找不到时退回项目根目录。
     private List<Path> sourceRoots(Path root) throws IOException {
         List<Path> roots = new ArrayList<>();
-        // 兼容 Maven、Gradle 和多模块项目中形如 src/main/java、src/test/java 的源码目录。
+        // 只加入生产源码根，防止测试类型和测试调用关系污染跨文件语义图。
         try (Stream<Path> paths = Files.walk(root)) {
-            paths.filter(Files::isDirectory).filter(path -> {
+            paths.filter(Files::isDirectory)
+                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(path -> {
                         String value = normalized(path);
                         return value.endsWith("/java") && value.contains("/src/");
                     })
@@ -169,6 +171,11 @@ public class LightweightSemanticAnalyzer {
                 for (MethodDeclaration method : declaration.getMethods()) {
                     // 内部类型的方法会在其自己的 TypeDeclaration 轮次处理，这里避免被外层类型重复收集。
                     if (method.getParentNode().orElse(null) != declaration) continue;
+                    if (method.getAnnotations().stream()
+                            .map(annotation -> annotation.getNameAsString())
+                            .anyMatch(AuditSourceFilter::isTestMethodAnnotation)) {
+                        continue;
+                    }
                     // 用文件和行号寻找 Recon 阶段的 JAVA_METHOD Chunk，建立语义节点到真实证据的联系。
                     CodeChunk chunk = program.findChunk(relative, line(method), "JAVA_METHOD");
                     // 完整签名用于精确解析调用，符号求解失败时使用类名、方法名和参数类型回退。

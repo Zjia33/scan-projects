@@ -7,6 +7,7 @@ import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticSymbolMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -21,17 +22,11 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class SemanticEvidenceService {
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
     private final SemanticSymbolMapper symbolMapper;
-
-    public SemanticEvidenceService(SecurityFlowMapper flowMapper, SemanticCallEdgeMapper edgeMapper,
-                                   SemanticSymbolMapper symbolMapper) {
-        this.flowMapper = flowMapper;
-        this.edgeMapper = edgeMapper;
-        this.symbolMapper = symbolMapper;
-    }
 
     // 将语义安全流转换为只供 Orchestrator 调查的线索索引。
     public SemanticHints hints(UUID taskId) {

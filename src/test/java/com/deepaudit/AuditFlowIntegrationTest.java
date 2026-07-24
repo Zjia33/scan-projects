@@ -5,26 +5,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.eclipse.jgit.api.Git;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ActiveProfiles("test")
@@ -32,6 +32,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @Import(TestLlmConfiguration.class)
 class AuditFlowIntegrationTest {
+
+    @TempDir
+    Path temporaryDirectory;
 
     @Autowired
     private MockMvc mockMvc;
@@ -46,20 +49,30 @@ class AuditFlowIntegrationTest {
     private SecurityFlowMapper securityFlowMapper;
 
     @Test
-    void uploadsScansAndReportsVulnerableProject() throws Exception {
+    void importsGitCommitScansAndReportsVulnerableProject() throws Exception {
         String console = mockMvc.perform(get("/index.html"))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(console).contains("SECURITY POSTURE / LIVE", "选择或拖入项目压缩包", "审计任务");
+        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "增量比较 Base → Target", "审计任务");
 
-        MockMultipartFile zip = new MockMultipartFile(
-                "file", "vulnerable-demo.zip", "application/zip", vulnerableProjectZip());
+        Path repository = vulnerableProjectRepository();
+        String importJson = mockMvc.perform(post("/api/projects/git")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "漏洞演示项目", "repositoryUrl", repository.toUri().toString()))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode imported = objectMapper.readTree(importJson);
+        String projectId = imported.path("project").path("projectId").asText();
+        String targetCommit = imported.path("commits").path(0).path("sha").asText();
 
-        String uploadJson = mockMvc.perform(multipart("/api/projects/upload")
-                        .file(zip).param("name", "漏洞演示项目"))
+        String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "scanMode", "FULL", "targetCommit", targetCommit))))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        String taskId = objectMapper.readTree(uploadJson).path("taskId").asText();
+        String taskId = objectMapper.readTree(auditJson).path("taskId").asText();
 
         JsonNode task = waitForCompletion(taskId);
         assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
@@ -77,6 +90,7 @@ class AuditFlowIntegrationTest {
         assertThat(types).doesNotContain("HORIZONTAL_AUTHORIZATION", "VERTICAL_AUTHORIZATION");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
+        assertThat(findingsJson).contains("\"deltaStatus\":\"BASELINE\"");
 
         String report = mockMvc.perform(get("/api/tasks/{taskId}/report.html", taskId))
                 .andExpect(status().isOk())
@@ -97,8 +111,44 @@ class AuditFlowIntegrationTest {
         assertThat(jsonReport).contains("AI Agents 已完成", "agentRuns", "hypotheses");
     }
 
+    @Test
+    void comparesTwoCommitsAndLimitsAuditToIncrementalScope() throws Exception {
+        IncrementalRepository source = incrementalProjectRepository();
+        String importJson = mockMvc.perform(post("/api/projects/git")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "增量演示项目", "repositoryUrl", source.path().toUri().toString()))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        String projectId = objectMapper.readTree(importJson).path("project").path("projectId").asText();
+
+        String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "scanMode", "INCREMENTAL", "baseCommit", source.baseCommit(),
+                                "targetCommit", source.targetCommit()))))
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        String taskId = objectMapper.readTree(auditJson).path("taskId").asText();
+
+        JsonNode task = waitForCompletion(taskId);
+        assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
+        assertThat(task.path("scanMode").asText()).isEqualTo("INCREMENTAL");
+        assertThat(task.path("changeSummary").asText()).contains("1 个文件发生变化");
+
+        String changes = mockMvc.perform(get("/api/tasks/{taskId}/changes", taskId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(changes).contains("SearchController.java", "\"changeType\":\"MODIFY\"");
+
+        String findings = mockMvc.perform(get("/api/tasks/{taskId}/findings", taskId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(findings).contains("SQL_INJECTION", "\"deltaStatus\":\"NEW\"");
+    }
+
     private JsonNode waitForCompletion(String taskId) throws Exception {
-        Instant deadline = Instant.now().plus(Duration.ofSeconds(15));
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(25));
         JsonNode task = objectMapper.createObjectNode();
         while (Instant.now().isBefore(deadline)) {
             String json = mockMvc.perform(get("/api/tasks/{taskId}", taskId))
@@ -111,7 +161,7 @@ class AuditFlowIntegrationTest {
         return task;
     }
 
-    private byte[] vulnerableProjectZip() throws Exception {
+    private Path vulnerableProjectRepository() throws Exception {
         String source = """
                 package demo;
                 import org.springframework.web.bind.annotation.*;
@@ -147,15 +197,62 @@ class AuditFlowIntegrationTest {
                     }
                 }
                 """;
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
-            zip.putNextEntry(new ZipEntry("demo/src/main/java/demo/OrderController.java"));
-            zip.write(source.getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
-            zip.putNextEntry(new ZipEntry("demo/src/main/resources/templates/comment.html"));
-            zip.write("<div v-html=\"comment.content\"></div>".getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
+        Path repository = temporaryDirectory.resolve("vulnerable-demo");
+        Path javaFile = repository.resolve("src/main/java/demo/OrderController.java");
+        Path template = repository.resolve("src/main/resources/templates/comment.html");
+        Files.createDirectories(javaFile.getParent());
+        Files.createDirectories(template.getParent());
+        Files.writeString(javaFile, source, StandardCharsets.UTF_8);
+        Files.writeString(template, "<div v-html=\"comment.content\"></div>", StandardCharsets.UTF_8);
+        try (Git git = Git.init().setDirectory(repository.toFile()).call()) {
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("initial vulnerable project")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call();
         }
-        return bytes.toByteArray();
+        return repository;
+    }
+
+    private IncrementalRepository incrementalProjectRepository() throws Exception {
+        Path repository = temporaryDirectory.resolve("incremental-demo");
+        Path source = repository.resolve("src/main/java/demo/SearchController.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, """
+                package demo;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                class SearchController {
+                    @GetMapping("/search")
+                    Object search(String keyword) {
+                        return repository.findByName(keyword);
+                    }
+                }
+                """, StandardCharsets.UTF_8);
+        try (Git git = Git.init().setDirectory(repository.toFile()).call()) {
+            git.add().addFilepattern(".").call();
+            String base = git.commit().setMessage("safe baseline")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            Files.writeString(source, """
+                    package demo;
+                    import org.springframework.web.bind.annotation.*;
+                    @RestController
+                    class SearchController {
+                        @GetMapping("/search")
+                        Object search(String keyword) {
+                            String sql = "SELECT * FROM users WHERE name='" + keyword + "'";
+                            return statement.execute(sql);
+                        }
+                    }
+                    """, StandardCharsets.UTF_8);
+            git.add().addFilepattern(".").call();
+            String target = git.commit().setMessage("introduce dynamic query")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            return new IncrementalRepository(repository, base, target);
+        }
+    }
+
+    private record IncrementalRepository(Path path, String baseCommit, String targetCommit) {
     }
 }

@@ -12,4 +12,5 @@ public interface CodeChunkMapper {
     long countByTaskId(@Param("taskId") UUID taskId);
     int deleteByTaskId(@Param("taskId") UUID taskId);
     int insertBatch(@Param("chunks") List<CodeChunk> chunks);
+    int updateIncrementalMetadata(CodeChunk chunk);
 }

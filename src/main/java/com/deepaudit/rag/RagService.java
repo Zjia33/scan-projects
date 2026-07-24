@@ -2,46 +2,72 @@ package com.deepaudit.rag;
 
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.mapper.CodeChunkMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class RagService {
 
     private final CodeChunkMapper chunkMapper;
     private final EmbeddingService embeddingService;
-
-    public RagService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService) {
-        this.chunkMapper = chunkMapper;
-        this.embeddingService = embeddingService;
-    }
+    private final VectorRecallStore vectorRecallStore;
 
     public List<CodeChunk> retrieve(UUID taskId, String query, int limit) {
         return retrieve(chunkMapper.findByTaskId(taskId), query, limit);
     }
 
     public List<CodeChunk> retrieve(List<CodeChunk> chunks, String query, int limit) {
-        return retrieveDetailed(chunks, new RetrievalRequest(null, null, query, null, null, Set.of(), limit))
+        UUID taskId = chunks.stream().map(CodeChunk::getTaskId).filter(java.util.Objects::nonNull)
+                .findFirst().orElse(null);
+        return retrieveDetailed(chunks, new RetrievalRequest(taskId, null, query, null, null, Set.of(), limit))
                 .stream().map(RetrievedCode::chunk).toList();
     }
 
-    // 结合向量、关键词和结构关系召回候选代码块，并限制最低相关度。
+    // 先由向量存储召回近邻，再用关键词和确定性结构关系重排候选代码块。
     public List<RetrievedCode> retrieveDetailed(List<CodeChunk> chunks, RetrievalRequest request) {
-        if (request.query() == null || request.query().isBlank()) return List.of();
+        if (request.query() == null || request.query().isBlank() || chunks.isEmpty()) return List.of();
         int limit = Math.max(1, Math.min(request.limit(), 20));
         double[] queryVector = embeddingService.embed(request.query());
         Set<String> keywords = tokenize(request.query());
-        return chunks.stream()
+        UUID taskId = request.taskId() != null ? request.taskId() : chunks.get(0).getTaskId();
+        int vectorCandidateLimit = Math.min(200, Math.max(40, limit * 8));
+        List<VectorRecallStore.VectorMatch> vectorMatches = vectorRecallStore.search(
+                chunks, taskId, request.currentChunkId(), queryVector, vectorCandidateLimit);
+        Map<Long, Double> vectorScores = vectorMatches.stream().collect(Collectors.toMap(
+                VectorRecallStore.VectorMatch::chunkId,
+                VectorRecallStore.VectorMatch::cosineSimilarity,
+                Math::max, LinkedHashMap::new));
+
+        Map<Long, CodeChunk> chunksById = chunks.stream()
+                .filter(chunk -> chunk.getId() != null)
+                .collect(Collectors.toMap(CodeChunk::getId, chunk -> chunk,
+                        (left, right) -> left, LinkedHashMap::new));
+        Map<Long, CodeChunk> candidates = new LinkedHashMap<>();
+        vectorMatches.forEach(match -> {
+            CodeChunk chunk = chunksById.get(match.chunkId());
+            if (chunk != null) candidates.putIfAbsent(chunk.getId(), chunk);
+        });
+        // 向量近邻之外补入同文件、同接口和精确符号关系，避免 ANN 过滤丢失确定性上下文。
+        chunks.stream()
+                .filter(chunk -> chunk.getId() != null)
                 .filter(chunk -> request.currentChunkId() == null || !request.currentChunkId().equals(chunk.getId()))
-                .map(chunk -> score(chunk, request, queryVector, keywords))
+                .filter(chunk -> hasStructuralRelation(chunk, request))
+                .forEach(chunk -> candidates.putIfAbsent(chunk.getId(), chunk));
+
+        return candidates.values().stream()
+                .map(chunk -> score(chunk, request, vectorScores.getOrDefault(chunk.getId(), 0.0), keywords))
                 .filter(scored -> scored.score() >= 0.03)
                 .sorted(Comparator.comparingDouble(RetrievedCode::score).reversed())
                 .limit(limit)
@@ -50,11 +76,8 @@ public class RagService {
 
     // 以结构关系为主计算候选分数，同时记录可解释的命中原因。
     private RetrievedCode score(CodeChunk chunk, RetrievalRequest request,
-                                double[] queryVector, Set<String> keywords) {
-        double cosine = cosine(queryVector, embeddingService.deserialize(chunk.getEmbedding()));
-        String haystack = (chunk.getFilePath() + " " + chunk.getSymbolName() + " " + chunk.getEndpoint()
-                + " " + chunk.getParameters() + " " + chunk.getAnnotations() + " "
-                + chunk.getCalledSymbols() + " " + chunk.getContent()).toLowerCase(Locale.ROOT);
+                                double cosine, Set<String> keywords) {
+        String haystack = searchableText(chunk);
         long matches = keywords.stream().filter(word -> haystack.contains(word)).count();
         double lexical = keywords.isEmpty() ? 0
                 : Math.min((double) matches / Math.min(6, keywords.size()), 1.0);
@@ -84,19 +107,18 @@ public class RagService {
                         + (reasons.isEmpty() ? "向量相似" : String.join("、", new LinkedHashSet<>(reasons))));
     }
 
-    // 计算查询向量与代码块向量的余弦相似度。
-    private double cosine(double[] left, double[] right) {
-        int length = Math.min(left.length, right.length);
-        double dot = 0;
-        double leftNorm = 0;
-        double rightNorm = 0;
-        for (int index = 0; index < length; index++) {
-            dot += left[index] * right[index];
-            leftNorm += left[index] * left[index];
-            rightNorm += right[index] * right[index];
-        }
-        if (leftNorm == 0 || rightNorm == 0) return 0;
-        return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+    private boolean hasStructuralRelation(CodeChunk chunk, RetrievalRequest request) {
+        if (request.currentFile() != null && request.currentFile().equals(chunk.getFilePath())) return true;
+        if (request.endpoint() != null && request.endpoint().equals(chunk.getEndpoint())) return true;
+        String haystack = searchableText(chunk);
+        return request.symbols().stream()
+                .anyMatch(symbol -> !symbol.isBlank() && haystack.contains(symbol.toLowerCase(Locale.ROOT)));
+    }
+
+    private String searchableText(CodeChunk chunk) {
+        return (chunk.getFilePath() + " " + chunk.getSymbolName() + " " + chunk.getEndpoint()
+                + " " + chunk.getParameters() + " " + chunk.getAnnotations() + " "
+                + chunk.getCalledSymbols() + " " + chunk.getContent()).toLowerCase(Locale.ROOT);
     }
 
     // 拆分驼峰和非字母数字边界，形成去重的词法检索集合。

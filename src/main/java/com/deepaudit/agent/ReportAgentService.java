@@ -8,27 +8,23 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.AiReportSummary;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.mapper.AiReportSummaryMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class ReportAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
     private final AiReportSummaryMapper summaryMapper;
 
-    public ReportAgentService(LlmGateway llmGateway, AgentTraceService traceService,
-                              AiReportSummaryMapper summaryMapper) {
-        this.llmGateway = llmGateway;
-        this.traceService = traceService;
-        this.summaryMapper = summaryMapper;
-    }
-
     // 仅基于 Critic 已确认的发现生成管理摘要和覆盖说明。
     public AiReportSummary generate(UUID taskId, String projectName, LlmGateway.ReconInsight recon,
-                                    List<Finding> findings, int completedAgents, int rejectedHypotheses) {
+                                    List<Finding> findings, int completedAgents, int rejectedHypotheses,
+                                    String auditContext) {
         AgentRun run = traceService.start(taskId, AgentType.REPORT, null, "AI 审计报告");
         try {
             // 将最终发现压缩为报告模型所需的只读事实，禁止引入新漏洞。
@@ -39,7 +35,7 @@ public class ReportAgentService {
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.MODEL_CALL,
                     "正在将已通过 Critic 的发现整理为中文安全审计报告");
             LlmGateway.ReportNarrative narrative = llmGateway.writeReport(new LlmGateway.ReportRequest(
-                    taskId, projectName, recon, facts, completedAgents, rejectedHypotheses));
+                    taskId, projectName, recon, facts, completedAgents, rejectedHypotheses, auditContext));
             AiReportSummary summary = persist(taskId, narrative.executiveSummary(), narrative.coverageSummary());
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.COMPLETED,
                     "Report Agent 已基于 " + findings.size() + " 个确认问题生成报告摘要");
@@ -50,7 +46,7 @@ public class ReportAgentService {
             // 报告模型格式异常时使用确定性摘要，保留已确认结果而不伪造内容。
             AiReportSummary summary = persist(taskId,
                     "本次代码安全审计共确认 " + findings.size() + " 个问题，所有问题均已通过独立 Critic 证据复核。",
-                    "已完成项目侦察、智能规划、" + completedAgents + " 个专业 Agent 调查任务和反证检查；"
+                    auditContext + "。已完成项目侦察、智能规划、" + completedAgents + " 个专业 Agent 调查任务和反证检查；"
                             + rejectedHypotheses + " 个候选未进入最终报告。");
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.ERROR,
                     "Report Agent 返回格式异常，已使用确定性中文摘要完成报告");

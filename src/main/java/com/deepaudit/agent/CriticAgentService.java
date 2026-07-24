@@ -9,8 +9,11 @@ import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.HypothesisStatus;
 import com.deepaudit.domain.Severity;
+import com.deepaudit.domain.AnalysisScope;
+import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -19,20 +22,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class CriticAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
     private final AuditHypothesisMapper hypothesisMapper;
     private final SemanticEvidenceService semanticEvidenceService;
-
-    public CriticAgentService(LlmGateway llmGateway, AgentTraceService traceService,
-                              AuditHypothesisMapper hypothesisMapper,
-                              SemanticEvidenceService semanticEvidenceService) {
-        this.llmGateway = llmGateway;
-        this.traceService = traceService;
-        this.hypothesisMapper = hypothesisMapper;
-        this.semanticEvidenceService = semanticEvidenceService;
-    }
 
     // 用独立语义证据和全局安全控制反证候选，仅确认项可转换为 Finding。
     public Optional<Finding> review(UUID taskId, AgentCandidate candidate,
@@ -46,9 +41,13 @@ public class CriticAgentService {
             // Critic 直接读取持久化语义证据，避免只复述专业 Agent 的论证。
             String semanticEvidence = semanticEvidenceService.independentCriticEvidence(taskId,
                     candidate.proposal().primaryChunkId(), candidate.proposal().type());
+            CodeChunk primary = chunks.stream()
+                    .filter(chunk -> chunk.getId().equals(candidate.proposal().primaryChunkId()))
+                    .findFirst().orElseThrow(() -> new IllegalStateException("Critic 引用的主证据不存在"));
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
                     taskId, candidate.sourceAgent(), candidate.proposal(), candidate.evidence(),
-                    semanticEvidence, recon));
+                    semanticEvidence, recon, primary.getChangeType().name(), primary.getAnalysisScope().name(),
+                    primary.getBaseContent()));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
                     safe(decision.reason()));
             candidate.hypothesis().setCriticReason(decision.reason());
@@ -69,9 +68,6 @@ public class CriticAgentService {
             candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED);
             candidate.hypothesis().setConfidence(confidence);
             hypothesisMapper.update(candidate.hypothesis());
-            CodeChunk primary = chunks.stream()
-                    .filter(chunk -> chunk.getId().equals(candidate.proposal().primaryChunkId()))
-                    .findFirst().orElseThrow(() -> new IllegalStateException("Critic 引用的主证据不存在"));
             LlmGateway.FindingProposal proposal = candidate.proposal();
             Finding finding = new Finding(taskId, proposal.type(),
                     proposal.severity() == null ? Severity.HIGH : proposal.severity(), confidence,
@@ -80,6 +76,10 @@ public class CriticAgentService {
                     safeText(proposal.description()) + "\n\nCritic Agent 复核：" + safeText(decision.reason()),
                     reportEvidence(candidate.evidence()),
                     safeText(proposal.remediation()));
+            finding.setDeltaStatus(decision.deltaStatus() == null
+                    ? fallbackDeltaStatus(primary) : decision.deltaStatus());
+            finding.setFingerprint(fingerprint(proposal.type().name(), primary.getFilePath(),
+                    primary.getSymbolName(), primary.getEndpoint()));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.FINDING,
                     "确认 " + proposal.type().getDisplayName() + "：" + proposal.title());
             run.complete("Critic Agent 已确认漏洞证据链");
@@ -95,6 +95,13 @@ public class CriticAgentService {
 
     private Confidence fallbackConfidence(Confidence value) {
         return value == null ? Confidence.MEDIUM : value;
+    }
+
+    private FindingDeltaStatus fallbackDeltaStatus(CodeChunk primary) {
+        if (primary.getAnalysisScope() == AnalysisScope.IMPACTED) return FindingDeltaStatus.AFFECTED;
+        if (primary.getAnalysisScope() != AnalysisScope.CHANGED) return FindingDeltaStatus.BASELINE;
+        return primary.getChangeType() == com.deepaudit.domain.ChunkChangeType.ADDED
+                ? FindingDeltaStatus.NEW : FindingDeltaStatus.AFFECTED;
     }
 
     private String truncate(String value, int length) {
@@ -115,5 +122,17 @@ public class CriticAgentService {
         if (value == null) return "";
         int semanticFlow = value.indexOf("\n\n[SEMANTIC_FLOW]\n");
         return (semanticFlow < 0 ? value : value.substring(0, semanticFlow)).stripTrailing();
+    }
+
+    private String fingerprint(String type, String path, String symbol, String endpoint) {
+        String normalized = String.join("|", type, path == null ? "" : path.replace('\\', '/'),
+                symbol == null ? "" : symbol, endpoint == null ? "" : endpoint);
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法生成漏洞稳定指纹", exception);
+        }
     }
 }

@@ -74,7 +74,8 @@ class RemoteLlmGatewayTest {
 
     private LlmGateway.AgentTurn turn() {
         LlmGateway.Target target = new LlmGateway.Target(1001L, "UserController.java", "search", "/search",
-                "JAVA_METHOD", "String name", "@GetMapping", "queryForList", "return query(name);", List.of());
+                "JAVA_METHOD", "String name", "@GetMapping", "queryForList", "return query(name);",
+                "MODIFIED", "CHANGED", "", List.of());
         LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight("Spring MVC", List.of("/search"),
                 List.of(), List.of("动态 SQL"));
         return new LlmGateway.AgentTurn(UUID.randomUUID(), AgentType.SQL_INJECTION,

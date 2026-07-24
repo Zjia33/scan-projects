@@ -1,7 +1,7 @@
 package com.deepaudit.recon;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.deepaudit.source.AuditSourceFilter;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,8 +12,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
+@Slf4j
 final class ProjectTechnologyDetector {
-    private static final Logger log = LoggerFactory.getLogger(ProjectTechnologyDetector.class);
     private static final long MAX_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_EVIDENCE = 80;
     private static final Set<String> INSPECTED_EXTENSIONS = Set.of(
@@ -25,7 +25,10 @@ final class ProjectTechnologyDetector {
     TechnologyProfile detect(Path root) {
         Detection detection = new Detection(root);
         try (Stream<Path> paths = Files.walk(root)) {
-            paths.filter(Files::isRegularFile).filter(this::isInspectable).forEach(detection::inspect);
+            paths.filter(Files::isRegularFile)
+                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(this::isInspectable)
+                    .forEach(detection::inspect);
         } catch (IOException exception) {
             log.warn("项目技术栈探测未完整执行: {}", root, exception);
         }

@@ -6,19 +6,33 @@
         <result column="name" property="name"/>
         <result column="original_filename" property="originalFilename"/>
         <result column="storage_path" property="storagePath"/>
+        <result column="source_type" property="sourceType" javaType="com.deepaudit.domain.ProjectSourceType"/>
+        <result column="repository_url" property="repositoryUrl"/>
+        <result column="default_branch" property="defaultBranch"/>
         <result column="created_at" property="createdAt"/>
     </resultMap>
 
-    <sql id="columns">id, name, original_filename, storage_path, created_at</sql>
+    <sql id="columns">
+        id, name, original_filename, storage_path, source_type, repository_url, default_branch, created_at
+    </sql>
 
     <insert id="insert" parameterType="com.deepaudit.domain.Project">
-        INSERT INTO audit_project (id, name, original_filename, storage_path, created_at)
-        VALUES (#{id}, #{name}, #{originalFilename}, #{storagePath}, #{createdAt})
+        INSERT INTO audit_project
+            (id, name, original_filename, storage_path, source_type, repository_url, default_branch, created_at)
+        VALUES
+            (#{id}, #{name}, #{originalFilename}, #{storagePath}, #{sourceType},
+             #{repositoryUrl}, #{defaultBranch}, #{createdAt})
     </insert>
 
     <select id="findById" resultMap="ProjectResultMap">
         SELECT <include refid="columns"/>
         FROM audit_project
         WHERE id = #{id}
+    </select>
+
+    <select id="findAllOrderByCreatedAtDesc" resultMap="ProjectResultMap">
+        SELECT <include refid="columns"/>
+        FROM audit_project
+        ORDER BY created_at DESC
     </select>
 </mapper>

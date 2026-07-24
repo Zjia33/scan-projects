@@ -1,39 +1,44 @@
 package com.deepaudit.domain;
 
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
 import java.time.Instant;
 import java.util.UUID;
 
+@Getter
+@Setter
+@NoArgsConstructor
 public class Project {
 
     private UUID id;
     private String name;
     private String originalFilename;
     private String storagePath;
+    private ProjectSourceType sourceType;
+    private String repositoryUrl;
+    private String defaultBranch;
     private Instant createdAt;
-
-    public Project() {
-    }
 
     public Project(String name, String originalFilename, String storagePath) {
         this(UUID.randomUUID(), name, originalFilename, storagePath);
     }
 
     public Project(UUID id, String name, String originalFilename, String storagePath) {
+        this(id, name, originalFilename, storagePath, ProjectSourceType.ZIP, null, null);
+    }
+
+    public Project(UUID id, String name, String originalFilename, String storagePath,
+                   ProjectSourceType sourceType, String repositoryUrl, String defaultBranch) {
         this.id = id;
         this.name = name;
         this.originalFilename = originalFilename;
         this.storagePath = storagePath;
+        this.sourceType = sourceType;
+        this.repositoryUrl = repositoryUrl;
+        this.defaultBranch = defaultBranch;
         this.createdAt = Instant.now();
     }
 
-    public UUID getId() { return id; }
-    public String getName() { return name; }
-    public String getOriginalFilename() { return originalFilename; }
-    public String getStoragePath() { return storagePath; }
-    public Instant getCreatedAt() { return createdAt; }
-    public void setId(UUID id) { this.id = id; }
-    public void setName(String name) { this.name = name; }
-    public void setOriginalFilename(String originalFilename) { this.originalFilename = originalFilename; }
-    public void setStoragePath(String storagePath) { this.storagePath = storagePath; }
-    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

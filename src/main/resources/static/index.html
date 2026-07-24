@@ -6,7 +6,7 @@
     <meta name="description" content="DeepAudit Java 多 Agent 代码安全审计控制台">
     <title>DeepAudit / 智能代码审计控制台</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2311140f'/%3E%3Cpath d='M13 14h18c13 0 20 7 20 18S44 50 31 50H13V14zm11 10v16h7c6 0 9-3 9-8s-3-8-9-8h-7z' fill='%23c9ff45'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260716-1">
+    <link rel="stylesheet" href="/styles.css?v=20260723-1">
 </head>
 <body>
 <div class="grain" aria-hidden="true"></div>
@@ -43,7 +43,7 @@
                         <p class="kicker">SECURITY POSTURE / LIVE</p>
                         <h1>代码风险<br><em>检测</em></h1>
                     </div>
-                    <!-- <p class="intro-copy">从 ZIP 中提取代码事实，识别框架与安全组件，沿跨文件调用链展开多 Agent 调查，并只报告通过 Critic 反证复核的问题。</p> -->
+                    <!-- <p class="intro-copy">从 Git 提交中提取代码事实，识别框架与安全组件，沿跨文件调用链展开多 Agent 调查，并只报告通过 Critic 反证复核的问题。</p> -->
                 </div>
 
                 <div class="metric-grid" aria-label="审计统计">
@@ -81,21 +81,54 @@
             <section id="new-audit" class="page-section new-audit-section">
                 <div class="section-heading">
                     <div><p class="kicker">NEW INVESTIGATION</p><h2>新建代码审计</h2></div>
-                    <p>上传 ZIP，进行项目代码漏洞审计。</p>
+                    <p>只读导入 Git 仓库，选择单个提交全量扫描，或选择 Base/Target 执行增量安全审计。</p>
                 </div>
-                <form id="upload-form" class="upload-console">
+                <form id="git-import-form" class="git-console">
                     <div class="field-group">
                         <label for="project-name">项目名称</label>
-                        <input id="project-name" name="name" maxlength="200" placeholder="例如：订单中心 2026-Q3">
+                        <input id="project-name" name="name" maxlength="200" placeholder="例如：订单中心">
                     </div>
-                    <label id="drop-zone" class="drop-zone" for="zip-file">
-                        <input id="zip-file" name="file" type="file" accept=".zip,application/zip" required>
-                        <span class="drop-index">ZIP</span>
-                        <span class="drop-copy"><strong id="file-label">选择或拖入项目压缩包</strong><small>最大 200MB · Java / Spring 项目</small></span>
-                        <b>浏览文件 ↗</b>
-                    </label>
+                    <div class="field-group repository-url-field">
+                        <label for="repository-url">HTTPS Git 仓库地址</label>
+                        <input id="repository-url" name="repositoryUrl" type="url"
+                               placeholder="https://github.com/owner/repository.git" required>
+                    </div>
+                    <div class="field-group">
+                        <label for="git-username">Git 用户名（可选）</label>
+                        <input id="git-username" name="username" autocomplete="username" placeholder="私有仓库可填写">
+                    </div>
+                    <div class="field-group">
+                        <label for="git-token">访问令牌（仅本次请求使用）</label>
+                        <input id="git-token" name="accessToken" type="password"
+                               autocomplete="off" placeholder="不会保存或回显">
+                    </div>
+                    <button id="import-button" type="submit"><span>读取仓库和提交</span><b>IMPORT →</b></button>
+                    <p id="git-message" class="form-message" role="status"></p>
+                </form>
+
+                <form id="audit-form" class="audit-console">
+                    <div class="field-group">
+                        <label for="repository-select">已导入仓库</label>
+                        <select id="repository-select" required><option value="">请选择仓库</option></select>
+                    </div>
+                    <div class="field-group">
+                        <label for="scan-mode">扫描模式</label>
+                        <select id="scan-mode">
+                            <option value="FULL">全量扫描 Target</option>
+                            <option value="INCREMENTAL">增量比较 Base → Target</option>
+                        </select>
+                    </div>
+                    <div id="base-commit-group" class="field-group hidden">
+                        <label for="base-commit">Base Commit</label>
+                        <select id="base-commit"></select>
+                    </div>
+                    <div class="field-group">
+                        <label for="target-commit">Target Commit</label>
+                        <select id="target-commit" required></select>
+                    </div>
+                    <button id="refresh-commits-button" class="secondary-action" type="button">刷新提交</button>
                     <button id="submit-button" type="submit"><span>启动多 Agent 审计</span><b>RUN AUDIT →</b></button>
-                    <p id="upload-message" class="form-message" role="status"></p>
+                    <p id="audit-message" class="form-message" role="status"></p>
                 </form>
             </section>
 
@@ -121,6 +154,6 @@
         <footer><span>DEEPAUDIT JAVA / DEVELOPMENT BUILD</span><span>AI 结论需要人工复核</span></footer>
     </div>
 </div>
-<script src="/app.js?v=20260716-1" defer></script>
+<script src="/app.js?v=20260723-1" defer></script>
 </body>
 </html>

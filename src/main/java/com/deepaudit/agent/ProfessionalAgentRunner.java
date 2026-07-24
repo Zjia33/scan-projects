@@ -3,8 +3,7 @@ package com.deepaudit.agent;
 import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.CodeChunk;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -16,10 +15,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 
+@Slf4j
 @Service
 public class ProfessionalAgentRunner {
-    private static final Logger log = LoggerFactory.getLogger(ProfessionalAgentRunner.class);
-
     private final AgentRuntime agentRuntime;
     private final Executor executor;
 

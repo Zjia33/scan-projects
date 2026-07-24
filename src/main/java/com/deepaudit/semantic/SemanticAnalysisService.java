@@ -4,8 +4,7 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticSymbolMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -14,10 +13,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
+@Slf4j
 @Service
 public class SemanticAnalysisService {
-    private static final Logger log = LoggerFactory.getLogger(SemanticAnalysisService.class);
-
     private final SemanticAnalysisProperties properties;
     private final LightweightSemanticAnalyzer analyzer;
     private final SemanticSymbolMapper symbolMapper;

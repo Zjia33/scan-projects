@@ -2,6 +2,7 @@ package com.deepaudit.agent;
 
 import com.deepaudit.domain.AgentEvent;
 import com.deepaudit.mapper.AgentEventMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -12,16 +13,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 @Service
+@RequiredArgsConstructor
 public class AgentEventStreamService {
     private static final long STREAM_TIMEOUT_MILLIS = 30L * 60L * 1_000L;
 
     private final AgentEventMapper eventMapper;
     private final ConcurrentHashMap<UUID, CopyOnWriteArrayList<SseEmitter>> subscribers =
             new ConcurrentHashMap<>();
-
-    public AgentEventStreamService(AgentEventMapper eventMapper) {
-        this.eventMapper = eventMapper;
-    }
 
     // 注册任务级 SSE 订阅并先回放已持久化事件，避免连接前的日志缺失。
     public SseEmitter subscribe(UUID taskId) {

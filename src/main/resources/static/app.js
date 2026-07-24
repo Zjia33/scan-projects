@@ -1,6 +1,8 @@
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 const state = {
     tasks: [],
+    repositories: [],
+    commits: [],
     selectedTaskId: null,
     renderedTaskId: null,
     renderedFindingCount: -1,
@@ -14,11 +16,20 @@ const state = {
 };
 
 const elements = {
-    form: document.querySelector('#upload-form'),
-    file: document.querySelector('#zip-file'),
-    fileLabel: document.querySelector('#file-label'),
-    dropZone: document.querySelector('#drop-zone'),
-    message: document.querySelector('#upload-message'),
+    importForm: document.querySelector('#git-import-form'),
+    auditForm: document.querySelector('#audit-form'),
+    repositorySelect: document.querySelector('#repository-select'),
+    repositoryUrl: document.querySelector('#repository-url'),
+    gitUsername: document.querySelector('#git-username'),
+    gitToken: document.querySelector('#git-token'),
+    scanMode: document.querySelector('#scan-mode'),
+    baseCommitGroup: document.querySelector('#base-commit-group'),
+    baseCommit: document.querySelector('#base-commit'),
+    targetCommit: document.querySelector('#target-commit'),
+    importMessage: document.querySelector('#git-message'),
+    auditMessage: document.querySelector('#audit-message'),
+    importButton: document.querySelector('#import-button'),
+    refreshCommits: document.querySelector('#refresh-commits-button'),
     submit: document.querySelector('#submit-button'),
     refresh: document.querySelector('#refresh-button'),
     taskList: document.querySelector('#task-list'),
@@ -31,56 +42,140 @@ const elements = {
     metricModelCalls: document.querySelector('#metric-model-calls')
 };
 
-elements.file.addEventListener('change', () => {
-    elements.fileLabel.textContent = elements.file.files[0]?.name || '选择或拖入项目压缩包';
+elements.importForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    elements.importButton.disabled = true;
+    showImportMessage('正在只读克隆仓库并读取提交记录…');
+    try {
+        const data = new FormData(elements.importForm);
+        const response = await fetchJson('/api/projects/git', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.fromEntries(data.entries()))
+        });
+        elements.gitToken.value = '';
+        await loadRepositories(response.project.projectId);
+        populateCommits(response.commits);
+        showImportMessage(response.message);
+    } catch (error) {
+        showImportMessage(error.message, true);
+    } finally {
+        elements.importButton.disabled = false;
+    }
 });
 
-['dragenter', 'dragover'].forEach(type => elements.dropZone.addEventListener(type, event => {
+elements.auditForm.addEventListener('submit', async event => {
     event.preventDefault();
-    elements.dropZone.classList.add('dragging');
-}));
-['dragleave', 'drop'].forEach(type => elements.dropZone.addEventListener(type, event => {
-    event.preventDefault();
-    elements.dropZone.classList.remove('dragging');
-}));
-elements.dropZone.addEventListener('drop', event => {
-    const file = event.dataTransfer.files[0];
-    if (!file) return;
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    elements.file.files = transfer.files;
-    elements.fileLabel.textContent = file.name;
-});
-
-elements.form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const file = elements.file.files[0];
-    if (!file || !file.name.toLowerCase().endsWith('.zip')) {
-        showMessage('请选择 ZIP 文件。', true);
+    const projectId = elements.repositorySelect.value;
+    const targetCommit = elements.targetCommit.value;
+    const incremental = elements.scanMode.value === 'INCREMENTAL';
+    const baseCommit = incremental ? elements.baseCommit.value : null;
+    if (!projectId || !targetCommit || (incremental && !baseCommit)) {
+        showAuditMessage('请选择仓库和提交范围。', true);
         return;
     }
     elements.submit.disabled = true;
-    showMessage('正在上传并创建审计任务…');
+    showAuditMessage('正在创建 Git 审计任务…');
     try {
-        const response = await fetchJson('/api/projects/upload', {
+        const response = await fetchJson(`/api/projects/${projectId}/audits`, {
             method: 'POST',
-            body: new FormData(elements.form)
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scanMode: elements.scanMode.value, baseCommit, targetCommit })
         });
         state.selectedTaskId = response.taskId;
         state.renderedTaskId = null;
-        showMessage(response.message);
-        elements.form.reset();
-        elements.fileLabel.textContent = '选择或拖入项目压缩包';
+        showAuditMessage(response.message);
         await loadTasks(true);
         document.querySelector('#audit-workspace').scrollIntoView({ behavior: 'smooth' });
     } catch (error) {
-        showMessage(error.message, true);
+        showAuditMessage(error.message, true);
     } finally {
         elements.submit.disabled = false;
     }
 });
 
+elements.repositorySelect.addEventListener('change', () => loadCommits());
+elements.scanMode.addEventListener('change', updateScanMode);
+elements.refreshCommits.addEventListener('click', () => refreshCommits());
 elements.refresh.addEventListener('click', () => loadTasks(true));
+
+async function loadRepositories(selectedProjectId = null) {
+    state.repositories = await fetchJson('/api/projects');
+    elements.repositorySelect.replaceChildren(new Option('请选择仓库', ''));
+    state.repositories.forEach(repository => {
+        const option = new Option(`${repository.name} / ${repository.defaultBranch}`, repository.projectId);
+        elements.repositorySelect.add(option);
+    });
+    const selected = selectedProjectId || elements.repositorySelect.value || state.repositories[0]?.projectId;
+    if (selected) {
+        elements.repositorySelect.value = selected;
+        await loadCommits();
+    } else {
+        populateCommits([]);
+    }
+}
+
+async function loadCommits() {
+    const projectId = elements.repositorySelect.value;
+    if (!projectId) {
+        populateCommits([]);
+        return;
+    }
+    try {
+        populateCommits(await fetchJson(`/api/projects/${projectId}/commits?limit=200`));
+    } catch (error) {
+        showAuditMessage(error.message, true);
+    }
+}
+
+async function refreshCommits() {
+    const projectId = elements.repositorySelect.value;
+    if (!projectId) return showAuditMessage('请先选择仓库。', true);
+    elements.refreshCommits.disabled = true;
+    try {
+        const commits = await fetchJson(`/api/projects/${projectId}/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: elements.gitUsername.value, accessToken: elements.gitToken.value })
+        });
+        elements.gitToken.value = '';
+        populateCommits(commits);
+        showAuditMessage('提交记录已刷新。');
+    } catch (error) {
+        showAuditMessage(error.message, true);
+    } finally {
+        elements.refreshCommits.disabled = false;
+    }
+}
+
+function populateCommits(commits) {
+    state.commits = commits || [];
+    elements.targetCommit.replaceChildren();
+    elements.baseCommit.replaceChildren();
+    state.commits.forEach(commit => {
+        const label = `${commit.shortSha} · ${commit.message} · ${formatTime(commit.committedAt)}`;
+        elements.targetCommit.add(new Option(label, commit.sha));
+        elements.baseCommit.add(new Option(label, commit.sha));
+    });
+    if (state.commits.length > 1) elements.baseCommit.selectedIndex = 1;
+    updateScanMode();
+}
+
+function updateScanMode() {
+    const incremental = elements.scanMode.value === 'INCREMENTAL';
+    elements.baseCommitGroup.classList.toggle('hidden', !incremental);
+    elements.baseCommit.required = incremental;
+}
+
+function showImportMessage(message, error = false) {
+    elements.importMessage.textContent = message;
+    elements.importMessage.style.color = error ? '#ff8b70' : '#c9ff45';
+}
+
+function showAuditMessage(message, error = false) {
+    elements.auditMessage.textContent = message;
+    elements.auditMessage.style.color = error ? '#ff8b70' : '#c9ff45';
+}
 
 async function fetchJson(url, options) {
     const response = await fetch(url, options);
@@ -191,7 +286,10 @@ function buildTaskDetail(task, findings, agents, events) {
     head.className = 'detail-head';
     const title = document.createElement('div');
     title.append(node('h3', '', task.projectName),
-        node('p', '', `${task.originalFilename} / ${formatTime(task.createdAt)}`));
+        node('p', '', `${task.scanMode === 'INCREMENTAL' ? '增量' : '全量'} · `
+            + `${task.baseCommit ? `${task.baseCommit.slice(0, 8)} → ` : ''}`
+            + `${task.targetCommit?.slice(0, 8) || '—'} / ${formatTime(task.createdAt)}`),
+        node('p', '', task.changeSummary || task.repositoryUrl || ''));
     const report = document.createElement(task.status === 'COMPLETED' ? 'a' : 'span');
     report.className = `report-link${task.status === 'COMPLETED' ? '' : ' disabled'}`;
     report.textContent = task.status === 'COMPLETED' ? '打开中文报告 ↗' : '报告生成中';
@@ -319,7 +417,8 @@ function findingCard(finding) {
     const summary = document.createElement('summary');
     summary.className = 'finding-summary';
     summary.append(node('i', `severity-dot ${finding.severity}`, ''), node('strong', '', finding.title),
-        node('small', '', `${severityText(finding.severity)} / 可信度${confidenceText(finding.confidence)}`));
+        node('small', '', `${severityText(finding.severity)} / 可信度${confidenceText(finding.confidence)}`
+            + ` / ${deltaStatusText(finding.deltaStatus)}`));
     const body = document.createElement('div');
     body.className = 'finding-body';
     body.append(node('p', '', `${finding.filePath}:${finding.startLine}${finding.endpoint ? ` · ${finding.endpoint}` : ''}`));
@@ -518,15 +617,17 @@ function confidenceText(value) {
     return ({ HIGH: '高', MEDIUM: '中', LOW: '低' })[value] || value;
 }
 
+function deltaStatusText(value) {
+    return ({
+        BASELINE: '全量基线', NEW: '变更新增', REGRESSED: '安全回归',
+        PERSISTING: '持续存在', AFFECTED: '变更影响'
+    })[value] || '未分类';
+}
+
 function formatTime(value) {
     return value ? new Intl.DateTimeFormat('zh-CN', {
         year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
     }).format(new Date(value)) : '—';
-}
-
-function showMessage(message, error = false) {
-    elements.message.textContent = message;
-    elements.message.style.color = error ? '#ff8b70' : '#c9ff45';
 }
 
 document.querySelectorAll('.side-nav a').forEach(link => link.addEventListener('click', () => {
@@ -535,5 +636,6 @@ document.querySelectorAll('.side-nav a').forEach(link => link.addEventListener('
 }));
 
 window.addEventListener('beforeunload', closeEventStream);
+loadRepositories().catch(error => showAuditMessage(`无法读取仓库：${error.message}`, true));
 loadTasks();
 state.poller = setInterval(loadTasks, 4000);

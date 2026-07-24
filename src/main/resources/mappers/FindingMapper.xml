@@ -15,12 +15,14 @@
         <result column="description" property="description"/>
         <result column="evidence" property="evidence"/>
         <result column="remediation" property="remediation"/>
+        <result column="delta_status" property="deltaStatus" javaType="com.deepaudit.domain.FindingDeltaStatus"/>
+        <result column="fingerprint" property="fingerprint"/>
         <result column="created_at" property="createdAt"/>
     </resultMap>
 
     <sql id="columns">
         id, task_id, type, severity, confidence, title, file_path, start_line, end_line,
-        endpoint, description, evidence, remediation, created_at
+        endpoint, description, evidence, remediation, delta_status, fingerprint, created_at
     </sql>
 
     <select id="findByTaskIdOrderByRisk" resultMap="FindingResultMap">
@@ -46,12 +48,13 @@
     <insert id="insertBatch">
         INSERT INTO finding
             (id, task_id, type, severity, confidence, title, file_path, start_line, end_line,
-             endpoint, description, evidence, remediation, created_at)
+             endpoint, description, evidence, remediation, delta_status, fingerprint, created_at)
         VALUES
         <foreach collection="findings" item="finding" separator=",">
             (#{finding.id}, #{finding.taskId}, #{finding.type}, #{finding.severity}, #{finding.confidence},
              #{finding.title}, #{finding.filePath}, #{finding.startLine}, #{finding.endLine},
              #{finding.endpoint}, #{finding.description}, #{finding.evidence}, #{finding.remediation},
+             #{finding.deltaStatus}, #{finding.fingerprint},
              #{finding.createdAt})
         </foreach>
     </insert>

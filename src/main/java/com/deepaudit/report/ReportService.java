@@ -12,12 +12,15 @@ import com.deepaudit.mapper.ProjectMapper;
 import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
+import com.deepaudit.mapper.GitFileChangeMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class ReportService {
 
     private final AuditTaskMapper taskMapper;
@@ -26,20 +29,7 @@ public class ReportService {
     private final AgentRunMapper agentRunMapper;
     private final AuditHypothesisMapper hypothesisMapper;
     private final AiReportSummaryMapper summaryMapper;
-
-    public ReportService(AuditTaskMapper taskMapper,
-                         ProjectMapper projectMapper,
-                         FindingMapper findingMapper,
-                         AgentRunMapper agentRunMapper,
-                         AuditHypothesisMapper hypothesisMapper,
-                         AiReportSummaryMapper summaryMapper) {
-        this.taskMapper = taskMapper;
-        this.projectMapper = projectMapper;
-        this.findingMapper = findingMapper;
-        this.agentRunMapper = agentRunMapper;
-        this.hypothesisMapper = hypothesisMapper;
-        this.summaryMapper = summaryMapper;
-    }
+    private final GitFileChangeMapper changeMapper;
 
     // 聚合任务、项目、确认发现、Agent 轨迹和假设为完整报告模型。
     public AuditReport report(UUID taskId) {
@@ -49,7 +39,7 @@ public class ReportService {
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + task.getProjectId());
         return new AuditReport(project, task, summaryMapper.findByTaskId(taskId),
                 findings(taskId), agentRunMapper.findByTaskId(taskId),
-                hypothesisMapper.findByTaskId(taskId));
+                hypothesisMapper.findByTaskId(taskId), changeMapper.findByTaskId(taskId));
     }
 
     // 查询风险排序后的发现，并移除不面向用户展示的内部证据段。
@@ -67,7 +57,8 @@ public class ReportService {
             rows.append("<section><h2>").append(escape(finding.getTitle())).append("</h2>")
                     .append("<p><b>").append(escape(finding.getType().getDisplayName())).append(" · ")
                     .append(severityLabel(finding.getSeverity())).append(" · 可信度 ")
-                    .append(confidenceLabel(finding.getConfidence())).append("</b></p>")
+                    .append(confidenceLabel(finding.getConfidence())).append(" · ")
+                    .append(deltaLabel(finding.getDeltaStatus())).append("</b></p>")
                     .append("<p>").append(escape(finding.getFilePath())).append(":").append(finding.getStartLine()).append("</p>")
                     .append(descriptionHtml(finding.getDescription()))
                     .append("<pre>").append(escape(finding.getEvidence())).append("</pre>")
@@ -79,6 +70,11 @@ public class ReportService {
                 + ".finding-description{margin-bottom:0}.critic-review{margin-top:1.2em;padding-top:1.2em;border-top:1px dashed #d7dce5}"
                 + "pre{white-space:pre-wrap;background:#101727;color:#d8e3ff;padding:16px;border-radius:8px}</style></head><body>"
                 + "<h1>DeepAudit Java 安全审计报告</h1><p>项目：" + escape(report.project().getName()) + "</p>"
+                + "<p>范围：" + escape(report.task().getScanMode().name()) + "　Target："
+                + escape(shortSha(report.task().getTargetCommitSha()))
+                + (report.task().getBaseCommitSha() == null ? "" : "　Base：" + escape(shortSha(report.task().getBaseCommitSha())))
+                + "</p>"
+                + "<p>变更摘要：" + escape(report.task().getChangeSummary()) + "</p>"
                 + "<p>任务状态：" + statusLabel(report.task().getStatus()) + "　问题数量："
                 + report.findings().size() + "</p>"
                 + "<section><h2>摘要</h2><p>" + escape(report.aiSummary() == null ? "暂无摘要"
@@ -144,6 +140,21 @@ public class ReportService {
         };
     }
 
+    private String deltaLabel(com.deepaudit.domain.FindingDeltaStatus status) {
+        if (status == null) return "全量基线";
+        return switch (status) {
+            case BASELINE -> "全量基线";
+            case NEW -> "变更新增";
+            case REGRESSED -> "安全回归";
+            case PERSISTING -> "持续存在";
+            case AFFECTED -> "变更影响";
+        };
+    }
+
+    private String shortSha(String value) {
+        return value == null ? "" : value.substring(0, Math.min(8, value.length()));
+    }
+
     // 对动态报告文本进行 HTML 转义以阻断源码内容注入页面结构。
     private String escape(String value) {
         if (value == null) return "";
@@ -153,6 +164,7 @@ public class ReportService {
 
     public record AuditReport(Project project, AuditTask task, AiReportSummary aiSummary,
                               List<Finding> findings, List<AgentRun> agentRuns,
-                              List<AuditHypothesis> hypotheses) {
+                              List<AuditHypothesis> hypotheses,
+                              List<com.deepaudit.domain.GitFileChange> changes) {
     }
 }

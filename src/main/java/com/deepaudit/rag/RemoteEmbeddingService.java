@@ -22,13 +22,16 @@ public class RemoteEmbeddingService implements EmbeddingService {
     private final RestClient restClient;
     private final String apiKey;
     private final String model;
+    private final int dimensions;
 
     public RemoteEmbeddingService(@Value("${deepaudit.embedding.base-url}") String baseUrl,
                                   @Value("${deepaudit.embedding.api-key}") String apiKey,
-                                  @Value("${deepaudit.embedding.model}") String model) {
+                                  @Value("${deepaudit.embedding.model}") String model,
+                                  @Value("${deepaudit.embedding.dimensions:1024}") int dimensions) {
         this.restClient = RestClient.builder().baseUrl(baseUrl).build();
         this.apiKey = apiKey;
         this.model = model;
+        this.dimensions = dimensions;
     }
 
     @Override
@@ -67,7 +70,12 @@ public class RemoteEmbeddingService implements EmbeddingService {
         return rows.stream().map(row -> {
             List<Double> values = new ArrayList<>();
             row.path("embedding").forEach(value -> values.add(value.asDouble()));
-            return values.stream().mapToDouble(Double::doubleValue).toArray();
+            double[] vector = values.stream().mapToDouble(Double::doubleValue).toArray();
+            if (vector.length != dimensions) {
+                throw new IllegalStateException("Embedding 服务返回维度 " + vector.length
+                        + "，与 deepaudit.embedding.dimensions=" + dimensions + " 不一致");
+            }
+            return vector;
         }).toList();
     }
 
