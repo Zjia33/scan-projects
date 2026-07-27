@@ -47,6 +47,24 @@
         ORDER BY created_at DESC
     </select>
 
+    <select id="findByProjectIdOrderByCreatedAtDesc" resultMap="AuditTaskResultMap">
+        SELECT <include refid="columns"/>
+        FROM audit_task
+        WHERE project_id = #{projectId}
+        ORDER BY created_at DESC
+    </select>
+
+    <select id="countActiveByProjectId" resultType="int">
+        SELECT COUNT(*)
+        FROM audit_task
+        WHERE project_id = #{projectId}
+          AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+    </select>
+
+    <delete id="deleteByProjectId">
+        DELETE FROM audit_task WHERE project_id = #{projectId}
+    </delete>
+
     <update id="updateWithVersion" parameterType="com.deepaudit.domain.AuditTask">
         UPDATE audit_task
         SET status = #{status},

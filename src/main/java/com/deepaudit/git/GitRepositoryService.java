@@ -91,7 +91,14 @@ public class GitRepositoryService {
     }
 
     public List<Project> projects() {
-        return projectMapper.findAllOrderByCreatedAtDesc().stream()
+        return projects(false);
+    }
+
+    public List<Project> projects(boolean includeArchived) {
+        List<Project> projects = includeArchived
+                ? projectMapper.findAllIncludingArchivedOrderByCreatedAtDesc()
+                : projectMapper.findAllOrderByCreatedAtDesc();
+        return projects.stream()
                 .filter(project -> project.getSourceType() == ProjectSourceType.GIT)
                 .toList();
     }

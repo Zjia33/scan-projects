@@ -12,7 +12,6 @@ import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.Finding;
@@ -31,7 +30,6 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -86,11 +84,9 @@ public class AnalysisService {
                 taskId, semanticSummary.symbolCount(), semanticSummary.callEdgeCount(),
                 semanticSummary.securityFlowCount(), semanticSummary.totalCallSites(),
                 semanticSummary.unresolvedCallSites());
-        // 将有线索、接口和 Java 方法前置，以便规划器在目标预算内优先覆盖。
-        List<CodeChunk> targets = selectTargets(chunks, hintIndex.typesByChunk(), task.getScanMode());
-        // Recon Agent 先理解项目，再由 Orchestrator 将目标拆给对应专业 Agent。
+        // Recon Agent 先理解项目，再由 Orchestrator 对全部安全相关审计单元做轻量三态分流。
         LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary, chunks);
-        List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, targets,
+        List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, chunks, task.getScanMode(),
                 hintIndex.typesByChunk(), hintIndex.descriptionsByChunk());
 
         // 专业 Agent 并行调查并且只有证据充分时才形成候选假设。
@@ -167,22 +163,6 @@ public class AnalysisService {
         return chunks.stream().filter(chunk -> chunk.getFilePath().equals(draft.filePath()))
                 .filter(chunk -> draft.startLine() >= chunk.getStartLine() && draft.startLine() <= chunk.getEndLine())
                 .findFirst().or(() -> chunks.stream().filter(chunk -> chunk.getFilePath().equals(draft.filePath())).findFirst());
-    }
-
-    // 依次按线索、接口、Java 方法和源码位置确定 Agent 规划顺序。
-    private List<CodeChunk> selectTargets(List<CodeChunk> chunks, Map<Long, Set<VulnerabilityType>> hints,
-                                          ScanMode scanMode) {
-        return chunks.stream()
-                .filter(chunk -> scanMode == ScanMode.FULL || chunk.getAnalysisScope() == AnalysisScope.CHANGED
-                        || chunk.getAnalysisScope() == AnalysisScope.IMPACTED)
-                .sorted(Comparator
-                        .comparing((CodeChunk chunk) -> chunk.getAnalysisScope() != AnalysisScope.CHANGED)
-                        .thenComparing((CodeChunk chunk) -> !hints.containsKey(chunk.getId()))
-                        .thenComparing(chunk -> chunk.getEndpoint() == null)
-                        .thenComparing(chunk -> !"JAVA_METHOD".equals(chunk.getChunkType()))
-                        .thenComparing(CodeChunk::getFilePath)
-                        .thenComparingInt(CodeChunk::getStartLine))
-                .toList();
     }
 
     private String shortSha(String value) {

@@ -1,6 +1,7 @@
 package com.deepaudit;
 
 import com.deepaudit.ai.LlmGateway;
+import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
@@ -68,34 +69,40 @@ class DeepAuditApplicationTests {
     }
 
     @Test
-    void normalizesModelAliasesAndKeepsUnknownPlanValuesSkippable() throws Exception {
+    void normalizesTriageEnumsAndKeepsUnknownValuesSkippable() throws Exception {
         String modelJson = """
                 {
-                  "summary": "权限审计计划",
-                  "tasks": [
+                  "summary": "权限审计分流",
+                  "decisions": [
                     {
-                      "chunkId": 10,
-                      "agentType": "AuthorizationAgent",
-                      "vulnerabilityType": "UnauthorizedAccess",
+                      "unitId": "chunk-10",
+                      "primaryChunkId": 10,
+                      "disposition": "investigate",
+                      "vulnerabilityTypes": ["UnauthorizedAccess"],
+                      "reasonCodes": ["EXTERNAL_ENTRY"],
+                      "requiredContext": [],
                       "reason": "未授权接口可能泄露敏感信息"
                     },
                     {
-                      "chunkId": 11,
-                      "agentType": "InventedAgent",
-                      "vulnerabilityType": "InventedRisk",
+                      "unitId": "chunk-11",
+                      "primaryChunkId": 11,
+                      "disposition": "InventedDisposition",
+                      "vulnerabilityTypes": ["InventedRisk"],
+                      "reasonCodes": [],
+                      "requiredContext": [],
                       "reason": "模型创造的未知类别"
                     }
                   ]
                 }
                 """;
 
-        LlmGateway.AuditPlan plan = objectMapper.readValue(modelJson, LlmGateway.AuditPlan.class);
+        LlmGateway.TriagePlan plan = objectMapper.readValue(modelJson, LlmGateway.TriagePlan.class);
 
-        assertThat(plan.tasks().get(0).agentType()).isEqualTo(com.deepaudit.domain.AgentType.AUTHORIZATION);
-        assertThat(plan.tasks().get(0).vulnerabilityType())
-                .isEqualTo(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
-        assertThat(plan.tasks().get(1).agentType()).isNull();
-        assertThat(plan.tasks().get(1).vulnerabilityType()).isNull();
+        assertThat(plan.decisions().get(0).disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
+        assertThat(plan.decisions().get(0).vulnerabilityTypes())
+                .containsExactly(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
+        assertThat(plan.decisions().get(1).disposition()).isNull();
+        assertThat(plan.decisions().get(1).vulnerabilityTypes()).isEmpty();
     }
 
     @Test

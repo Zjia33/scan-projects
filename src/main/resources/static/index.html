@@ -6,7 +6,7 @@
     <meta name="description" content="DeepAudit Java 多 Agent 代码安全审计控制台">
     <title>DeepAudit / 智能代码审计控制台</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2311140f'/%3E%3Cpath d='M13 14h18c13 0 20 7 20 18S44 50 31 50H13V14zm11 10v16h7c6 0 9-3 9-8s-3-8-9-8h-7z' fill='%23c9ff45'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260723-1">
+    <link rel="stylesheet" href="/styles.css?v=20260727-1">
 </head>
 <body>
 <div class="grain" aria-hidden="true"></div>
@@ -21,6 +21,7 @@
             <a class="active" href="#overview"><span>01</span>态势总览</a>
             <a href="#new-audit"><span>02</span>新建审计</a>
             <a href="#audit-workspace"><span>03</span>审计任务</a>
+            <a href="#project-management"><span>04</span>项目管理</a>
         </nav>
 
         <div class="sidebar-foot">
@@ -149,11 +150,32 @@
                     </section>
                 </div>
             </section>
+
+            <section id="project-management" class="page-section project-section">
+                <div class="section-heading project-heading">
+                    <div><p class="kicker">PROJECT REGISTRY</p><h2>扫描项目管理</h2></div>
+                    <div class="project-toolbar">
+                        <label><input id="include-archived-projects" type="checkbox"> 显示已归档</label>
+                        <button id="refresh-projects-button" class="refresh-button" type="button">刷新项目 ↻</button>
+                    </div>
+                </div>
+                <div class="project-workbench">
+                    <aside class="project-column">
+                        <div class="column-label"><span>项目目录</span><small id="project-count">0 ITEMS</small></div>
+                        <div id="project-list" class="project-list">
+                            <div class="empty-state">暂无扫描项目</div>
+                        </div>
+                    </aside>
+                    <section id="project-detail" class="project-detail" aria-live="polite">
+                        <div class="detail-empty"><span>PRJ</span><p>选择项目后可维护基本信息、查看扫描历史，并执行项目归档和数据清理。</p></div>
+                    </section>
+                </div>
+            </section>
         </main>
 
         <footer><span>DEEPAUDIT JAVA / DEVELOPMENT BUILD</span><span>AI 结论需要人工复核</span></footer>
     </div>
 </div>
-<script src="/app.js?v=20260723-1" defer></script>
+<script src="/app.js?v=20260727-1" defer></script>
 </body>
 </html>

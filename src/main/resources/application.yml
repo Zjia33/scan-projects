@@ -48,8 +48,9 @@ deepaudit:
     max-tool-calls-per-agent: 10
     # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
     professional-agent-parallelism: 4
-    planner-batch-size: 12
-    max-audit-targets: 300
+    professional-agent-queue-capacity: 1000
+    # 轻量编排只传输审计单元摘要；该值控制单次请求大小，不限制项目总覆盖范围。
+    triage-batch-size: 40
   embedding:
     provider: ${DEEPAUDIT_EMBEDDING_PROVIDER:remote}
     base-url: ${DEEPAUDIT_EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}

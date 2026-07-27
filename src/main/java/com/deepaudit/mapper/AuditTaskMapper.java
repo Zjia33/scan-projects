@@ -10,5 +10,8 @@ public interface AuditTaskMapper {
     int insert(AuditTask task);
     AuditTask findById(@Param("id") UUID id);
     List<AuditTask> findAllOrderByCreatedAtDesc();
+    List<AuditTask> findByProjectIdOrderByCreatedAtDesc(@Param("projectId") UUID projectId);
+    int countActiveByProjectId(@Param("projectId") UUID projectId);
+    int deleteByProjectId(@Param("projectId") UUID projectId);
     int updateWithVersion(AuditTask task);
 }

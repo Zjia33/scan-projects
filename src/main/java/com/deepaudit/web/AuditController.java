@@ -25,6 +25,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -65,8 +66,41 @@ public class AuditController {
     }
 
     @GetMapping("/projects")
-    public List<RepositoryResponse> projects() {
-        return projectService.projects().stream().map(this::repository).toList();
+    public List<RepositoryResponse> projects(
+            @RequestParam(defaultValue = "false") boolean includeArchived) {
+        return projectService.projects(includeArchived).stream().map(this::repository).toList();
+    }
+
+    @GetMapping("/projects/{projectId}")
+    public RepositoryResponse project(@PathVariable UUID projectId) {
+        return repository(projectService.project(projectId));
+    }
+
+    @PatchMapping(value = "/projects/{projectId}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public RepositoryResponse updateProject(@PathVariable UUID projectId,
+                                            @RequestBody UpdateProjectRequest request) {
+        return repository(projectService.updateProject(projectId, request.name(), request.description()));
+    }
+
+    @PostMapping("/projects/{projectId}/archive")
+    public RepositoryResponse archiveProject(@PathVariable UUID projectId) {
+        return repository(projectService.archive(projectId));
+    }
+
+    @PostMapping("/projects/{projectId}/restore")
+    public RepositoryResponse restoreProject(@PathVariable UUID projectId) {
+        return repository(projectService.restore(projectId));
+    }
+
+    @GetMapping("/projects/{projectId}/audits")
+    public List<TaskResponse> projectAudits(@PathVariable UUID projectId) {
+        return projectService.auditHistory(projectId).stream().map(this::toResponse).toList();
+    }
+
+    @PostMapping(value = "/projects/{projectId}/cleanup", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ProjectService.CleanupResult cleanupProject(@PathVariable UUID projectId,
+                                                       @RequestBody CleanupProjectRequest request) {
+        return projectService.cleanupAuditData(projectId, request.confirmation());
     }
 
     @GetMapping("/projects/{projectId}/commits")
@@ -195,7 +229,8 @@ public class AuditController {
 
     private RepositoryResponse repository(Project project) {
         return new RepositoryResponse(project.getId(), project.getName(), project.getRepositoryUrl(),
-                project.getDefaultBranch(), project.getCreatedAt());
+                project.getDefaultBranch(), project.getDescription(), project.isArchived(),
+                project.getCreatedAt(), project.getUpdatedAt(), project.getArchivedAt());
     }
 
     public record ImportRepositoryRequest(String name, String repositoryUrl,
@@ -205,11 +240,19 @@ public class AuditController {
     public record RefreshRepositoryRequest(String username, String accessToken) {
     }
 
+    public record UpdateProjectRequest(String name, String description) {
+    }
+
+    public record CleanupProjectRequest(String confirmation) {
+    }
+
     public record CreateAuditRequest(ScanMode scanMode, String baseCommit, String targetCommit) {
     }
 
     public record RepositoryResponse(UUID projectId, String name, String repositoryUrl,
-                                     String defaultBranch, java.time.Instant createdAt) {
+                                     String defaultBranch, String description, boolean archived,
+                                     java.time.Instant createdAt, java.time.Instant updatedAt,
+                                     java.time.Instant archivedAt) {
     }
 
     public record ImportRepositoryResponse(RepositoryResponse project,

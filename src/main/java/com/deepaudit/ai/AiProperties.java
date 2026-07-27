@@ -20,7 +20,7 @@ public class AiProperties {
     private int maxIterationsPerAgent = 6;
     private int maxToolCallsPerAgent = 10;
     private int professionalAgentParallelism = 4;
-    private int plannerBatchSize = 12;
-    private int maxAuditTargets = 200;
+    private int professionalAgentQueueCapacity = 1_000;
+    private int triageBatchSize = 40;
 
 }

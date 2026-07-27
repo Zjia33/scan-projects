@@ -19,15 +19,25 @@ Use four-space indentation, UTF-8, and existing Java 17 idioms. Types use `Pasca
 
 ## Testing Guidelines
 
-Use JUnit 5, AssertJ, Spring Boot Test, MockMvc, and H2. Name automatic tests `*Test`/`*Tests`; reserve `*IT` for external checks. Cover Git source safety, commit diffing, semantic resolution, vector recall boundaries, evidence gates, Agent concurrency, and changed APIs. Keep default tests independent of PostgreSQL, external Git hosts, and external models; use the memory vector-recall implementation only in the test profile.
+Use JUnit 5, AssertJ, Spring Boot Test, MockMvc, and H2. Name automatic tests `*Test`/`*Tests`; reserve `*IT` for external checks. Cover Git source safety, commit diffing, semantic resolution, vector recall boundaries, evidence gates, Agent concurrency, triage decisions, `NEED_CONTEXT` enrichment, large-project coverage without fixed-target truncation, project archive/restore and cleanup cascades, and changed APIs. Keep default tests independent of PostgreSQL, external Git hosts, and external models; use the memory vector-recall implementation only in the test profile.
 
 ## Agent Architecture & Evidence Rules
 
-The order is Recon → Orchestrator → professional investigation → Critic → Report. Projects run one at a time; professional tasks run concurrently through `professionalAgentExecutor`, configured by `deepaudit.ai.professional-agent-parallelism`. Rules and semantic flows create hints, never findings. A finding requires a professional hypothesis, valid chunk IDs, and Critic confirmation. RAG results remain `RAG_CANDIDATE`s until `verify_relation` promotes them. Preserve the untrusted-code boundary and report filtering of `[SEMANTIC_FLOW]`/`[CRITIC]`.
+The order is Recon → audit-unit construction → Triage Orchestrator → optional context enrichment and one re-triage → professional investigation → Critic → Report. Projects run one at a time; professional tasks run concurrently through `professionalAgentExecutor`, configured by `deepaudit.ai.professional-agent-parallelism`.
+
+`AuditUnitService` builds compact security-relevant units from external entries, dangerous data access/output, authorization and validation boundaries, financial operations, security configuration, deterministic hints, semantic flows, and incremental change scope. Do not send isolated getters, DTO boilerplate, constants, or unrelated methods as standalone units unless a verified call path needs them as context.
+
+Triage decisions are strictly `INVESTIGATE`, `NEED_CONTEXT`, or `SKIP`. `NEED_CONTEXT` may add bidirectional call edges, security flows, and related chunk locations, then retry exactly once. Only `INVESTIGATE` creates professional Agent tasks. Validate returned unit IDs, primary chunk IDs, dispositions, and vulnerability types against the current batch and the unit's candidate types.
+
+Do not reintroduce risk scores or a fixed project-wide target count such as “top 300.” `deepaudit.ai.triage-batch-size` limits one lightweight model request only; it must not truncate total project coverage. Keep the professional executor queue capacity independent from audit selection.
+
+Rules and semantic flows create hints, never findings, but their units are mandatory investigations so model omissions cannot silently remove them. In incremental scans, only `CHANGED` and `IMPACTED` units may create professional tasks; `CONTEXT` remains available for architecture understanding and read-only tool evidence. A finding requires a professional hypothesis, valid chunk IDs, and Critic confirmation. RAG results remain `RAG_CANDIDATE`s until `verify_relation` promotes them. Preserve the untrusted-code boundary and report filtering of `[SEMANTIC_FLOW]`/`[CRITIC]`.
 
 ## Security & Web Console
 
 Do not execute repository code or add PoC execution, Docker verification, or CI/CD. Git access is read-only: never run repository hooks, submodules, LFS filters, build scripts, or checked-in executables. Full scans analyze one immutable commit snapshot; incremental scans compare immutable base and target commit IDs and must retain complete project/configuration context while limiting expensive analysis to the semantic impact scope. Never expose Git tokens or development credentials in logs, reports, commits, or screenshots. Console changes must preserve SSE, polling and expanded-log state, responsive layout, and scrollbar space beside task statuses.
+
+Archived projects must reject repository refresh and new audits. Project scan-data cleanup is allowed only after archival and after all tasks are terminal; it deletes audit-derived database rows through foreign-key cascades while preserving the project record and bare Git repository. Keep the explicit `DELETE_SCAN_DATA` confirmation gate for this destructive operation.
 
 ## Commit & Pull Request Guidelines
 

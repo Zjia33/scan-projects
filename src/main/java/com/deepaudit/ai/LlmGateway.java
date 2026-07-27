@@ -1,7 +1,8 @@
 package com.deepaudit.ai;
 
+import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
-import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
@@ -16,7 +17,7 @@ public interface LlmGateway {
 
     ReconInsight inspectProject(UUID taskId, ReconSummary summary, List<Target> representativeTargets);
 
-    AuditPlan createPlan(UUID taskId, ReconInsight recon, List<Target> targets);
+    TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits);
 
     AgentDecision decide(AgentTurn turn);
 
@@ -46,12 +47,22 @@ public interface LlmGateway {
         }
     }
 
-    record PlannedTask(long chunkId, AgentType agentType, VulnerabilityType vulnerabilityType, String reason) {
+    record TriageDecision(String unitId, long primaryChunkId, TriageDisposition disposition,
+                          List<VulnerabilityType> vulnerabilityTypes, List<String> reasonCodes,
+                          List<String> requiredContext, String reason) {
+        public TriageDecision {
+            vulnerabilityTypes = vulnerabilityTypes == null ? List.of() : vulnerabilityTypes.stream()
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+            reasonCodes = reasonCodes == null ? List.of() : reasonCodes.stream()
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+            requiredContext = requiredContext == null ? List.of() : requiredContext.stream()
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+        }
     }
 
-    record AuditPlan(String summary, List<PlannedTask> tasks) {
-        public AuditPlan {
-            tasks = tasks == null ? List.of() : List.copyOf(tasks);
+    record TriagePlan(String summary, List<TriageDecision> decisions) {
+        public TriagePlan {
+            decisions = decisions == null ? List.of() : List.copyOf(decisions);
         }
     }
 

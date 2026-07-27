@@ -1,5 +1,6 @@
 package com.deepaudit.ai;
 
+import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.recon.ReconSummary;
 import com.fasterxml.jackson.core.JsonLocation;
 import com.fasterxml.jackson.core.JsonParser;
@@ -55,14 +56,15 @@ public class RemoteLlmGateway implements LlmGateway {
         return call(systemPrompt, userPrompt, ReconInsight.class);
     }
 
-    // 请求 Orchestrator 仅在给定代码块与受支持漏洞类型内生成调查计划。
+    // 使用紧凑审计单元执行三态轻量分流，不在此阶段传输完整代码块。
     @Override
-    public AuditPlan createPlan(UUID taskId, ReconInsight recon, List<Target> targets) {
-        String systemPrompt = AgentPrompts.orchestratorAgent();
-        String userPrompt = json(Map.of("taskId", taskId, "recon", recon, "targets", targets,
-                "outputSchema", Map.of("summary", "string", "tasks",
-                        "[{chunkId,long,agentType, vulnerabilityType,reason}]")));
-        return call(systemPrompt, userPrompt, AuditPlan.class);
+    public TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits) {
+        String systemPrompt = AgentPrompts.triageOrchestrator();
+        String userPrompt = json(Map.of("taskId", taskId, "recon", recon, "auditUnits", auditUnits,
+                "outputSchema", Map.of("summary", "string", "decisions",
+                        "[{unitId,primaryChunkId,disposition:INVESTIGATE|NEED_CONTEXT|SKIP,"
+                                + "vulnerabilityTypes:[],reasonCodes:[],requiredContext:[],reason}]")));
+        return call(systemPrompt, userPrompt, TriagePlan.class);
     }
 
     // 请求专业 Agent 在 TOOL、FINDING 和 REJECT 三类受控动作中选择下一步。

@@ -2,6 +2,8 @@ package com.deepaudit;
 
 import com.deepaudit.ai.AiProperties;
 import com.deepaudit.ai.LlmGateway;
+import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.rag.EmbeddingService;
@@ -66,21 +68,17 @@ class ModelApiManualIT {
     void conversationModelRecognizesSqlInjectionAndReturnsAgentJson() throws Exception {
         requireConfigured("对话模型", aiProperties.getBaseUrl(), aiProperties.getApiKey(), aiProperties.getModel());
         UUID taskId = UUID.randomUUID();
-        LlmGateway.Target target = new LlmGateway.Target(
-                TARGET_CHUNK_ID,
-                "src/main/java/demo/UserController.java",
-                "UserController#search",
-                "/users/search",
-                "JAVA_METHOD",
-                "String name",
-                "@GetMapping(\"/search\")",
-                "queryForList",
-                VULNERABLE_CODE,
-                "MODIFIED",
-                "CHANGED",
-                "",
-                List.of()
-        );
+        AuditUnit auditUnit = new AuditUnit("chunk-" + TARGET_CHUNK_ID, TARGET_CHUNK_ID,
+                "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
+                "EXTERNAL_ENTRY", "MODIFIED", "CHANGED", List.of(VulnerabilityType.SQL_INJECTION),
+                List.of("EXTERNAL_ENTRY", "DANGEROUS_DATA_ACCESS", "DIRECT_CHANGE"), "String name",
+                "@GetMapping(\"/search\")", "queryForList -> DATABASE", "用户输入进入动态 SQL",
+                VULNERABLE_CODE);
+        LlmGateway.Target target = new LlmGateway.Target(TARGET_CHUNK_ID,
+                "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
+                "JAVA_METHOD", "String name", "@GetMapping(\"/search\")", "queryForList",
+                VULNERABLE_CODE, "MODIFIED", "CHANGED", "",
+                List.of(VulnerabilityType.SQL_INJECTION));
         LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight(
                 "Spring MVC 接口直接使用 JdbcTemplate 访问数据库",
                 List.of("GET /users/search"),
@@ -88,15 +86,15 @@ class ModelApiManualIT {
                 List.of("用户输入进入动态 SQL")
         );
 
-        LlmGateway.AuditPlan plan = llmGateway.createPlan(taskId, recon, List.of(target));
+        LlmGateway.TriagePlan plan = llmGateway.triage(taskId, recon, List.of(auditUnit));
         printJson("对话模型配置", new ModelConfiguration(aiProperties.getBaseUrl(), aiProperties.getModel()));
-        printJson("Orchestrator 返回", plan);
-        assertThat(plan.tasks())
-                .as("模型应为明显的字符串拼接 SQL 安排 SQL_INJECTION 调查")
-                .anySatisfy(task -> {
-                    assertThat(task.chunkId()).isEqualTo(TARGET_CHUNK_ID);
-                    assertThat(task.agentType()).isEqualTo(AgentType.SQL_INJECTION);
-                    assertThat(task.vulnerabilityType()).isEqualTo(VulnerabilityType.SQL_INJECTION);
+        printJson("Triage Orchestrator 返回", plan);
+        assertThat(plan.decisions())
+                .as("模型应把明显的字符串拼接 SQL 分流到 SQL_INJECTION 调查")
+                .anySatisfy(decision -> {
+                    assertThat(decision.primaryChunkId()).isEqualTo(TARGET_CHUNK_ID);
+                    assertThat(decision.disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
+                    assertThat(decision.vulnerabilityTypes()).contains(VulnerabilityType.SQL_INJECTION);
                 });
 
         List<LlmGateway.Observation> observations = new ArrayList<>();

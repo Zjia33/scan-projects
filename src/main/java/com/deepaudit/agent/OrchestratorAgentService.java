@@ -6,6 +6,7 @@ import com.deepaudit.domain.AgentEventType;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.VulnerabilityType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,67 +14,97 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class OrchestratorAgentService {
+    private static final Set<String> MANDATORY_REASON_CODES = Set.of("RULE_HINT", "SEMANTIC_FLOW");
+    private static final Set<String> CONSERVATIVE_REASON_CODES = Set.of(
+            "EXTERNAL_ENTRY", "SECURITY_CONFIGURATION", "DANGEROUS_DATA_ACCESS",
+            "DANGEROUS_OUTPUT", "VALIDATION_BOUNDARY", "SENSITIVE_FINANCIAL_OPERATION",
+            "AUTHORIZATION_BOUNDARY", "UNRESOLVED_CALL");
+
     private final LlmGateway llmGateway;
     private final AiProperties properties;
     private final AgentTraceService traceService;
+    private final AuditUnitService auditUnitService;
 
-    // 将候选代码块分批规划为与漏洞类型严格匹配的专业 Agent 任务。
-    public List<AgentTask> plan(UUID taskId, LlmGateway.ReconInsight recon,
-                                List<CodeChunk> selectedChunks,
-                                Map<Long, Set<VulnerabilityType>> hints,
+    // 先对紧凑审计单元执行三态分流，再仅为 INVESTIGATE 单元创建专业 Agent 任务。
+    public List<AgentTask> plan(UUID taskId, LlmGateway.ReconInsight recon, List<CodeChunk> chunks,
+                                ScanMode scanMode, Map<Long, Set<VulnerabilityType>> hints,
                                 Map<Long, String> hintDescriptions) {
-        AgentRun run = traceService.start(taskId, AgentType.ORCHESTRATOR, null, "智能审计计划");
+        AgentRun run = traceService.start(taskId, AgentType.ORCHESTRATOR, null, "轻量安全分流与调查编排");
         try {
-            // 按审计上限裁剪目标，并附带确定性线索类型供模型规划。
-            List<LlmGateway.Target> targets = selectedChunks.stream()
-                    .limit(properties.getMaxAuditTargets())
-                    .map(chunk -> AgentPromptSupport.target(chunk, hints.getOrDefault(chunk.getId(), Set.of())))
-                    .toList();
+            List<AuditUnit> units = auditUnitService.build(
+                    taskId, chunks, scanMode, hints, hintDescriptions);
+            Map<Long, AuditUnit> unitsByChunk = units.stream()
+                    .collect(Collectors.toMap(AuditUnit::primaryChunkId, Function.identity()));
             Map<String, AgentTask> tasks = new LinkedHashMap<>();
-            List<String> planSummaries = new ArrayList<>();
-            int batchSize = Math.max(1, properties.getPlannerBatchSize());
-            // 分批调用规划模型，避免大型项目一次性超过上下文窗口。
-            for (int start = 0; start < targets.size(); start += batchSize) {
-                List<LlmGateway.Target> batch = targets.subList(start, Math.min(start + batchSize, targets.size()));
-                traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
-                        "正在规划第 " + (start / batchSize + 1) + " 批审计目标，共 " + batch.size() + " 个代码块");
-                LlmGateway.AuditPlan plan = llmGateway.createPlan(taskId, recon, batch);
-                run.setModelCallCount(run.getModelCallCount() + 1);
-                if (plan.summary() != null) planSummaries.add(plan.summary());
-                for (LlmGateway.PlannedTask item : plan.tasks()) {
-                    if (item == null || item.agentType() == null || item.vulnerabilityType() == null) {
-                        log.warn("任务 {} 跳过模型返回的不受支持审计计划项: {}", taskId, item);
-                        continue;
-                    }
-                    // 拒绝批次外目标及 Agent 类型不匹配项，限制模型扩大审计权限。
-                    if (batch.stream().noneMatch(target -> target.chunkId() == item.chunkId())) continue;
-                    AgentType expected = agentFor(item.vulnerabilityType());
-                    if (expected != item.agentType()) continue;
-                    AgentTask task = new AgentTask(item.chunkId(), expected, item.vulnerabilityType(),
-                            item.reason(), hintDescriptions.get(item.chunkId()));
-                    tasks.put(key(task), task);
-                }
-            }
-            // 规则只能增加调查任务，不能直接产生漏洞；避免模型规划遗漏明确危险语法。
+
+            // 确定性规则和已形成的语义安全流属于必审事实，不能因模型漏返回而被静默跳过。
             for (Map.Entry<Long, Set<VulnerabilityType>> entry : hints.entrySet()) {
+                AuditUnit unit = unitsByChunk.get(entry.getKey());
+                if (unit == null || unit.reasonCodes().stream().noneMatch(MANDATORY_REASON_CODES::contains)) continue;
                 for (VulnerabilityType type : entry.getValue()) {
-                    AgentTask task = new AgentTask(entry.getKey(), agentFor(type), type,
-                            "确定性规则提供了需要 AI 深入核查的线索", hintDescriptions.get(entry.getKey()));
-                    tasks.putIfAbsent(key(task), task);
+                    addTask(tasks, unit, type, "确定性线索要求专业 Agent 深入核查",
+                            hintDescriptions.get(entry.getKey()));
                 }
             }
-            String summary = "规划 " + tasks.size() + " 个专业 Agent 调查任务；"
-                    + String.join("；", planSummaries).substring(0,
-                    Math.min(String.join("；", planSummaries).length(), 4_000));
+
+            List<String> summaries = new ArrayList<>();
+            Map<String, LlmGateway.TriageDecision> firstPass = triageBatches(
+                    taskId, run, recon, units, summaries, "初次轻量分流");
+            List<AuditUnit> needContext = new ArrayList<>();
+            int skipped = 0;
+            for (AuditUnit unit : units) {
+                LlmGateway.TriageDecision decision = firstPass.get(unit.unitId());
+                if (decision == null || decision.disposition() == TriageDisposition.NEED_CONTEXT) {
+                    needContext.add(unit);
+                } else if (decision.disposition() == TriageDisposition.INVESTIGATE) {
+                    addDecisionTasks(tasks, unit, decision, hintDescriptions.get(unit.primaryChunkId()));
+                } else if (!hasTaskFor(tasks, unit.primaryChunkId())) {
+                    skipped++;
+                }
+            }
+
+            // NEED_CONTEXT 仅进行一次受控补充，避免无限扩张模型上下文。
+            if (!needContext.isEmpty()) {
+                List<AuditUnit> enriched = auditUnitService.enrich(taskId, needContext, chunks);
+                Map<String, LlmGateway.TriageDecision> secondPass = triageBatches(
+                        taskId, run, recon, enriched, summaries, "补充上下文后复判");
+                for (AuditUnit unit : enriched) {
+                    LlmGateway.TriageDecision decision = secondPass.get(unit.unitId());
+                    if (decision != null && decision.disposition() == TriageDisposition.INVESTIGATE) {
+                        addDecisionTasks(tasks, unit, decision, hintDescriptions.get(unit.primaryChunkId()));
+                    } else if (decision != null && decision.disposition() == TriageDisposition.SKIP
+                            && !hasTaskFor(tasks, unit.primaryChunkId())) {
+                        skipped++;
+                    } else if (shouldConservativelyInvestigate(unit)) {
+                        // 安全相关事实仍无法排除时宁可交给会主动寻找反证的专业 Agent。
+                        for (VulnerabilityType type : unit.candidateTypes()) {
+                            addTask(tasks, unit, type, "补充上下文后仍无法排除安全相关性",
+                                    hintDescriptions.get(unit.primaryChunkId()));
+                        }
+                    } else if (!hasTaskFor(tasks, unit.primaryChunkId())) {
+                        skipped++;
+                    }
+                }
+            }
+
+            String modelSummary = truncate(String.join("；", summaries), 2_000);
+            long investigatedUnits = tasks.values().stream().map(AgentTask::chunkId).distinct().count();
+            String summary = "轻量分流 " + units.size() + " 个审计单元，其中 " + needContext.size()
+                    + " 个补充上下文、" + skipped + " 个跳过、" + investigatedUnits
+                    + " 个进入调查，规划 " + tasks.size() + " 个专业 Agent 任务"
+                    + (modelSummary.isBlank() ? "" : "；" + modelSummary);
             traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.PLAN, summary);
             run.complete(summary);
             traceService.update(run);
@@ -81,9 +112,77 @@ public class OrchestratorAgentService {
         } catch (RuntimeException exception) {
             run.fail(exception.getMessage());
             traceService.update(run);
-            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.ERROR, exception.getMessage());
+            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR,
+                    AgentEventType.ERROR, exception.getMessage());
             throw exception;
         }
+    }
+
+    // 按紧凑摘要批量调用轻量模型，并拒绝批次外或候选类型外的决定。
+    private Map<String, LlmGateway.TriageDecision> triageBatches(
+            UUID taskId, AgentRun run, LlmGateway.ReconInsight recon, List<AuditUnit> units,
+            List<String> summaries, String phase) {
+        Map<String, LlmGateway.TriageDecision> accepted = new LinkedHashMap<>();
+        int batchSize = Math.max(1, properties.getTriageBatchSize());
+        for (int start = 0; start < units.size(); start += batchSize) {
+            List<AuditUnit> batch = units.subList(start, Math.min(start + batchSize, units.size()));
+            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
+                    phase + "第 " + (start / batchSize + 1) + " 批，共 " + batch.size() + " 个审计单元");
+            LlmGateway.TriagePlan plan = llmGateway.triage(taskId, recon, batch);
+            run.setModelCallCount(run.getModelCallCount() + 1);
+            if (plan.summary() != null && !plan.summary().isBlank()) summaries.add(plan.summary());
+            Map<String, AuditUnit> batchById = batch.stream()
+                    .collect(Collectors.toMap(AuditUnit::unitId, Function.identity()));
+            for (LlmGateway.TriageDecision decision : plan.decisions()) {
+                if (decision == null || decision.disposition() == null) continue;
+                AuditUnit unit = batchById.get(decision.unitId());
+                if (unit == null || unit.primaryChunkId() != decision.primaryChunkId()) continue;
+                List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
+                        .filter(java.util.Objects::nonNull)
+                        .filter(unit.candidateTypes()::contains).distinct().toList();
+                if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) {
+                    continue;
+                }
+                accepted.put(unit.unitId(), new LlmGateway.TriageDecision(
+                        decision.unitId(), decision.primaryChunkId(), decision.disposition(), safeTypes,
+                        intersect(decision.reasonCodes(), unit.reasonCodes()), decision.requiredContext(),
+                        decision.reason()));
+            }
+        }
+        return accepted;
+    }
+
+    private void addDecisionTasks(Map<String, AgentTask> tasks, AuditUnit unit,
+                                  LlmGateway.TriageDecision decision, String hintDescription) {
+        for (VulnerabilityType type : decision.vulnerabilityTypes()) {
+            addTask(tasks, unit, type, decision.reason(), hintDescription);
+        }
+    }
+
+    private void addTask(Map<String, AgentTask> tasks, AuditUnit unit, VulnerabilityType type,
+                         String reason, String hintDescription) {
+        if (type == null || !unit.candidateTypes().contains(type)) return;
+        AgentTask task = new AgentTask(unit.primaryChunkId(), agentFor(type), type,
+                reason == null || reason.isBlank() ? "轻量编排确认需要深入调查" : reason,
+                hintDescription);
+        tasks.putIfAbsent(key(task), task);
+    }
+
+    private boolean shouldConservativelyInvestigate(AuditUnit unit) {
+        return unit.reasonCodes().stream().anyMatch(CONSERVATIVE_REASON_CODES::contains);
+    }
+
+    private boolean hasTaskFor(Map<String, AgentTask> tasks, long chunkId) {
+        return tasks.values().stream().anyMatch(task -> task.chunkId() == chunkId);
+    }
+
+    private List<String> intersect(List<String> returned, List<String> allowed) {
+        Set<String> allowedSet = new LinkedHashSet<>(allowed);
+        return returned.stream().filter(allowedSet::contains).distinct().toList();
+    }
+
+    private String truncate(String value, int maxLength) {
+        return value == null ? "" : value.substring(0, Math.min(value.length(), maxLength));
     }
 
     // 用代码块和漏洞类型组成稳定键以合并重复规划任务。

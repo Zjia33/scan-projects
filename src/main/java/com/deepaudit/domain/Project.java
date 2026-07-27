@@ -19,7 +19,10 @@ public class Project {
     private ProjectSourceType sourceType;
     private String repositoryUrl;
     private String defaultBranch;
+    private String description;
     private Instant createdAt;
+    private Instant updatedAt;
+    private Instant archivedAt;
 
     public Project(String name, String originalFilename, String storagePath) {
         this(UUID.randomUUID(), name, originalFilename, storagePath);
@@ -38,7 +41,13 @@ public class Project {
         this.sourceType = sourceType;
         this.repositoryUrl = repositoryUrl;
         this.defaultBranch = defaultBranch;
+        this.description = "";
         this.createdAt = Instant.now();
+        this.updatedAt = this.createdAt;
+    }
+
+    public boolean isArchived() {
+        return archivedAt != null;
     }
 
 }

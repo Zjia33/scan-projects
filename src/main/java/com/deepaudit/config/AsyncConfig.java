@@ -28,7 +28,7 @@ public class AsyncConfig {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(parallelism);
         executor.setMaxPoolSize(parallelism);
-        executor.setQueueCapacity(Math.max(200, properties.getMaxAuditTargets()));
+        executor.setQueueCapacity(Math.max(200, properties.getProfessionalAgentQueueCapacity()));
         executor.setThreadNamePrefix("professional-agent-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);

@@ -9,19 +9,24 @@
         <result column="source_type" property="sourceType" javaType="com.deepaudit.domain.ProjectSourceType"/>
         <result column="repository_url" property="repositoryUrl"/>
         <result column="default_branch" property="defaultBranch"/>
+        <result column="description" property="description"/>
         <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="archived_at" property="archivedAt"/>
     </resultMap>
 
     <sql id="columns">
-        id, name, original_filename, storage_path, source_type, repository_url, default_branch, created_at
+        id, name, original_filename, storage_path, source_type, repository_url, default_branch,
+        description, created_at, updated_at, archived_at
     </sql>
 
     <insert id="insert" parameterType="com.deepaudit.domain.Project">
         INSERT INTO audit_project
-            (id, name, original_filename, storage_path, source_type, repository_url, default_branch, created_at)
+            (id, name, original_filename, storage_path, source_type, repository_url, default_branch,
+             description, created_at, updated_at, archived_at)
         VALUES
             (#{id}, #{name}, #{originalFilename}, #{storagePath}, #{sourceType},
-             #{repositoryUrl}, #{defaultBranch}, #{createdAt})
+             #{repositoryUrl}, #{defaultBranch}, #{description}, #{createdAt}, #{updatedAt}, #{archivedAt})
     </insert>
 
     <select id="findById" resultMap="ProjectResultMap">
@@ -33,6 +38,25 @@
     <select id="findAllOrderByCreatedAtDesc" resultMap="ProjectResultMap">
         SELECT <include refid="columns"/>
         FROM audit_project
+        WHERE archived_at IS NULL
         ORDER BY created_at DESC
     </select>
+
+    <select id="findAllIncludingArchivedOrderByCreatedAtDesc" resultMap="ProjectResultMap">
+        SELECT <include refid="columns"/>
+        FROM audit_project
+        ORDER BY archived_at NULLS FIRST, created_at DESC
+    </select>
+
+    <update id="updateDetails">
+        UPDATE audit_project
+        SET name = #{name}, description = #{description}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="setArchivedAt">
+        UPDATE audit_project
+        SET archived_at = #{archivedAt}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
 </mapper>

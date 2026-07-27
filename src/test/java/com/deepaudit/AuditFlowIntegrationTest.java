@@ -24,6 +24,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -53,7 +54,8 @@ class AuditFlowIntegrationTest {
         String console = mockMvc.perform(get("/index.html"))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "增量比较 Base → Target", "审计任务");
+        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "增量比较 Base → Target",
+                "扫描项目管理", "项目归档", "审计任务");
 
         Path repository = vulnerableProjectRepository();
         String importJson = mockMvc.perform(post("/api/projects/git")
@@ -109,6 +111,60 @@ class AuditFlowIntegrationTest {
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(jsonReport).contains("AI Agents 已完成", "agentRuns", "hypotheses");
+
+        String updatedProject = mockMvc.perform(patch("/api/projects/{projectId}", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "更新后的漏洞演示项目", "description", "项目管理集成测试"))))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(updatedProject).contains("更新后的漏洞演示项目", "项目管理集成测试", "\"archived\":false");
+
+        String history = mockMvc.perform(get("/api/projects/{projectId}/audits", projectId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(history).contains(taskId, "\"scanMode\":\"FULL\"");
+
+        mockMvc.perform(post("/api/projects/{projectId}/cleanup", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "confirmation", "DELETE_SCAN_DATA"))))
+                .andExpect(status().isBadRequest());
+
+        String archived = mockMvc.perform(post("/api/projects/{projectId}/archive", projectId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(archived).contains("\"archived\":true");
+        String activeProjects = mockMvc.perform(get("/api/projects"))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(activeProjects).doesNotContain(projectId);
+        String allProjects = mockMvc.perform(get("/api/projects").param("includeArchived", "true"))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(allProjects).contains(projectId, "\"archived\":true");
+        mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "scanMode", "FULL", "targetCommit", targetCommit))))
+                .andExpect(status().isBadRequest());
+
+        String cleanup = mockMvc.perform(post("/api/projects/{projectId}/cleanup", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "confirmation", "DELETE_SCAN_DATA"))))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(cleanup).contains("\"deletedTaskCount\":1", "扫描任务及其代码块");
+        mockMvc.perform(get("/api/projects/{projectId}/audits", projectId))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse()
+                        .getContentAsString(StandardCharsets.UTF_8)).isEqualTo("[]"));
+
+        String restored = mockMvc.perform(post("/api/projects/{projectId}/restore", projectId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(restored).contains("\"archived\":false");
     }
 
     @Test

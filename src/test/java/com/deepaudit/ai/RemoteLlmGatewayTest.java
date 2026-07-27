@@ -1,5 +1,7 @@
 package com.deepaudit.ai;
 
+import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.VulnerabilityType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,6 +18,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RemoteLlmGatewayTest {
+
+    @Test
+    void sendsCompactAuditUnitsToTriageOrchestrator() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"summary":"需要调查动态查询","decisions":[{
+                  "unitId":"chunk-1001","primaryChunkId":1001,"disposition":"investigate",
+                  "vulnerabilityTypes":["sql_injection"],
+                  "reasonCodes":["DANGEROUS_DATA_ACCESS"],"requiredContext":[],
+                  "reason":"外部输入参与数据库查询"}]}
+                """);
+        AuditUnit unit = new AuditUnit("chunk-1001", 1001L, "UserController.java",
+                "UserController#search", "/search", "EXTERNAL_ENTRY", "MODIFIED", "CHANGED",
+                List.of(VulnerabilityType.SQL_INJECTION),
+                List.of("EXTERNAL_ENTRY", "DANGEROUS_DATA_ACCESS"), "String name",
+                "@GetMapping", "queryForList -> DATABASE", "", "queryForList(sql)");
+
+        LlmGateway.TriagePlan plan = gateway.triage(UUID.randomUUID(), recon(), List.of(unit));
+
+        assertThat(plan.decisions()).singleElement().satisfies(decision -> {
+            assertThat(decision.disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
+            assertThat(decision.vulnerabilityTypes()).containsExactly(VulnerabilityType.SQL_INJECTION);
+        });
+        assertThat(gateway.requests).hasSize(1);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("轻量 Triage Orchestrator", "NEED_CONTEXT", "SKIP");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"auditUnits\"", "\"codeOutline\"")
+                .doesNotContain("\"baseCodeExcerpt\"");
+    }
 
     @Test
     void locallyRepairsUnescapedQuotesWithoutAnotherModelCall() {
@@ -76,10 +108,13 @@ class RemoteLlmGatewayTest {
         LlmGateway.Target target = new LlmGateway.Target(1001L, "UserController.java", "search", "/search",
                 "JAVA_METHOD", "String name", "@GetMapping", "queryForList", "return query(name);",
                 "MODIFIED", "CHANGED", "", List.of());
-        LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight("Spring MVC", List.of("/search"),
-                List.of(), List.of("动态 SQL"));
         return new LlmGateway.AgentTurn(UUID.randomUUID(), AgentType.SQL_INJECTION,
-                VulnerabilityType.SQL_INJECTION, target, null, "没有预计算语义路径", recon, List.of(), 1);
+                VulnerabilityType.SQL_INJECTION, target, null, "没有预计算语义路径", recon(), List.of(), 1);
+    }
+
+    private LlmGateway.ReconInsight recon() {
+        return new LlmGateway.ReconInsight("Spring MVC", List.of("/search"),
+                List.of(), List.of("动态 SQL"));
     }
 
     private static class StubRemoteLlmGateway extends RemoteLlmGateway {

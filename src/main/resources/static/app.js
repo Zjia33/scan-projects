@@ -2,12 +2,15 @@ const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 const state = {
     tasks: [],
     repositories: [],
+    managedProjects: [],
     commits: [],
+    selectedProjectId: null,
     selectedTaskId: null,
     renderedTaskId: null,
     renderedFindingCount: -1,
     renderedStatus: null,
     loadingTasks: false,
+    loadingProjects: false,
     poller: null,
     eventSource: null,
     eventIdsByTask: new Map(),
@@ -32,6 +35,11 @@ const elements = {
     refreshCommits: document.querySelector('#refresh-commits-button'),
     submit: document.querySelector('#submit-button'),
     refresh: document.querySelector('#refresh-button'),
+    refreshProjects: document.querySelector('#refresh-projects-button'),
+    includeArchivedProjects: document.querySelector('#include-archived-projects'),
+    projectList: document.querySelector('#project-list'),
+    projectCount: document.querySelector('#project-count'),
+    projectDetail: document.querySelector('#project-detail'),
     taskList: document.querySelector('#task-list'),
     taskCount: document.querySelector('#task-count'),
     detail: document.querySelector('#task-detail'),
@@ -55,6 +63,7 @@ elements.importForm.addEventListener('submit', async event => {
         });
         elements.gitToken.value = '';
         await loadRepositories(response.project.projectId);
+        await loadManagedProjects(response.project.projectId);
         populateCommits(response.commits);
         showImportMessage(response.message);
     } catch (error) {
@@ -98,6 +107,8 @@ elements.repositorySelect.addEventListener('change', () => loadCommits());
 elements.scanMode.addEventListener('change', updateScanMode);
 elements.refreshCommits.addEventListener('click', () => refreshCommits());
 elements.refresh.addEventListener('click', () => loadTasks(true));
+elements.refreshProjects.addEventListener('click', () => loadManagedProjects(state.selectedProjectId));
+elements.includeArchivedProjects.addEventListener('change', () => loadManagedProjects());
 
 async function loadRepositories(selectedProjectId = null) {
     state.repositories = await fetchJson('/api/projects');
@@ -113,6 +124,243 @@ async function loadRepositories(selectedProjectId = null) {
     } else {
         populateCommits([]);
     }
+}
+
+async function loadManagedProjects(selectedProjectId = null) {
+    if (state.loadingProjects) return;
+    state.loadingProjects = true;
+    try {
+        const includeArchived = elements.includeArchivedProjects.checked;
+        state.managedProjects = await fetchJson(`/api/projects?includeArchived=${includeArchived}`);
+        const requested = selectedProjectId || state.selectedProjectId;
+        state.selectedProjectId = state.managedProjects.some(project => project.projectId === requested)
+            ? requested : state.managedProjects[0]?.projectId || null;
+        renderProjectList();
+        if (state.selectedProjectId) {
+            await renderSelectedProject();
+        } else {
+            renderEmptyProjectDetail();
+        }
+    } catch (error) {
+        elements.projectList.replaceChildren(node('div', 'empty-state', `无法读取项目：${error.message}`));
+    } finally {
+        state.loadingProjects = false;
+    }
+}
+
+function renderProjectList() {
+    elements.projectList.replaceChildren();
+    elements.projectCount.textContent = `${state.managedProjects.length} ITEMS`;
+    if (!state.managedProjects.length) {
+        elements.projectList.append(node('div', 'empty-state', '暂无扫描项目'));
+        return;
+    }
+    state.managedProjects.forEach((project, index) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = `project-card${project.projectId === state.selectedProjectId ? ' active' : ''}`
+            + `${project.archived ? ' archived' : ''}`;
+        item.addEventListener('click', () => selectManagedProject(project.projectId));
+        const copy = document.createElement('span');
+        copy.className = 'project-card-copy';
+        copy.append(node('strong', '', project.name),
+            node('small', '', project.repositoryUrl),
+            node('small', '', project.defaultBranch || '未识别默认分支'));
+        item.append(node('span', 'project-index', String(index + 1).padStart(2, '0')), copy,
+            node('span', `project-state${project.archived ? ' archived' : ''}`,
+                project.archived ? '已归档' : '使用中'));
+        elements.projectList.append(item);
+    });
+}
+
+async function selectManagedProject(projectId) {
+    if (state.selectedProjectId === projectId) return;
+    state.selectedProjectId = projectId;
+    renderProjectList();
+    await renderSelectedProject();
+}
+
+async function renderSelectedProject() {
+    const project = state.managedProjects.find(item => item.projectId === state.selectedProjectId);
+    if (!project) return renderEmptyProjectDetail();
+    const requestedId = project.projectId;
+    elements.projectDetail.replaceChildren(node('div', 'empty-state', '正在读取项目扫描历史…'));
+    try {
+        const audits = await fetchJson(`/api/projects/${project.projectId}/audits`);
+        if (state.selectedProjectId !== requestedId) return;
+        elements.projectDetail.replaceChildren(buildProjectDetail(project, audits));
+    } catch (error) {
+        elements.projectDetail.replaceChildren(node('div', 'empty-state', `无法读取项目详情：${error.message}`));
+    }
+}
+
+function buildProjectDetail(project, audits) {
+    const fragment = document.createDocumentFragment();
+    const head = document.createElement('header');
+    head.className = 'project-detail-head';
+    const title = document.createElement('div');
+    title.append(node('p', 'kicker', project.archived ? 'ARCHIVED PROJECT' : 'ACTIVE PROJECT'),
+        node('h3', '', project.name), node('p', 'project-repository', project.repositoryUrl));
+    head.append(title, node('span', `project-status-badge${project.archived ? ' archived' : ''}`,
+        project.archived ? '已归档' : '使用中'));
+
+    const metadata = document.createElement('div');
+    metadata.className = 'project-metadata';
+    metadata.append(projectMeta('DEFAULT BRANCH', project.defaultBranch || '—'),
+        projectMeta('CREATED', formatTime(project.createdAt)),
+        projectMeta('UPDATED', formatTime(project.updatedAt)),
+        projectMeta('AUDIT HISTORY', String(audits.length)));
+
+    const editForm = document.createElement('form');
+    editForm.className = 'project-edit-form';
+    const nameField = projectField('项目名称', 'input');
+    nameField.control.name = 'name';
+    nameField.control.maxLength = 200;
+    nameField.control.required = true;
+    nameField.control.value = project.name;
+    const descriptionField = projectField('项目描述', 'textarea');
+    descriptionField.control.name = 'description';
+    descriptionField.control.maxLength = 1000;
+    descriptionField.control.rows = 4;
+    descriptionField.control.placeholder = '记录项目用途或扫描范围（可选）';
+    descriptionField.control.value = project.description || '';
+    const save = node('button', 'project-primary-action', '保存基本信息');
+    save.type = 'submit';
+    const message = node('p', 'project-action-message', '');
+    editForm.append(nameField.wrapper, descriptionField.wrapper, save, message);
+    editForm.addEventListener('submit', event => saveProjectDetails(event, project.projectId, save, message));
+
+    const history = document.createElement('section');
+    history.className = 'project-history';
+    const historyHead = document.createElement('div');
+    historyHead.className = 'project-subhead';
+    historyHead.append(node('h4', '', '扫描历史'), node('span', '', `${audits.length} AUDITS`));
+    const historyList = document.createElement('div');
+    historyList.className = 'project-history-list';
+    if (!audits.length) {
+        historyList.append(node('div', 'empty-state compact', '该项目还没有扫描记录'));
+    } else {
+        audits.forEach(audit => historyList.append(projectHistoryRow(audit)));
+    }
+    history.append(historyHead, historyList);
+
+    const lifecycle = document.createElement('section');
+    lifecycle.className = 'project-lifecycle';
+    const lifecycleCopy = document.createElement('div');
+    lifecycleCopy.append(node('h4', '', project.archived ? '恢复与数据清理' : '项目归档'),
+        node('p', '', project.archived
+            ? '恢复后可以继续刷新仓库和创建扫描；清理只删除扫描派生数据，保留裸 Git 仓库。'
+            : '归档后停止刷新和新建扫描，已有扫描记录与报告继续保留。'));
+    const lifecycleActions = document.createElement('div');
+    lifecycleActions.className = 'project-lifecycle-actions';
+    const archiveAction = node('button', project.archived ? 'project-secondary-action' : 'project-warning-action',
+        project.archived ? '恢复项目' : '归档项目');
+    archiveAction.type = 'button';
+    archiveAction.addEventListener('click', () => toggleProjectArchive(project, archiveAction));
+    lifecycleActions.append(archiveAction);
+    if (project.archived) {
+        const cleanup = node('button', 'project-danger-action', '清空扫描数据');
+        cleanup.type = 'button';
+        cleanup.disabled = audits.length === 0;
+        cleanup.addEventListener('click', () => cleanupProjectData(project, cleanup));
+        lifecycleActions.append(cleanup);
+    }
+    lifecycle.append(lifecycleCopy, lifecycleActions);
+
+    fragment.append(head, metadata, editForm, history, lifecycle);
+    return fragment;
+}
+
+function projectMeta(label, value) {
+    const item = document.createElement('span');
+    item.append(node('small', '', label), node('b', '', value));
+    return item;
+}
+
+function projectField(labelText, type) {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'project-field';
+    wrapper.append(node('span', '', labelText));
+    const control = document.createElement(type);
+    wrapper.append(control);
+    return { wrapper, control };
+}
+
+function projectHistoryRow(audit) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'project-history-row';
+    row.addEventListener('click', async () => {
+        state.selectedTaskId = audit.taskId;
+        state.renderedTaskId = null;
+        await loadTasks(true);
+        document.querySelector('#audit-workspace').scrollIntoView({ behavior: 'smooth' });
+    });
+    const commit = `${audit.baseCommit ? `${audit.baseCommit.slice(0, 8)} → ` : ''}`
+        + `${audit.targetCommit?.slice(0, 8) || '—'}`;
+    const copy = document.createElement('span');
+    copy.append(node('strong', '', `${audit.scanMode === 'INCREMENTAL' ? '增量扫描' : '全量扫描'} · ${commit}`),
+        node('small', '', `${formatTime(audit.createdAt)} · ${audit.findingCount} 个确认问题`));
+    row.append(copy, node('span', `status-pill${audit.status === 'FAILED' ? ' failed' : ''}`,
+        statusText(audit.status)));
+    return row;
+}
+
+async function saveProjectDetails(event, projectId, button, message) {
+    event.preventDefault();
+    button.disabled = true;
+    message.textContent = '正在保存…';
+    try {
+        const data = new FormData(event.currentTarget);
+        await fetchJson(`/api/projects/${projectId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.fromEntries(data.entries()))
+        });
+        message.textContent = '项目基本信息已保存。';
+        await Promise.all([loadRepositories(), loadManagedProjects(projectId)]);
+    } catch (error) {
+        message.textContent = error.message;
+        message.classList.add('error');
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function toggleProjectArchive(project, button) {
+    const action = project.archived ? '恢复' : '归档';
+    if (!window.confirm(`确定要${action}项目“${project.name}”吗？`)) return;
+    button.disabled = true;
+    try {
+        await fetchJson(`/api/projects/${project.projectId}/${project.archived ? 'restore' : 'archive'}`,
+            { method: 'POST' });
+        if (!project.archived) elements.includeArchivedProjects.checked = true;
+        await Promise.all([loadRepositories(), loadManagedProjects(project.projectId)]);
+    } catch (error) {
+        window.alert(error.message);
+        button.disabled = false;
+    }
+}
+
+async function cleanupProjectData(project, button) {
+    if (!window.confirm(`将永久删除“${project.name}”的全部扫描任务、代码块、向量、漏洞和报告。裸 Git 仓库仍会保留。确定继续吗？`)) return;
+    button.disabled = true;
+    try {
+        const result = await fetchJson(`/api/projects/${project.projectId}/cleanup`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirmation: 'DELETE_SCAN_DATA' })
+        });
+        state.selectedTaskId = null;
+        state.renderedTaskId = null;
+        await Promise.all([loadTasks(true), loadManagedProjects(project.projectId)]);
+        window.alert(`${result.message}，共删除 ${result.deletedTaskCount} 个扫描任务。`);
+    } catch (error) {
+        window.alert(error.message);
+        button.disabled = false;
+    }
+}
+
+function renderEmptyProjectDetail() {
+    elements.projectDetail.replaceChildren(node('div', 'detail-empty', '暂无可管理的扫描项目'));
 }
 
 async function loadCommits() {
@@ -637,5 +885,6 @@ document.querySelectorAll('.side-nav a').forEach(link => link.addEventListener('
 
 window.addEventListener('beforeunload', closeEventStream);
 loadRepositories().catch(error => showAuditMessage(`无法读取仓库：${error.message}`, true));
+loadManagedProjects();
 loadTasks();
 state.poller = setInterval(loadTasks, 4000);

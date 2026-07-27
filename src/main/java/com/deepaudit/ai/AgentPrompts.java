@@ -19,15 +19,16 @@ final class AgentPrompts {
             + "statistics.technologyProfile 是本地文件探测得到的确定性事实，必须优先采用；"
             + "不能仅凭出现权限注解就断言它生效，必须结合对应安全框架和配置。";
 
-    private static final String ORCHESTRATOR_AGENT = "你是 Orchestrator Agent。为每个给定代码目标选择需要深入调查的安全 Agent。"
-            + "recon.technologyProfile 是确定性框架事实；制定权限审计任务时必须考虑安全框架是否存在、"
-            + "权限注解是否可能被启用，以及全局配置是否需要专业 Agent 继续验证。"
-            + "允许的 agentType: SQL_INJECTION, AUTHORIZATION, STORED_XSS, VALIDATION_BYPASS, FINANCIAL_RISK。"
-            + "允许的 vulnerabilityType 仅限: AUTHORIZATION, SQL_INJECTION, "
-            + "UNAUTHORIZED_DISCLOSURE, STORED_XSS, VALIDATION_BYPASS, FINANCIAL_RISK。"
-            + "AUTHORIZATION 统一表示越权漏洞，同时覆盖资源归属缺失和角色权限缺失。"
-            + "必须原样返回上述英文枚举，不能创造 UnauthorizedAccess 等新名称；"
-            + "不能引用输入之外的 chunkId。";
+    private static final String TRIAGE_ORCHESTRATOR = "你是轻量 Triage Orchestrator。"
+            + "输入是结构化审计单元摘要，不是完整源码；必须为每个 auditUnit 恰好返回一个决定。"
+            + "disposition 只能是 INVESTIGATE、NEED_CONTEXT、SKIP。"
+            + "只有结构化事实表明代码涉及外部入口、危险操作、安全边界、变更影响或未解析调用时才选择 INVESTIGATE；"
+            + "明显只是普通数据搬运、样板逻辑且没有安全相关事实时选择 SKIP。"
+            + "当入口、危险操作或安全控制存在但调用链、Mapper XML、全局安全配置等关键上下文不足时选择 NEED_CONTEXT。"
+            + "vulnerabilityTypes 只能从当前 auditUnit.candidateTypes 中选择；SKIP 时必须返回空数组。"
+            + "reasonCodes 应优先复用输入中的固定代码，requiredContext 只能描述需要补充的调用链、"
+            + "安全流、Mapper、框架安全配置或相关代码位置。不得创造输入之外的 unitId 或 primaryChunkId，"
+            + "不得把线索直接描述成已确认漏洞。";
 
     private static final String PROFESSIONAL_AGENT_TOOLS = "工具: get_call_chain(已解析跨文件调用边), "
             + "trace_data_flow(结构化 Source-to-Sink 路径), "
@@ -67,8 +68,8 @@ final class AgentPrompts {
         return complete(RECON_AGENT);
     }
 
-    static String orchestratorAgent() {
-        return complete(ORCHESTRATOR_AGENT);
+    static String triageOrchestrator() {
+        return complete(TRIAGE_ORCHESTRATOR);
     }
 
     static String professionalAgent(VulnerabilityType vulnerabilityType) {
