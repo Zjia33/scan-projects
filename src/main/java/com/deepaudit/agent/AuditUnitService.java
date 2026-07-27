@@ -4,10 +4,13 @@ import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.SecurityFlow;
+import com.deepaudit.domain.SemanticChangeKind;
+import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
+import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -52,6 +55,7 @@ public class AuditUnitService {
 
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
+    private final SemanticMethodChangeMapper semanticChangeMapper;
 
     // 从全部项目事实中构建安全相关审计单元
     public List<AuditUnit> build(UUID taskId, List<CodeChunk> chunks, ScanMode scanMode,
@@ -65,12 +69,22 @@ public class AuditUnitService {
                 .filter(edge -> edge.getCallerChunkId() != null)
                 .collect(Collectors.groupingBy(SemanticCallEdge::getCallerChunkId,
                         LinkedHashMap::new, Collectors.toList()));
+        Map<String, List<SemanticMethodChange>> semanticChangesByPath = semanticChangeMapper.findByTaskId(taskId)
+                .stream().filter(change -> change.getTargetPath() != null)
+                .collect(Collectors.groupingBy(SemanticMethodChange::getTargetPath,
+                        LinkedHashMap::new, Collectors.toList()));
 
         List<AuditUnit> units = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
             if (chunk.getId() == null || !insideDeepScope(chunk, scanMode)) continue;
             List<SecurityFlow> flows = flowsByChunk.getOrDefault(chunk.getId(), List.of());
             List<SemanticCallEdge> edges = edgesByCaller.getOrDefault(chunk.getId(), List.of());
+            List<SemanticMethodChange> semanticChanges = semanticChangesByPath
+                    .getOrDefault(chunk.getFilePath(), List.of()).stream()
+                    .filter(change -> change.getTargetStartLine() == null
+                            || change.getTargetStartLine() >= chunk.getStartLine()
+                            && change.getTargetStartLine() <= chunk.getEndLine())
+                    .toList();
             Set<VulnerabilityType> candidateTypes = EnumSet.noneOf(VulnerabilityType.class);
             Set<String> reasonCodes = new LinkedHashSet<>();
             Set<VulnerabilityType> chunkHints = hints.getOrDefault(chunk.getId(), Set.of());
@@ -82,6 +96,15 @@ public class AuditUnitService {
             if (!flows.isEmpty()) {
                 reasonCodes.add("SEMANTIC_FLOW");
                 flows.stream().map(SecurityFlow::getType).forEach(candidateTypes::add);
+            }
+            if (!semanticChanges.isEmpty()) {
+                reasonCodes.add("SEMANTIC_CHANGE");
+                if (semanticChanges.stream().anyMatch(change ->
+                        change.getChangeKind() == SemanticChangeKind.GUARD_REMOVED)) {
+                    reasonCodes.add("GUARD_REMOVED");
+                    candidateTypes.add(VulnerabilityType.AUTHORIZATION);
+                    candidateTypes.add(VulnerabilityType.VALIDATION_BYPASS);
+                }
             }
 
             String searchable = searchable(chunk);
@@ -112,7 +135,8 @@ public class AuditUnitService {
             }
             if (reasonCodes.isEmpty() || candidateTypes.isEmpty()) continue;
 
-            String context = joinNonBlank(hintDescriptions.get(chunk.getId()), flowSummary(flows));
+            String context = joinNonBlank(hintDescriptions.get(chunk.getId()), flowSummary(flows),
+                    methodChangeSummary(semanticChanges));
             units.add(new AuditUnit("chunk-" + chunk.getId(), chunk.getId(), chunk.getFilePath(),
                     chunk.getSymbolName(), chunk.getEndpoint(), unitType(reasonCodes),
                     chunk.getChangeType().name(), chunk.getAnalysisScope().name(),
@@ -236,6 +260,16 @@ public class AuditUnitService {
                         + " | sink=" + safe(flow.getSinkDescription())
                         + " | guard=" + safe(flow.getGuardSummary())
                         + " | confidence=" + flow.getConfidence())
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String methodChangeSummary(List<SemanticMethodChange> changes) {
+        return changes.stream().limit(20)
+                .map(change -> change.getChangeKind() + " | " + change.getDetails()
+                        + (change.getBaseStartLine() == null ? "" : " | base=" + change.getBasePath()
+                        + ":" + change.getBaseStartLine())
+                        + (change.getTargetStartLine() == null ? "" : " | target=" + change.getTargetPath()
+                        + ":" + change.getTargetStartLine()))
                 .collect(Collectors.joining("\n"));
     }
 

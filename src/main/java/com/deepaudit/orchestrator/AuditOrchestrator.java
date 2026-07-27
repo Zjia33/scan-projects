@@ -1,6 +1,7 @@
 package com.deepaudit.orchestrator;
 
 import com.deepaudit.analysis.AnalysisService;
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.AuditStatus;
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.GitFileChange;
@@ -38,6 +39,7 @@ public class AuditOrchestrator {
     private final GitDiffService diffService;
     private final ReconService reconService;
     private final AnalysisService analysisService;
+    private final CodeGraphIntegrationService codeGraphIntegrationService;
 
     // 按固定阶段编排 Git 快照、差异、语义索引和 Agent 审计。
     @Async("auditExecutor")
@@ -93,7 +95,8 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.INVENTORY, 28,
                             "项目盘点：" + targetSnapshot.fileCount() + " 个文件");
                     task = update(task, AuditStatus.INDEXING, 42,
-                            task.getScanMode() == ScanMode.FULL ? "构建全量代码与 RAG 索引" : "构建完整语义事实和增量代码索引");
+                            task.getScanMode() == ScanMode.FULL ? "构建全量代码与 RAG 索引"
+                                    : "构建 Base/Target 方法差异、完整语义事实和增量代码索引");
                     var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, task.getScanMode(), changes);
 
                     task = update(task, AuditStatus.RECON, 55,
@@ -114,6 +117,7 @@ public class AuditOrchestrator {
                 }
             } finally {
                 // Chunk、Diff 和报告证据已持久化，任务结束后删除临时快照以避免磁盘持续增长。
+                codeGraphIntegrationService.release(taskId);
                 deleteWorkspace(projectDirectory, targetRoot);
                 deleteWorkspace(projectDirectory, baseRoot);
             }

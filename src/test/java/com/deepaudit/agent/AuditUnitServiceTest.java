@@ -3,9 +3,12 @@ package com.deepaudit.agent;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.ScanMode;
+import com.deepaudit.domain.SemanticChangeKind;
+import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
+import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -24,9 +27,11 @@ class AuditUnitServiceTest {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper semanticChangeMapper = mock(SemanticMethodChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper);
+        when(semanticChangeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper, semanticChangeMapper);
 
         CodeChunk getter = chunk(1L, "src/main/java/demo/UserDto.java", "UserDto#getName",
                 null, "return name;");
@@ -51,9 +56,11 @@ class AuditUnitServiceTest {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper semanticChangeMapper = mock(SemanticMethodChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper);
+        when(semanticChangeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper, semanticChangeMapper);
         CodeChunk changed = chunk(8L, "src/main/java/demo/Formatter.java", "Formatter#format",
                 null, "return value.strip();");
         changed.setAnalysisScope(AnalysisScope.CHANGED);
@@ -64,6 +71,36 @@ class AuditUnitServiceTest {
         assertThat(units).singleElement().satisfies(unit -> {
             assertThat(unit.reasonCodes()).contains("DIRECT_CHANGE");
             assertThat(unit.candidateTypes()).containsExactlyInAnyOrder(VulnerabilityType.values());
+        });
+    }
+
+    @Test
+    void exposesRemovedGuardAsDeterministicAuditFact() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper semanticChangeMapper = mock(SemanticMethodChangeMapper.class);
+        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        SemanticMethodChange removed = new SemanticMethodChange(taskId,
+                SemanticChangeKind.GUARD_REMOVED, "load", "OrderService.java", "OrderService.java",
+                "demo.OrderService.load(Long)", "demo.OrderService.load(Long)",
+                1, 4, 1, 3, "checkOwner(id);", "return repository.findById(id);",
+                "删除安全 Guard：checkOwner(id)");
+        when(semanticChangeMapper.findByTaskId(taskId)).thenReturn(List.of(removed));
+        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper, semanticChangeMapper);
+        CodeChunk changed = chunk(9L, "OrderService.java", "OrderService#load",
+                null, "return repository.findById(id);");
+        changed.setAnalysisScope(AnalysisScope.CHANGED);
+
+        List<AuditUnit> units = service.build(taskId, List.of(changed), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(units).singleElement().satisfies(unit -> {
+            assertThat(unit.reasonCodes()).contains("SEMANTIC_CHANGE", "GUARD_REMOVED");
+            assertThat(unit.candidateTypes()).contains(VulnerabilityType.AUTHORIZATION,
+                    VulnerabilityType.VALIDATION_BYPASS);
+            assertThat(unit.contextSummary()).contains("删除安全 Guard", "checkOwner");
         });
     }
 

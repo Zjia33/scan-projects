@@ -9,7 +9,9 @@
 - 只读导入 HTTPS Git 仓库、列出提交并安全物化不可变提交快照
 - 扫描项目基本信息维护、项目级扫描历史、归档/恢复和扫描派生数据清理
 - 单提交全量扫描，以及 Base/Target 双提交增量扫描
-- JavaParser 将 Git Diff 行区间映射为方法级变更块，并通过跨文件调用图双向扩展两层影响范围
+- 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
+- 将增量语义变化分类为方法新增、修改、删除、签名变化、Guard 新增和 Guard 删除，纯删除行不再依赖 Target 新增行范围
+- Git Diff 行区间与方法语义差异共同确定变更块，并通过跨文件调用图双向扩展两层影响范围
 - 增量任务只为直接变更块和语义影响块生成必要 Embedding，同时保留完整 Target 项目事实
 - 按模型、输入内容哈希复用 Embedding；漏洞使用独立于行号的稳定指纹
 - Critic 将目标提交中的确认问题标记为新增、回归、持续存在或受变更影响；全量结果标记为基线
@@ -38,6 +40,7 @@
 ```text
 安全物化 Git 提交快照
   → 全量项目事实或增量 ChangeSet
+  → Base/Target 方法索引、稳定方法映射和六类语义差异
   → 确定性 Recon 和语义索引
   → 增量模式扩展调用方、被调用方、接口与安全配置影响面
   → 跨文件调用图和轻量安全数据流
@@ -139,6 +142,42 @@ AI 是完整审计流程的必要条件。Chat 模型不可用、返回无法解
 实际召回使用 `embedding_vector`、余弦距离运算符 `<=>` 和 HNSW 索引在 PostgreSQL
 内部完成。Java 层只对数据库返回的候选执行关键词和确定性结构关系重排，不再逐块计算向量距离。
 
+## CodeGraph 可选增强
+
+DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 补充跨文件调用关系，
+不复制其索引器，也不把它作为新的漏洞判定引擎。CodeGraph 必须安装在运行 DeepAudit 的机器或容器内，
+并且应当能被同一个服务账号从 `PATH` 调用；无需为被审计项目单独执行 `codegraph init`，DeepAudit 会在
+每个任务的不可变 Target 快照中自动建立临时索引。
+
+已有 Node.js 时可按上游说明安装：
+
+```powershell
+npm install -g @colbymchenry/codegraph
+codegraph version
+```
+
+也可以使用 CodeGraph 官方发布的独立安装包。DeepAudit 只调用 CLI，不需要运行交互式
+`codegraph install`，也不需要配置 MCP。生产环境建议把 `codegraph version` 的完整输出写入
+`DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION`，避免升级后命令或 JSON 协议变化被静默接受。
+
+启用时先从 `SHADOW` 开始：
+
+```text
+DEEPAUDIT_CODEGRAPH_MODE=SHADOW
+DEEPAUDIT_CODEGRAPH_EXECUTABLE=codegraph
+DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION=<codegraph version 的完整输出>
+```
+
+- `OFF`：完全不启动 CodeGraph，也是默认值。
+- `SHADOW`：建立索引并记录与内置语义影响范围的交集、差异和映射失败，但不改变审计范围。
+- `AUGMENT`：将 CodeGraph 影响块与内置影响块取并集，并为 Agent 的调用上下文补充候选块。
+
+建议先用若干真实项目观察 `SHADOW` 日志，确认符号映射质量后再切换到 `AUGMENT`。任何初始化、
+超时、非零退出、超量输出或 JSON 解析失败都会按任务降级到内置语义分析。CodeGraph 返回的关系只会
+标记为 `CODEGRAPH_CANDIDATE`，必须通过现有 `verify_relation` 门禁后才能作为漏洞证据；它不能直接
+产生 Finding，也不能减少原生分析选中的范围。CLI 通过参数数组启动而非 Shell，禁用遥测、提示 Hook
+和守护进程；索引只能写入任务 Target 快照内的单级相对目录，并在任务结束时随快照清理。
+
 ## Git 仓库安全边界
 
 后端通过 JGit 克隆只读裸仓库，并直接读取 Git Tree/Blob 物化提交快照，不调用系统 Git，也不执行 Checkout 过滤器。以下内容不会被执行或自动获取：
@@ -156,9 +195,9 @@ Bundle 不会物化到分析快照，也不会生成 Chunk、Embedding、语义�
 
 生产环境只允许 `deepaudit.git.allowed-hosts` 中的 HTTPS 主机。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
 
-全量扫描选择一个 Target Commit。增量扫描要求 Base 是 Target 的祖先，并同时保存 Base、Target 和 Merge Base 的完整 SHA。系统仍解析 Target 的完整项目结构、配置和 Java 语义图，但专业 Agent 的深度目标限制为直接变更块、两层调用影响块以及全局安全配置相关块。
+全量扫描选择一个 Target Commit。增量扫描要求 Base 是 Target 的祖先，并同时保存 Base、Target 和 Merge Base 的完整 SHA。系统解析 Target 的完整项目结构、配置和调用图，同时为 Base/Target 建立独立的方法快照索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的深度目标限制为直接变更块、两层调用影响块以及全局安全配置相关块，范围扩展不再按固定代码块数量截断。
 
-增量报告只对 Target 中仍可验证的漏洞分类：`NEW` 表示本次变更新增，`REGRESSED` 表示防护被削弱，`PERSISTING` 表示 Base 与 Target 均存在，`AFFECTED` 表示漏洞位于调用影响范围。删除文件和删除行会保留在 ChangeSet 中，但当前不会单独生成 `FIXED` 漏洞项，因为 Target 中已不存在可通过 Critic 证据门禁的主代码块。
+增量报告只对 Target 中仍可验证的漏洞分类：`NEW` 表示本次变更新增，`REGRESSED` 表示防护被削弱，`PERSISTING` 表示 Base 与 Target 均存在，`AFFECTED` 表示漏洞位于调用影响范围。纯删除行通过 Base/Target 方法正文比较定位到 Target 方法；被删除方法会保存独立语义变化，并通过剩余调用者和同文件方法扩展影响范围。当前仍不单独生成 `FIXED` 漏洞项，因为 Target 中已不存在可通过 Critic 证据门禁的主代码块。
 
 Base/Target 临时快照只在分析期间存在；任务完成或失败后会清理。裸仓库、完整提交 SHA、结构化 Diff、代码块、Agent 轨迹和报告结果会保留。
 
@@ -186,6 +225,7 @@ http://localhost:8080/
 - `V8__add_finding_fingerprint.sql`：稳定漏洞指纹
 - `V9__add_pgvector_recall.sql`：启用 pgvector、增加定维向量列并创建 HNSW 余弦索引
 - `V10__add_project_management.sql`：增加项目描述、更新时间和归档状态
+- `V11__add_semantic_method_changes.sql`：持久化 Base/Target 方法新增、修改、删除、签名及 Guard 变化
 
 ## Agent 只读工具
 
@@ -221,6 +261,7 @@ http://localhost:8080/
 - `GET /api/tasks/{taskId}/events`：Agent 操作摘要和工具日志
 - `GET /api/tasks/{taskId}/hypotheses`：漏洞假设及 Critic 状态
 - `GET /api/tasks/{taskId}/changes`：结构化 Git 文件和行范围差异
+- `GET /api/tasks/{taskId}/method-changes`：Base/Target 方法级语义变化和前后代码证据
 - `GET /api/tasks/{taskId}/findings`：确认漏洞列表
 - `GET /api/tasks/{taskId}/report.html`：HTML 报告
 - `GET /api/tasks/{taskId}/report.json`：包含 Agent 信息的 JSON 报告

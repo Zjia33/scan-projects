@@ -63,9 +63,13 @@ public class TestLlmConfiguration {
 
             @Override
             public CriticDecision critique(CriticRequest request) {
+                boolean introducedSqlSink = request.proposal().type()
+                        == com.deepaudit.domain.VulnerabilityType.SQL_INJECTION
+                        && !request.baseCodeExcerpt().toLowerCase(java.util.Locale.ROOT)
+                        .matches("(?s).*(statement\\.execute|executequery|executeupdate|preparestatement).*" );
                 com.deepaudit.domain.FindingDeltaStatus delta = "FULL".equals(request.analysisScope())
                         ? com.deepaudit.domain.FindingDeltaStatus.BASELINE
-                        : "ADDED".equals(request.changeType()) || request.baseCodeExcerpt().contains("- ")
+                        : "ADDED".equals(request.changeType()) || introducedSqlSink
                         ? com.deepaudit.domain.FindingDeltaStatus.NEW
                         : com.deepaudit.domain.FindingDeltaStatus.AFFECTED;
                 return new CriticDecision(true, Confidence.HIGH,

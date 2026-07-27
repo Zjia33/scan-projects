@@ -65,6 +65,17 @@ deepaudit:
     max-call-depth: 10
     max-paths-per-entry: 20
     max-states-per-entry: 1000
+  codegraph:
+    # OFF 完全禁用；SHADOW 只比较影响范围；AUGMENT 扩展影响范围和 Agent 候选上下文。
+    mode: ${DEEPAUDIT_CODEGRAPH_MODE:OFF}
+    executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:codegraph}
+    expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
+    timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:120}
+    max-output-bytes: ${DEEPAUDIT_CODEGRAPH_MAX_OUTPUT_BYTES:8388608}
+    impact-depth: ${DEEPAUDIT_CODEGRAPH_IMPACT_DEPTH:2}
+    agent-context-limit: ${DEEPAUDIT_CODEGRAPH_AGENT_CONTEXT_LIMIT:10}
+    # 索引写入任务临时 Target 快照，任务结束后随快照删除。
+    index-directory: ${DEEPAUDIT_CODEGRAPH_INDEX_DIRECTORY:.codegraph-deepaudit}
 
 mybatis:
   mapper-locations: classpath*:mappers/*.xml

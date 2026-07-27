@@ -86,6 +86,32 @@ class OrchestratorAgentServiceTest {
         verify(unitService).enrich(any(), anyList(), anyList());
     }
 
+    @Test
+    void guardRemovalCannotBeSkippedByTriage() {
+        UUID taskId = UUID.randomUUID();
+        AuditUnit unit = new AuditUnit("chunk-20", 20L, "OrderService.java", "OrderService#load",
+                "/orders/{id}", "CHANGED_CODE", "MODIFIED", "CHANGED",
+                List.of(VulnerabilityType.AUTHORIZATION, VulnerabilityType.VALIDATION_BYPASS),
+                List.of("DIRECT_CHANGE", "SEMANTIC_CHANGE", "GUARD_REMOVED"),
+                "Long id", "", "findById -> repository", "删除安全 Guard：checkOwner(id)",
+                "return repository.findById(id);");
+        AuditUnitService unitService = mock(AuditUnitService.class);
+        when(unitService.build(any(), anyList(), any(), any(), any())).thenReturn(List.of(unit));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triage(any(), any(), anyList())).thenReturn(new LlmGateway.TriagePlan("模型尝试跳过",
+                List.of(new LlmGateway.TriageDecision(unit.unitId(), unit.primaryChunkId(),
+                        TriageDisposition.SKIP, List.of(), unit.reasonCodes(), List.of(), "无需调查"))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), unitService);
+
+        List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(tasks).extracting(AgentTask::vulnerabilityType)
+                .containsExactlyInAnyOrder(VulnerabilityType.AUTHORIZATION,
+                        VulnerabilityType.VALIDATION_BYPASS);
+    }
+
     private AgentTraceService traceService(UUID taskId) {
         AgentTraceService traceService = mock(AgentTraceService.class);
         when(traceService.start(any(), any(), any(), any()))

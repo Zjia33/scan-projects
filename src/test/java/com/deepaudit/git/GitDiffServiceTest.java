@@ -81,6 +81,43 @@ class GitDiffServiceTest {
         }
     }
 
+    @Test
+    void preservesOldRangeWhenAHunkOnlyDeletesSecurityCode() throws Exception {
+        Path repositoryPath = temporaryDirectory.resolve("deletion-repository");
+        Path source = repositoryPath.resolve("src/main/java/demo/OrderService.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, """
+                class OrderService {
+                  Object load(Long id) {
+                    checkOwner(id);
+                    return repository.findById(id);
+                  }
+                }
+                """);
+        try (Git git = Git.init().setDirectory(repositoryPath.toFile()).call()) {
+            git.add().addFilepattern(".").call();
+            String base = commit(git, "base with guard");
+            Files.writeString(source, """
+                    class OrderService {
+                      Object load(Long id) {
+                        return repository.findById(id);
+                      }
+                    }
+                    """);
+            git.add().addFilepattern(".").call();
+            String target = commit(git, "remove guard");
+
+            GitDiffService.ChangeSet result = new GitDiffService().compare(
+                    git.getRepository(), UUID.randomUUID(), base, target);
+
+            assertThat(result.changes()).singleElement().satisfies(change -> {
+                assertThat(change.getOldRanges()).isNotBlank();
+                assertThat(change.getNewRanges()).isBlank();
+                assertThat(change.getContextText()).contains("-     checkOwner(id);");
+            });
+        }
+    }
+
     private String commit(Git git, String message) throws Exception {
         return git.commit().setMessage(message)
                 .setAuthor("DeepAudit Test", "test@example.invalid")

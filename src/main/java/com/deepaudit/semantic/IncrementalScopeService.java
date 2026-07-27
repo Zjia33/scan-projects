@@ -3,9 +3,12 @@ package com.deepaudit.semantic;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.GitFileChange;
+import com.deepaudit.domain.SemanticChangeKind;
+import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.mapper.GitFileChangeMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
+import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.source.AuditSourceFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -14,17 +17,19 @@ import java.util.ArrayDeque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.EnumMap;
 import java.util.Set;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class IncrementalScopeService {
-    private static final int MAX_IMPACTED_CHUNKS = 600;
     private static final int CALL_GRAPH_DEPTH = 2;
 
     private final SemanticCallEdgeMapper edgeMapper;
     private final GitFileChangeMapper changeMapper;
+    private final SemanticMethodChangeMapper semanticChangeMapper;
 
     // 以直接变更块为种子，沿调用图双向扩展两层，并补充同文件和全局配置影响目标。
     public ScopeResult determine(UUID taskId, List<CodeChunk> chunks) {
@@ -36,9 +41,20 @@ public class IncrementalScopeService {
         }
         Set<Long> impacted = new LinkedHashSet<>(changed);
         List<SemanticCallEdge> edges = edgeMapper.findByTaskId(taskId);
+        List<SemanticMethodChange> semanticChanges = semanticChangeMapper.findByTaskId(taskId);
+        // 语义差异提供比 Git 新增行更稳定的方法定位，尤其覆盖纯删除和签名变化。
+        for (SemanticMethodChange change : semanticChanges) {
+            if (change.getTargetPath() != null && change.getTargetStartLine() != null) {
+                chunks.stream().filter(chunk -> change.getTargetPath().equals(chunk.getFilePath()))
+                        .filter(chunk -> change.getTargetStartLine() >= chunk.getStartLine()
+                                && change.getTargetStartLine() <= chunk.getEndLine())
+                        .map(CodeChunk::getId).filter(java.util.Objects::nonNull).findFirst()
+                        .ifPresent(changed::add);
+            }
+        }
         ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
         changed.forEach(id -> queue.add(new NodeDepth(id, 0)));
-        while (!queue.isEmpty() && impacted.size() < MAX_IMPACTED_CHUNKS) {
+        while (!queue.isEmpty()) {
             NodeDepth current = queue.removeFirst();
             if (current.depth() >= CALL_GRAPH_DEPTH) continue;
             for (SemanticCallEdge edge : edges) {
@@ -55,12 +71,23 @@ public class IncrementalScopeService {
         chunks.stream().filter(chunk -> changedFiles.contains(chunk.getFilePath()))
                 .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
 
+        // 被删除方法没有 Target Chunk：优先补充仍在调用该方法的调用者，并补充其原文件剩余方法。
+        semanticChanges.stream().filter(change -> change.getChangeKind() == SemanticChangeKind.METHOD_DELETED)
+                .forEach(change -> {
+                    edges.stream().filter(edge -> change.getMethodName().equals(edge.getCalledName()))
+                            .map(SemanticCallEdge::getCallerChunkId).filter(java.util.Objects::nonNull)
+                            .forEach(impacted::add);
+                    if (change.getTargetPath() != null) {
+                        chunks.stream().filter(chunk -> change.getTargetPath().equals(chunk.getFilePath()))
+                                .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
+                    }
+                });
+
         List<GitFileChange> fileChanges = changeMapper.findByTaskId(taskId);
         boolean globalConfigurationChanged = fileChanges.stream().anyMatch(GitFileChange::isConfigurationChange);
         if (globalConfigurationChanged) {
             chunks.stream().filter(this::globalSecurityContext)
-                    .map(CodeChunk::getId).filter(java.util.Objects::nonNull)
-                    .limit(250).forEach(impacted::add);
+                    .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
         }
 
         boolean deletedAnalyzableSource = fileChanges.stream()
@@ -69,14 +96,15 @@ public class IncrementalScopeService {
         // 删除源码后 Target 中没有对应代码块，即使同批还有其他修改也要补充剩余入口和安全方法。
         if (deletedAnalyzableSource || (changed.isEmpty() && globalConfigurationChanged)) {
             chunks.stream().filter(this::globalSecurityContext)
-                    .map(CodeChunk::getId).filter(java.util.Objects::nonNull)
-                    .limit(150).forEach(impacted::add);
+                    .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
         }
         impacted.removeAll(changed);
-        if (impacted.size() > MAX_IMPACTED_CHUNKS) {
-            impacted = new LinkedHashSet<>(impacted.stream().limit(MAX_IMPACTED_CHUNKS).toList());
+        Map<SemanticChangeKind, Long> semanticCounts = new EnumMap<>(SemanticChangeKind.class);
+        for (SemanticMethodChange change : semanticChanges) {
+            semanticCounts.merge(change.getChangeKind(), 1L, Long::sum);
         }
-        return new ScopeResult(Set.copyOf(changed), Set.copyOf(impacted), globalConfigurationChanged);
+        return new ScopeResult(Set.copyOf(changed), Set.copyOf(impacted), globalConfigurationChanged,
+                Map.copyOf(semanticCounts));
     }
 
     private boolean globalSecurityContext(CodeChunk chunk) {
@@ -102,9 +130,17 @@ public class IncrementalScopeService {
     }
 
     public record ScopeResult(Set<Long> changedChunkIds, Set<Long> impactedChunkIds,
-                              boolean globalConfigurationChanged) {
+                              boolean globalConfigurationChanged,
+                              Map<SemanticChangeKind, Long> semanticChangeCounts) {
         public int totalDeepTargets() {
             return changedChunkIds.size() + impactedChunkIds.size();
+        }
+
+        public String semanticChangeSummary() {
+            if (semanticChangeCounts.isEmpty()) return "无方法级语义变化";
+            return semanticChangeCounts.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                    .collect(java.util.stream.Collectors.joining("，"));
         }
     }
 }

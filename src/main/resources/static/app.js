@@ -453,10 +453,12 @@ async function loadTasks(forceDetail = false) {
             return;
         }
         updateDetailSummary(selected);
+        const statusChanged = selected.status !== state.renderedStatus;
         const needsFindings = selected.findingCount !== state.renderedFindingCount
-            || selected.status !== state.renderedStatus;
+            || statusChanged;
         state.renderedStatus = selected.status;
         if (needsFindings) await refreshFindings(selected);
+        if (selected.scanMode === 'INCREMENTAL' && statusChanged) await refreshMethodChanges(selected);
     } catch (error) {
         elements.taskList.replaceChildren(node('div', 'empty-state', `无法读取任务：${error.message}`));
     } finally {
@@ -510,15 +512,17 @@ async function renderSelectedTask(task) {
     const requestedTaskId = task.taskId;
     elements.detail.replaceChildren(node('div', 'empty-state', '正在加载 Agent 调查记录…'));
     try {
-        const [findings, events, agents] = await Promise.all([
+        const [findings, events, agents, methodChanges] = await Promise.all([
             task.findingCount > 0 || task.status === 'COMPLETED'
                 ? fetchJson(`/api/tasks/${task.taskId}/findings`) : Promise.resolve([]),
             fetchJson(`/api/tasks/${task.taskId}/events`),
-            fetchJson(`/api/tasks/${task.taskId}/agents`)
+            fetchJson(`/api/tasks/${task.taskId}/agents`),
+            task.scanMode === 'INCREMENTAL'
+                ? fetchJson(`/api/tasks/${task.taskId}/method-changes`).catch(() => []) : Promise.resolve([])
         ]);
         if (state.selectedTaskId !== requestedTaskId) return;
         seedEvents(task.taskId, events);
-        elements.detail.replaceChildren(buildTaskDetail(task, findings, agents, events));
+        elements.detail.replaceChildren(buildTaskDetail(task, findings, agents, events, methodChanges));
         state.renderedTaskId = task.taskId;
         state.renderedFindingCount = task.findingCount;
         state.renderedStatus = task.status;
@@ -528,7 +532,7 @@ async function renderSelectedTask(task) {
     }
 }
 
-function buildTaskDetail(task, findings, agents, events) {
+function buildTaskDetail(task, findings, agents, events, methodChanges) {
     const fragment = document.createDocumentFragment();
     const head = document.createElement('div');
     head.className = 'detail-head';
@@ -608,8 +612,149 @@ function buildTaskDetail(task, findings, agents, events) {
 
     fragment.append(head, progress);
     if (task.errorMessage) fragment.append(node('p', 'error-message', task.errorMessage));
-    fragment.append(metrics, investigation, findingSection);
+    fragment.append(metrics);
+    if (task.scanMode === 'INCREMENTAL') fragment.append(buildMethodChangeSection(methodChanges));
+    fragment.append(investigation, findingSection);
     return fragment;
+}
+
+function buildMethodChangeSection(methodChanges) {
+    const changes = Array.isArray(methodChanges) ? methodChanges : [];
+    const groups = groupMethodChanges(changes);
+    const section = document.createElement('section');
+    section.id = 'method-change-section';
+    section.className = 'semantic-change-section';
+
+    const panel = document.createElement('details');
+    panel.className = 'semantic-change-panel';
+    panel.open = changes.some(change => change.changeKind === 'GUARD_REMOVED');
+    const summary = document.createElement('summary');
+    summary.className = 'semantic-change-heading';
+    const heading = document.createElement('span');
+    heading.append(node('small', '', 'INCREMENTAL SEMANTIC DIFF'),
+        node('strong', '', '方法语义变化'));
+    const overview = document.createElement('span');
+    overview.className = 'semantic-change-overview';
+    overview.append(node('b', '', String(groups.length)),
+        node('small', '', `${groups.length === 1 ? 'METHOD' : 'METHODS'} / ${changes.length} FACTS`));
+    summary.append(heading, overview);
+
+    const body = document.createElement('div');
+    body.className = 'semantic-change-body';
+    if (!changes.length) {
+        body.append(node('div', 'semantic-change-empty', '本次增量扫描未识别到 Java 方法级语义变化。'));
+    } else {
+        const stats = document.createElement('div');
+        stats.className = 'semantic-change-stats';
+        methodChangeKinds().forEach(kind => {
+            const count = changes.filter(change => change.changeKind === kind).length;
+            if (!count) return;
+            const stat = node('span', `method-kind ${methodChangeTone(kind)}`, '');
+            stat.append(node('b', '', String(count)), document.createTextNode(methodChangeLabel(kind)));
+            stats.append(stat);
+        });
+        const list = document.createElement('div');
+        list.className = 'method-change-list';
+        groups.forEach(group => list.append(buildMethodChangeCard(group)));
+        body.append(stats, list);
+    }
+    panel.append(summary, body);
+    section.append(panel);
+    return section;
+}
+
+function groupMethodChanges(changes) {
+    const grouped = new Map();
+    changes.forEach(change => {
+        const key = [change.basePath, change.targetPath, change.baseSymbol, change.targetSymbol,
+            change.methodName].map(value => value || '').join('|');
+        if (!grouped.has(key)) grouped.set(key, {primary: change, changes: []});
+        grouped.get(key).changes.push(change);
+    });
+    return [...grouped.values()];
+}
+
+function buildMethodChangeCard(group) {
+    const change = group.primary;
+    const card = document.createElement('details');
+    card.className = 'method-change-card';
+    card.open = group.changes.some(item => item.changeKind === 'GUARD_REMOVED');
+    const summary = document.createElement('summary');
+    summary.className = 'method-change-summary';
+    const copy = document.createElement('span');
+    copy.className = 'method-change-copy';
+    copy.append(node('strong', '', change.targetSymbol || change.baseSymbol || change.methodName || '未命名方法'),
+        node('small', '', methodChangeLocation(change)));
+    const badges = document.createElement('span');
+    badges.className = 'method-change-badges';
+    [...new Set(group.changes.map(item => item.changeKind))].forEach(kind => {
+        badges.append(node('span', `method-kind ${methodChangeTone(kind)}`, methodChangeLabel(kind)));
+    });
+    summary.append(copy, badges);
+
+    const body = document.createElement('div');
+    body.className = 'method-change-card-body';
+    const facts = document.createElement('ul');
+    facts.className = 'method-change-facts';
+    group.changes.forEach(item => {
+        facts.append(node('li', '', item.details || methodChangeLabel(item.changeKind)));
+    });
+    const compare = document.createElement('div');
+    compare.className = 'method-code-compare';
+    compare.append(buildMethodCodePane('BASE', change.basePath, change.baseStartLine, change.baseEndLine,
+            change.baseContent, '基线提交中不存在该方法。'),
+        buildMethodCodePane('TARGET', change.targetPath, change.targetStartLine, change.targetEndLine,
+            change.targetContent, '目标提交中已删除该方法。'));
+    body.append(facts, compare);
+    card.append(summary, body);
+    return card;
+}
+
+function buildMethodCodePane(label, path, startLine, endLine, content, emptyText) {
+    const pane = document.createElement('section');
+    pane.className = 'method-code-pane';
+    const heading = document.createElement('div');
+    heading.append(node('b', '', label), node('span', '', methodLineLocation(path, startLine, endLine)));
+    const code = document.createElement('pre');
+    code.textContent = content || emptyText;
+    if (!content) code.classList.add('empty');
+    pane.append(heading, code);
+    return pane;
+}
+
+function methodChangeKinds() {
+    return ['GUARD_REMOVED', 'GUARD_ADDED', 'SIGNATURE_CHANGED',
+        'METHOD_ADDED', 'METHOD_MODIFIED', 'METHOD_DELETED'];
+}
+
+function methodChangeLabel(kind) {
+    return ({
+        METHOD_ADDED: '方法新增',
+        METHOD_MODIFIED: '方法修改',
+        METHOD_DELETED: '方法删除',
+        SIGNATURE_CHANGED: '签名变化',
+        GUARD_ADDED: '防护新增',
+        GUARD_REMOVED: '防护删除'
+    })[kind] || kind || '未知变化';
+}
+
+function methodChangeTone(kind) {
+    if (kind === 'GUARD_REMOVED' || kind === 'METHOD_DELETED') return 'danger';
+    if (kind === 'GUARD_ADDED') return 'safe';
+    if (kind === 'SIGNATURE_CHANGED') return 'attention';
+    return 'neutral';
+}
+
+function methodChangeLocation(change) {
+    return methodLineLocation(change.targetPath || change.basePath,
+        change.targetStartLine ?? change.baseStartLine,
+        change.targetEndLine ?? change.baseEndLine);
+}
+
+function methodLineLocation(path, startLine, endLine) {
+    const file = path || '未知文件';
+    if (startLine == null) return file;
+    return `${file}:${startLine}${endLine != null && endLine !== startLine ? `-${endLine}` : ''}`;
 }
 
 function metric(label, value, id) {
@@ -646,6 +791,17 @@ async function refreshFindings(task) {
         if (count) count.textContent = `${findings.length} CONFIRMED FINDINGS`;
     } catch (ignored) {
         // 下一轮任务刷新会重试，不打断实时事件流。
+    }
+}
+
+async function refreshMethodChanges(task) {
+    try {
+        const methodChanges = await fetchJson(`/api/tasks/${task.taskId}/method-changes`);
+        if (state.selectedTaskId !== task.taskId) return;
+        const current = elements.detail.querySelector('#method-change-section');
+        if (current) current.replaceWith(buildMethodChangeSection(methodChanges));
+    } catch (ignored) {
+        // 下一个任务状态变化时会重试，不影响实时事件流和漏洞结果展示。
     }
 }
 
@@ -755,10 +911,11 @@ function eventRow(event, animate) {
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     }).format(new Date(event.createdAt)) : '刚刚';
     meta.append(time);
-    const message = String(event.message || '');
+    const isToolCall = event.eventType === 'TOOL_CALL';
+    const message = isToolCall ? summarizeToolCall(event.message) : String(event.message || '');
     const copy = node('p', 'event-message', message.length > 1000 ? `${message.slice(0, 1000)}…` : message);
     row.append(meta, copy);
-    if (message.length > 1000) {
+    if (!isToolCall && message.length > 1000) {
         const expand = node('button', 'event-expand', '展开完整内容');
         expand.type = 'button';
         expand.addEventListener('click', () => {
@@ -770,6 +927,26 @@ function eventRow(event, animate) {
         row.append(expand);
     }
     return row;
+}
+
+function summarizeToolCall(message) {
+    const raw = String(message || '').trim();
+    const separator = raw.search(/[：:]/);
+    const tool = (separator >= 0 ? raw.slice(0, separator) : raw).trim().toLowerCase();
+    const summaries = {
+        get_chunk: '读取目标代码块，核对实现细节',
+        verify_relation: '验证候选代码与当前审计目标的确定性关系',
+        call_context: '查询当前审计目标的直接调用上下文',
+        get_call_chain: '追踪当前审计目标的调用链',
+        trace_data_flow: '追踪输入到敏感操作的数据流',
+        find_security_guards: '查找调用路径上的认证、授权与校验保护',
+        security_controls: '检索适用于当前目标的安全控制',
+        data_access: '追踪当前目标关联的数据访问',
+        hybrid_search: '检索与当前审计目标相关的代码线索'
+    };
+    if (summaries[tool]) return `${tool}：${summaries[tool]}`;
+    if (tool && /^[a-z0-9_-]{1,48}$/.test(tool)) return `${tool}：调用只读工具补充审计证据`;
+    return '调用只读工具补充当前审计目标的相关证据';
 }
 
 function scheduleAgentRefresh(taskId) {

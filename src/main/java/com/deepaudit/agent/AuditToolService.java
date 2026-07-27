@@ -1,10 +1,11 @@
 package com.deepaudit.agent;
 
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -16,10 +17,22 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class AuditToolService {
     private final RagService ragService;
     private final SemanticEvidenceService semanticEvidenceService;
+    private final CodeGraphIntegrationService codeGraphIntegrationService;
+
+    @Autowired
+    public AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService,
+                            CodeGraphIntegrationService codeGraphIntegrationService) {
+        this.ragService = ragService;
+        this.semanticEvidenceService = semanticEvidenceService;
+        this.codeGraphIntegrationService = codeGraphIntegrationService;
+    }
+
+    AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService) {
+        this(ragService, semanticEvidenceService, null);
+    }
 
     // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
     public ToolResult execute(String tool, String query, int requestedLimit,
@@ -30,18 +43,38 @@ public class AuditToolService {
         return switch (normalizedTool) {
             case "get_chunk" -> getChunk(query, current, chunks);
             case "verify_relation" -> verifyRelation(query, current, chunks);
-            case "call_context" -> callContext(current, chunks, limit);
-            case "get_call_chain", "trace_data_flow", "find_security_guards" ->
+            case "call_context" -> addCodeGraphCandidates(callContext(current, chunks, limit),
+                    current, chunks, limit);
+            case "get_call_chain" -> addCodeGraphCandidates(
+                    semantic(normalizedTool, current, limit, vulnerabilityType), current, chunks, limit);
+            case "trace_data_flow", "find_security_guards" ->
                     semantic(normalizedTool, current, limit, vulnerabilityType);
-            case "security_controls" -> semanticFirst("find_security_guards", current, chunks,
-                    append(query, "authentication authorization currentUser owner tenant role permission guard validate"),
-                    limit, vulnerabilityType);
-            case "data_access" -> semanticFirst("trace_data_flow", current, chunks,
-                    append(query, "SQL mapper repository select insert update delete execute query parameter"),
-                    limit, vulnerabilityType);
-            case "hybrid_search" -> search(current, chunks, query, limit);
+            case "security_controls" -> addCodeGraphCandidates(
+                    semanticFirst("find_security_guards", current, chunks,
+                            append(query, "authentication authorization currentUser owner tenant role permission guard validate"),
+                            limit, vulnerabilityType), current, chunks, limit);
+            case "data_access" -> addCodeGraphCandidates(
+                    semanticFirst("trace_data_flow", current, chunks,
+                            append(query, "SQL mapper repository select insert update delete execute query parameter"),
+                            limit, vulnerabilityType), current, chunks, limit);
+            case "hybrid_search" -> addCodeGraphCandidates(
+                    search(current, chunks, query, limit), current, chunks, limit);
             default -> throw new IllegalArgumentException("不允许的 Agent 工具: " + tool);
         };
+    }
+
+    // CodeGraph 关系只作为候选上下文返回，不能绕过 verify_relation 进入允许证据集合。
+    private ToolResult addCodeGraphCandidates(ToolResult base, CodeChunk current,
+                                              List<CodeChunk> chunks, int limit) {
+        if (codeGraphIntegrationService == null) return base;
+        CodeGraphIntegrationService.CandidateContext context = codeGraphIntegrationService.candidateContext(
+                current.getTaskId(), current, chunks, limit);
+        if (context.candidateChunkIds().isEmpty()) return base;
+        Set<Long> candidates = new LinkedHashSet<>(base.candidateChunkIds());
+        candidates.addAll(context.candidateChunkIds());
+        candidates.removeAll(base.evidenceChunkIds());
+        String text = base.text() + "\n\n" + context.text();
+        return new ToolResult(text, base.evidenceChunkIds(), candidates);
     }
 
     // 查询已持久化的确定性语义路径并标记其中可直接引用的证据块。

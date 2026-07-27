@@ -8,6 +8,7 @@ import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.ScanMode;
+import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.report.ReportService;
 import com.deepaudit.mapper.AuditTaskMapper;
 import com.deepaudit.mapper.FindingMapper;
@@ -16,6 +17,7 @@ import com.deepaudit.mapper.AgentEventMapper;
 import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.mapper.GitFileChangeMapper;
+import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.service.ProjectService;
 import com.deepaudit.git.GitRepositoryService;
 import com.deepaudit.agent.AgentEventStreamService;
@@ -54,6 +56,7 @@ public class AuditController {
     private final AuditHypothesisMapper hypothesisMapper;
     private final AgentEventStreamService eventStreamService;
     private final GitFileChangeMapper changeMapper;
+    private final SemanticMethodChangeMapper semanticMethodChangeMapper;
 
     // 只读导入 Git 裸仓库；访问令牌不会持久化或返回。
     @PostMapping(value = "/projects/git", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -187,6 +190,13 @@ public class AuditController {
     public List<GitFileChange> changes(@PathVariable UUID taskId) {
         requireTask(taskId);
         return changeMapper.findByTaskId(taskId);
+    }
+
+    // 返回 Base/Target 方法索引生成的语义变化，便于解释增量深度范围。
+    @GetMapping("/tasks/{taskId}/method-changes")
+    public List<SemanticMethodChange> methodChanges(@PathVariable UUID taskId) {
+        requireTask(taskId);
+        return semanticMethodChangeMapper.findByTaskId(taskId);
     }
 
     // 聚合项目、任务、发现和 Agent 轨迹为结构化报告。

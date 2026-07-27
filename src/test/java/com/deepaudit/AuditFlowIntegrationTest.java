@@ -197,6 +197,12 @@ class AuditFlowIntegrationTest {
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(changes).contains("SearchController.java", "\"changeType\":\"MODIFY\"");
 
+        String methodChanges = mockMvc.perform(get("/api/tasks/{taskId}/method-changes", taskId))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(methodChanges).contains("\"changeKind\":\"METHOD_MODIFIED\"",
+                "SearchController.search", "repository.findByName");
+
         String findings = mockMvc.perform(get("/api/tasks/{taskId}/findings", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);

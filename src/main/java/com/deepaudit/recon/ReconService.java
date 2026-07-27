@@ -10,6 +10,7 @@ import com.deepaudit.rag.EmbeddingCacheService;
 import com.deepaudit.rag.VectorRecallStore;
 import com.deepaudit.mapper.CodeChunkMapper;
 import com.deepaudit.source.AuditSourceFilter;
+import com.deepaudit.semantic.IncrementalSemanticDiffService;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParseProblemException;
 import com.github.javaparser.StaticJavaParser;
@@ -55,19 +56,22 @@ public class ReconService {
     private final EmbeddingService embeddingService;
     private final EmbeddingCacheService embeddingCacheService;
     private final VectorRecallStore vectorRecallStore;
+    private final IncrementalSemanticDiffService incrementalSemanticDiffService;
     private final ProjectTechnologyDetector technologyDetector = new ProjectTechnologyDetector();
 
     public ReconService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService) {
-        this(chunkMapper, embeddingService, null, null);
+        this(chunkMapper, embeddingService, null, null, null);
     }
 
     @Autowired
     public ReconService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService,
-                        EmbeddingCacheService embeddingCacheService, VectorRecallStore vectorRecallStore) {
+                        EmbeddingCacheService embeddingCacheService, VectorRecallStore vectorRecallStore,
+                        IncrementalSemanticDiffService incrementalSemanticDiffService) {
         this.chunkMapper = chunkMapper;
         this.embeddingService = embeddingService;
         this.embeddingCacheService = embeddingCacheService;
         this.vectorRecallStore = vectorRecallStore;
+        this.incrementalSemanticDiffService = incrementalSemanticDiffService;
         StaticJavaParser.setConfiguration(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
     }
@@ -95,6 +99,10 @@ public class ReconService {
         }
         // 批量生成向量并按代码块顺序回填，维持检索数据一一对应。
         applyIncrementalMetadata(chunks, scanMode, changes);
+        // 增量模式进一步比较 Base/Target 方法快照，覆盖纯删除、签名和安全 Guard 变化。
+        if (scanMode == ScanMode.INCREMENTAL && incrementalSemanticDiffService != null) {
+            incrementalSemanticDiffService.analyze(taskId, baseRoot, root, chunks, changes);
+        }
         List<CodeChunk> embeddingTargets = scanMode == ScanMode.FULL ? chunks : chunks.stream()
                 .filter(chunk -> chunk.getAnalysisScope() == AnalysisScope.CHANGED).toList();
         List<String> embeddingInputs = embeddingTargets.stream().map(this::embeddingInput).toList();

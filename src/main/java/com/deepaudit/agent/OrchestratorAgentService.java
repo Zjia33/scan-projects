@@ -26,11 +26,12 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class OrchestratorAgentService {
-    private static final Set<String> MANDATORY_REASON_CODES = Set.of("RULE_HINT", "SEMANTIC_FLOW");
+    private static final Set<String> MANDATORY_REASON_CODES = Set.of(
+            "RULE_HINT", "SEMANTIC_FLOW", "GUARD_REMOVED");
     private static final Set<String> CONSERVATIVE_REASON_CODES = Set.of(
             "EXTERNAL_ENTRY", "SECURITY_CONFIGURATION", "DANGEROUS_DATA_ACCESS",
             "DANGEROUS_OUTPUT", "VALIDATION_BOUNDARY", "SENSITIVE_FINANCIAL_OPERATION",
-            "AUTHORIZATION_BOUNDARY", "UNRESOLVED_CALL");
+            "AUTHORIZATION_BOUNDARY", "UNRESOLVED_CALL", "SEMANTIC_CHANGE", "GUARD_REMOVED");
 
     private final LlmGateway llmGateway;
     private final AiProperties properties;
@@ -57,6 +58,14 @@ public class OrchestratorAgentService {
                     addTask(tasks, unit, type, "确定性线索要求专业 Agent 深入核查",
                             hintDescriptions.get(entry.getKey()));
                 }
+            }
+            // 删除权限或验证 Guard 是明确的安全退化，必须交给对应专业 Agent 复核。
+            for (AuditUnit unit : units) {
+                if (!unit.reasonCodes().contains("GUARD_REMOVED")) continue;
+                addTask(tasks, unit, VulnerabilityType.AUTHORIZATION,
+                        "Base/Target 语义差异发现安全 Guard 被删除", unit.contextSummary());
+                addTask(tasks, unit, VulnerabilityType.VALIDATION_BYPASS,
+                        "Base/Target 语义差异发现安全 Guard 被删除", unit.contextSummary());
             }
 
             List<String> summaries = new ArrayList<>();

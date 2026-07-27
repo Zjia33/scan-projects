@@ -11,6 +11,7 @@ import com.deepaudit.agent.ReportAgentService;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.ScanMode;
@@ -55,6 +56,7 @@ public class AnalysisService {
     private final SemanticEvidenceService semanticEvidenceService;
     private final IncrementalScopeService incrementalScopeService;
     private final ReconService reconService;
+    private final CodeGraphIntegrationService codeGraphIntegrationService;
 
     // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
     public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
@@ -65,16 +67,26 @@ public class AnalysisService {
         // 加载 Recon 已持久化的全部代码块作为本次分析的事实边界。
         List<CodeChunk> chunks = chunkMapper.findByTaskId(taskId);
         if (chunks.isEmpty()) throw new IllegalStateException("项目中没有可供 Agent 审查的代码块");
+        // CodeGraph 是可失败的辅助索引；初始化失败时后续流程继续使用内置语义分析。
+        codeGraphIntegrationService.prepare(taskId, projectRoot);
         // 先生成跨文件语义索引，再合并规则与语义产生的调查线索。
         SemanticAnalysisService.Summary semanticSummary = semanticAnalysisService.rebuild(taskId, projectRoot, chunks);
         IncrementalScopeService.ScopeResult incrementalScope = null;
         if (task.getScanMode() == ScanMode.INCREMENTAL) {
             incrementalScope = incrementalScopeService.determine(taskId, chunks);
+            CodeGraphIntegrationService.ImpactDecision codeGraphImpact = codeGraphIntegrationService.decideImpact(
+                    taskId, chunks, incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds());
+            incrementalScope = new IncrementalScopeService.ScopeResult(incrementalScope.changedChunkIds(),
+                    codeGraphImpact.effectiveImpactedChunkIds(), incrementalScope.globalConfigurationChanged(),
+                    incrementalScope.semanticChangeCounts());
             reconService.promoteImpactScope(taskId, incrementalScope.impactedChunkIds());
             chunks = chunkMapper.findByTaskId(taskId);
-            log.info("任务 {} 增量范围：{} 个直接变更块、{} 个语义影响块，全局配置变化={}",
+            log.info("任务 {} 增量范围：{} 个直接变更块、{} 个最终影响块、{} 个 CodeGraph 候选，"
+                            + "全局配置变化={}",
                     taskId, incrementalScope.changedChunkIds().size(),
-                    incrementalScope.impactedChunkIds().size(), incrementalScope.globalConfigurationChanged());
+                    incrementalScope.impactedChunkIds().size(), codeGraphImpact.codeGraphImpactedChunkIds().size(),
+                    incrementalScope.globalConfigurationChanged());
+            log.info("任务 {} 方法级语义变化：{}", taskId, incrementalScope.semanticChangeSummary());
         }
         HintIndex hintIndex = collectHints(taskId, projectRoot, chunks);
         mergeSemanticHints(taskId, hintIndex);
@@ -119,7 +131,8 @@ public class AnalysisService {
                 ? "全量扫描目标提交 " + shortSha(task.getTargetCommitSha())
                 : "增量扫描 " + shortSha(task.getBaseCommitSha()) + " → "
                 + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
-                + "；深度范围 " + (incrementalScope == null ? 0 : incrementalScope.totalDeepTargets()) + " 个代码块";
+                + "；深度范围 " + (incrementalScope == null ? 0 : incrementalScope.totalDeepTargets()) + " 个代码块"
+                + (incrementalScope == null ? "" : "；方法变化 " + incrementalScope.semanticChangeSummary());
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
                 candidates.size() - confirmed.size(), auditContext);
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());

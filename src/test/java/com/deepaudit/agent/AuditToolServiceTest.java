@@ -1,5 +1,6 @@
 package com.deepaudit.agent;
 
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.rag.RagService;
@@ -70,6 +71,27 @@ class AuditToolServiceTest {
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 3L);
         assertThat(result.text()).contains("SEMANTIC_EVIDENCE", "已验证 SQL 数据流");
         verifyNoInteractions(rag);
+    }
+
+    @Test
+    void codeGraphContextRemainsCandidateEvidence() {
+        RagService rag = mock(RagService.class);
+        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+        CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
+        AuditToolService tools = new AuditToolService(rag, semantic, codeGraph);
+        CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
+        CodeChunk candidate = chunk(2L, "OrderService#inspect", null, "return repository.findById(id)", "findById");
+        candidate.setFilePath("demo/OrderService.java");
+        when(codeGraph.candidateContext(current.getTaskId(), current, List.of(current, candidate), 5))
+                .thenReturn(new CodeGraphIntegrationService.CandidateContext(
+                        "[CODEGRAPH_CANDIDATE] CHUNK_ID=2", Set.of(2L), 0));
+
+        AuditToolService.ToolResult result = tools.execute("call_context", "", 5,
+                current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION);
+
+        assertThat(result.evidenceChunkIds()).isEmpty();
+        assertThat(result.candidateChunkIds()).containsExactly(2L);
+        assertThat(result.text()).contains("CODEGRAPH_CANDIDATE");
     }
 
     private CodeChunk chunk(long id, String symbol, String endpoint, String content, String calls) {

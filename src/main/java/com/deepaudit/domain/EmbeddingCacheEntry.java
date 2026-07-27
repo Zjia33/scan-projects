@@ -10,9 +10,9 @@ import java.time.Instant;
 @Setter
 @NoArgsConstructor
 public class EmbeddingCacheEntry {
-    private String cacheKey;
-    private String embedding;
-    private Instant createdAt;
+    private String cacheKey; // 由待嵌入内容生成的缓存键
+    private String embedding; // 缓存的向量序列化文本
+    private Instant createdAt; // 缓存条目创建时间
 
     public EmbeddingCacheEntry(String cacheKey, String embedding) {
         this.cacheKey = cacheKey;

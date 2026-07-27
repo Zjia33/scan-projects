@@ -19,7 +19,7 @@ Use four-space indentation, UTF-8, and existing Java 17 idioms. Types use `Pasca
 
 ## Testing Guidelines
 
-Use JUnit 5, AssertJ, Spring Boot Test, MockMvc, and H2. Name automatic tests `*Test`/`*Tests`; reserve `*IT` for external checks. Cover Git source safety, commit diffing, semantic resolution, vector recall boundaries, evidence gates, Agent concurrency, triage decisions, `NEED_CONTEXT` enrichment, large-project coverage without fixed-target truncation, project archive/restore and cleanup cascades, and changed APIs. Keep default tests independent of PostgreSQL, external Git hosts, and external models; use the memory vector-recall implementation only in the test profile.
+Use JUnit 5, AssertJ, Spring Boot Test, MockMvc, and H2. Name automatic tests `*Test`/`*Tests`; reserve `*IT` for external checks. Cover Git source safety, commit diffing, Base/Target method matching, deletion-only hunks, signature and Guard changes, semantic resolution, vector recall boundaries, evidence gates, Agent concurrency, triage decisions, `NEED_CONTEXT` enrichment, large-project coverage without fixed-target truncation, project archive/restore and cleanup cascades, and changed APIs. Keep default tests independent of PostgreSQL, external Git hosts, and external models; use the memory vector-recall implementation only in the test profile.
 
 ## Agent Architecture & Evidence Rules
 
@@ -31,7 +31,7 @@ Triage decisions are strictly `INVESTIGATE`, `NEED_CONTEXT`, or `SKIP`. `NEED_CO
 
 Do not reintroduce risk scores or a fixed project-wide target count such as “top 300.” `deepaudit.ai.triage-batch-size` limits one lightweight model request only; it must not truncate total project coverage. Keep the professional executor queue capacity independent from audit selection.
 
-Rules and semantic flows create hints, never findings, but their units are mandatory investigations so model omissions cannot silently remove them. In incremental scans, only `CHANGED` and `IMPACTED` units may create professional tasks; `CONTEXT` remains available for architecture understanding and read-only tool evidence. A finding requires a professional hypothesis, valid chunk IDs, and Critic confirmation. RAG results remain `RAG_CANDIDATE`s until `verify_relation` promotes them. Preserve the untrusted-code boundary and report filtering of `[SEMANTIC_FLOW]`/`[CRITIC]`.
+Rules and semantic flows create hints, never findings, but their units are mandatory investigations so model omissions cannot silently remove them. Incremental scans must build Base/Target method snapshots, preserve method additions/modifications/deletions/signature changes and Guard additions/removals, and treat Guard removal as a mandatory investigation. Only `CHANGED` and `IMPACTED` units may create professional tasks; `CONTEXT` remains available for architecture understanding and read-only tool evidence. Do not truncate semantic impact coverage with a fixed project-wide chunk count. A finding requires a professional hypothesis, valid chunk IDs, and Critic confirmation. RAG results remain `RAG_CANDIDATE`s until `verify_relation` promotes them. Preserve the untrusted-code boundary and report filtering of `[SEMANTIC_FLOW]`/`[CRITIC]`.
 
 ## Security & Web Console
 
