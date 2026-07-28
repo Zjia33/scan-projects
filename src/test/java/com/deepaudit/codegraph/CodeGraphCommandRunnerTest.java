@@ -3,6 +3,7 @@ package com.deepaudit.codegraph;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,23 @@ class CodeGraphCommandRunnerTest {
         assertThatThrownBy(() -> runner.run(temporaryDirectory, helper("sleep"), Map.of()))
                 .isInstanceOf(CodeGraphException.class)
                 .hasMessageContaining("执行超时");
+    }
+
+    @Test
+    void buildsAShellFreeLauncherForTheOfficialWindowsZip() throws Exception {
+        Path script = temporaryDirectory.resolve("lib/dist/bin/codegraph.js");
+        Files.createDirectories(script.getParent());
+        Files.createFile(temporaryDirectory.resolve("node.exe"));
+        Files.createFile(script);
+        CodeGraphProperties properties = new CodeGraphProperties();
+        properties.setBundleRoot(temporaryDirectory.toString());
+
+        List<String> prefix = new CodeGraphCommandRunner(properties).commandPrefix();
+
+        assertThat(prefix).containsExactly(
+                temporaryDirectory.resolve("node.exe").toAbsolutePath().normalize().toString(),
+                "--liftoff-only", "--disable-warning=ExperimentalWarning",
+                script.toAbsolutePath().normalize().toString());
     }
 
     private CodeGraphProperties properties() {

@@ -1,12 +1,14 @@
 package com.deepaudit.codegraph;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 class CodeGraphCommandRunner {
     private static final Set<String> SAFE_INHERITED_ENVIRONMENT = Set.of(
             "path", "pathext", "systemroot", "windir", "temp", "tmp", "tmpdir",
@@ -31,11 +34,12 @@ class CodeGraphCommandRunner {
     CommandOutput run(Path workingDirectory, List<String> arguments, Map<String, String> environment) {
         Path root = requireDirectory(workingDirectory);
         long startedAt = System.nanoTime();
-        List<String> command = new ArrayList<>();
-        command.add(requireExecutable(properties.getExecutable()));
+        String operation = operation(arguments);
+        List<String> command = new ArrayList<>(commandPrefix());
         command.addAll(arguments);
         Process process = null;
         try {
+            logStarted(operation, root);
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(root.toFile());
             builder.redirectErrorStream(false);
@@ -50,21 +54,64 @@ class CodeGraphCommandRunner {
             if (!completed) {
                 process.destroyForcibly();
                 process.waitFor(5, TimeUnit.SECONDS);
-                throw new CodeGraphException("CodeGraph 命令执行超时: " + String.join(" ", arguments));
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+                log.warn("CodeGraph 命令超时：operation={}，workspace={}，elapsedMs={}",
+                        operation, root.getFileName(), elapsedMs);
+                throw new CodeGraphException("CodeGraph " + operation + " 命令执行超时");
             }
             BoundedOutput out = stdout.get(5, TimeUnit.SECONDS);
             BoundedOutput err = stderr.get(5, TimeUnit.SECONDS);
             if (out.overflow() || err.overflow()) {
+                log.warn("CodeGraph 命令输出超限：operation={}，stdoutBytes={}，stderrBytes={}，limitBytes={}",
+                        operation, out.byteCount(), err.byteCount(), properties.getMaxOutputBytes());
                 throw new CodeGraphException("CodeGraph 命令输出超过安全上限");
             }
-            return new CommandOutput(process.exitValue(), out.text(), err.text(),
-                    Duration.ofNanos(System.nanoTime() - startedAt));
+            Duration duration = Duration.ofNanos(System.nanoTime() - startedAt);
+            CommandOutput result = new CommandOutput(process.exitValue(), out.text(), err.text(), duration);
+            logCompleted(operation, root, result, out.byteCount(), err.byteCount());
+            return result;
         } catch (CodeGraphException exception) {
             throw exception;
         } catch (Exception exception) {
             if (process != null && process.isAlive()) process.destroyForcibly();
             throw new CodeGraphException("无法执行 CodeGraph 命令: " + exception.getMessage(), exception);
         }
+    }
+
+    private String operation(List<String> arguments) {
+        if (arguments == null || arguments.isEmpty() || arguments.get(0) == null
+                || arguments.get(0).isBlank()) return "unknown";
+        return arguments.get(0).strip();
+    }
+
+    private void logStarted(String operation, Path root) {
+        if (isLifecycleCommand(operation)) {
+            log.info("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
+                    operation, root.getFileName(), properties.getTimeoutSeconds());
+        } else {
+            log.debug("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
+                    operation, root.getFileName(), properties.getTimeoutSeconds());
+        }
+    }
+
+    private void logCompleted(String operation, Path root, CommandOutput output,
+                              long stdoutBytes, long stderrBytes) {
+        long elapsedMs = output.duration().toMillis();
+        if (output.exitCode() != 0) {
+            log.warn("CodeGraph 命令结束：operation={}，workspace={}，exitCode={}，elapsedMs={}，"
+                            + "stdoutBytes={}，stderrBytes={}", operation, root.getFileName(),
+                    output.exitCode(), elapsedMs, stdoutBytes, stderrBytes);
+        } else if (isLifecycleCommand(operation)) {
+            log.info("CodeGraph 命令完成：operation={}，workspace={}，elapsedMs={}，stdoutBytes={}，stderrBytes={}",
+                    operation, root.getFileName(), elapsedMs, stdoutBytes, stderrBytes);
+        } else {
+            log.debug("CodeGraph 命令完成：operation={}，workspace={}，elapsedMs={}，stdoutBytes={}，stderrBytes={}",
+                    operation, root.getFileName(), elapsedMs, stdoutBytes, stderrBytes);
+        }
+    }
+
+    private boolean isLifecycleCommand(String operation) {
+        return "version".equals(operation) || "init".equals(operation) || "status".equals(operation);
     }
 
     private Path requireDirectory(Path value) {
@@ -82,6 +129,27 @@ class CodeGraphCommandRunner {
             throw new CodeGraphException("CodeGraph 可执行文件配置无效");
         }
         return value.strip();
+    }
+
+    List<String> commandPrefix() {
+        String configuredRoot = properties.getBundleRoot();
+        if (configuredRoot == null || configuredRoot.isBlank()) {
+            return List.of(requireExecutable(properties.getExecutable()));
+        }
+        if (configuredRoot.indexOf('\0') >= 0 || configuredRoot.contains("\n")
+                || configuredRoot.contains("\r")) {
+            throw new CodeGraphException("CodeGraph ZIP 根目录配置无效");
+        }
+        Path bundleRoot = Path.of(configuredRoot.strip()).toAbsolutePath().normalize();
+        Path node = bundleRoot.resolve("node.exe").normalize();
+        Path script = bundleRoot.resolve("lib/dist/bin/codegraph.js").normalize();
+        if (!node.startsWith(bundleRoot) || !script.startsWith(bundleRoot)
+                || !Files.isRegularFile(node) || !Files.isRegularFile(script)) {
+            throw new CodeGraphException("CodeGraph ZIP 目录缺少 node.exe 或 lib/dist/bin/codegraph.js: "
+                    + bundleRoot);
+        }
+        return List.of(node.toString(), "--liftoff-only", "--disable-warning=ExperimentalWarning",
+                script.toString());
     }
 
     private void sanitizeEnvironment(Map<String, String> processEnvironment,
@@ -110,7 +178,7 @@ class CodeGraphCommandRunner {
                     output.write(buffer, 0, allowed);
                 }
             }
-            return new BoundedOutput(output.toString(StandardCharsets.UTF_8), total > limit);
+            return new BoundedOutput(output.toString(StandardCharsets.UTF_8), total > limit, total);
         } catch (IOException exception) {
             throw new CodeGraphException("读取 CodeGraph 进程输出失败", exception);
         }
@@ -119,6 +187,6 @@ class CodeGraphCommandRunner {
     record CommandOutput(int exitCode, String stdout, String stderr, Duration duration) {
     }
 
-    private record BoundedOutput(String text, boolean overflow) {
+    private record BoundedOutput(String text, boolean overflow, long byteCount) {
     }
 }

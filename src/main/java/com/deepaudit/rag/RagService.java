@@ -2,7 +2,7 @@ package com.deepaudit.rag;
 
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.mapper.CodeChunkMapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -17,12 +17,26 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class RagService {
 
     private final CodeChunkMapper chunkMapper;
     private final EmbeddingService embeddingService;
     private final VectorRecallStore vectorRecallStore;
+    private final RagProperties ragProperties;
+
+    public RagService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService,
+                      VectorRecallStore vectorRecallStore) {
+        this(chunkMapper, embeddingService, vectorRecallStore, enabledProperties());
+    }
+
+    @Autowired
+    public RagService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService,
+                      VectorRecallStore vectorRecallStore, RagProperties ragProperties) {
+        this.chunkMapper = chunkMapper;
+        this.embeddingService = embeddingService;
+        this.vectorRecallStore = vectorRecallStore;
+        this.ragProperties = ragProperties;
+    }
 
     public List<CodeChunk> retrieve(UUID taskId, String query, int limit) {
         return retrieve(chunkMapper.findByTaskId(taskId), query, limit);
@@ -37,6 +51,7 @@ public class RagService {
 
     // 先由向量存储召回近邻，再用关键词和确定性结构关系重排候选代码块。
     public List<RetrievedCode> retrieveDetailed(List<CodeChunk> chunks, RetrievalRequest request) {
+        if (!ragProperties.isEnabled()) return List.of();
         if (request.query() == null || request.query().isBlank() || chunks.isEmpty()) return List.of();
         int limit = Math.max(1, Math.min(request.limit(), 20));
         double[] queryVector = embeddingService.embed(request.query());
@@ -137,5 +152,11 @@ public class RagService {
     }
 
     public record RetrievedCode(CodeChunk chunk, double score, String reason) {
+    }
+
+    private static RagProperties enabledProperties() {
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(true);
+        return properties;
     }
 }

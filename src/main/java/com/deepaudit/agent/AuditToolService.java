@@ -3,6 +3,7 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.rag.RagProperties;
 import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,17 +22,25 @@ public class AuditToolService {
     private final RagService ragService;
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
+    private final RagProperties ragProperties;
 
     @Autowired
     public AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService,
-                            CodeGraphIntegrationService codeGraphIntegrationService) {
+                            CodeGraphIntegrationService codeGraphIntegrationService,
+                            RagProperties ragProperties) {
         this.ragService = ragService;
         this.semanticEvidenceService = semanticEvidenceService;
         this.codeGraphIntegrationService = codeGraphIntegrationService;
+        this.ragProperties = ragProperties;
     }
 
     AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService) {
-        this(ragService, semanticEvidenceService, null);
+        this(ragService, semanticEvidenceService, null, enabledProperties());
+    }
+
+    AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService,
+                     CodeGraphIntegrationService codeGraphIntegrationService) {
+        this(ragService, semanticEvidenceService, codeGraphIntegrationService, enabledProperties());
     }
 
     // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
@@ -39,7 +48,9 @@ public class AuditToolService {
                               CodeChunk current, List<CodeChunk> chunks,
                               VulnerabilityType vulnerabilityType) {
         int limit = Math.max(1, Math.min(requestedLimit <= 0 ? 6 : requestedLimit, 10));
-        String normalizedTool = tool == null ? "hybrid_search" : tool.toLowerCase(Locale.ROOT);
+        String normalizedTool = tool == null
+                ? ragProperties.isEnabled() ? "hybrid_search" : "call_context"
+                : tool.toLowerCase(Locale.ROOT);
         return switch (normalizedTool) {
             case "get_chunk" -> getChunk(query, current, chunks);
             case "verify_relation" -> verifyRelation(query, current, chunks);
@@ -99,11 +110,16 @@ public class AuditToolService {
                                      String query, int limit, VulnerabilityType vulnerabilityType) {
         ToolResult semantic = semantic(tool, current, limit, vulnerabilityType);
         if (!semantic.evidenceChunkIds().isEmpty()) return semantic;
+        if (!ragProperties.isEnabled()) return semantic;
         return merge(semantic, search(current, chunks, query, limit));
     }
 
     // 执行混合检索并明确把结果标为必须继续验证关系的候选证据。
     private ToolResult search(CodeChunk current, List<CodeChunk> chunks, String query, int limit) {
+        if (!ragProperties.isEnabled()) {
+            return new ToolResult("[RAG_DISABLED] 当前配置已关闭 RAG，未执行向量或关键词检索。",
+                    Set.of(), Set.of());
+        }
         Set<String> symbols = splitSymbols(current.getCalledSymbols());
         RagService.RetrievalRequest request = new RagService.RetrievalRequest(current.getTaskId(), current.getId(),
                 query, current.getEndpoint(), current.getFilePath(), symbols, limit);
@@ -262,6 +278,12 @@ public class AuditToolService {
 
     private String append(String query, String suffix) {
         return (query == null ? "" : query) + " " + suffix;
+    }
+
+    private static RagProperties enabledProperties() {
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(true);
+        return properties;
     }
 
     public record ToolResult(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {

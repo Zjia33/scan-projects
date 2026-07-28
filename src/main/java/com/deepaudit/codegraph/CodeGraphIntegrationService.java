@@ -27,6 +27,8 @@ public class CodeGraphIntegrationService {
 
     public boolean prepare(UUID taskId, Path projectRoot) {
         if (!properties.enabled()) return false;
+        log.info("任务 {} 开始准备 CodeGraph：mode={}，workspace={}",
+                taskId, properties.getMode(), projectRoot == null ? "-" : projectRoot.getFileName());
         try {
             client.prepare(taskId, projectRoot);
             preparedTasks.add(taskId);
@@ -46,6 +48,9 @@ public class CodeGraphIntegrationService {
         if (!preparedTasks.contains(taskId) || changedChunkIds.isEmpty()) {
             return new ImpactDecision(Set.copyOf(nativeIds), Set.of(), 0, 0, properties.getMode());
         }
+
+        log.info("任务 {} 开始 CodeGraph 增量影响查询：changedChunks={}，nativeImpacted={}，depth={}",
+                taskId, changedChunkIds.size(), nativeIds.size(), properties.getImpactDepth());
 
         List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
         int failedQueries = 0;
@@ -77,9 +82,10 @@ public class CodeGraphIntegrationService {
         Set<Long> effective = new LinkedHashSet<>(nativeIds);
         if (properties.augmentsResults()) effective.addAll(externalIds);
         log.info("任务 {} CodeGraph 影响范围对比：mode={}，native={}，codegraph={}，intersection={}，"
-                        + "codegraphOnly={}，unmapped={}，failedQueries={}",
+                        + "codegraphOnly={}，queries={}，locations={}，unmapped={}，failedQueries={}",
                 taskId, properties.getMode(), nativeIds.size(), externalIds.size(), intersection.size(),
-                externalOnly.size(), mapping.unmappedLocations(), failedQueries);
+                externalOnly.size(), queriedSymbols.size(), locations.size(),
+                mapping.unmappedLocations(), failedQueries);
         return new ImpactDecision(Set.copyOf(effective), Set.copyOf(externalIds),
                 mapping.unmappedLocations(), failedQueries, properties.getMode());
     }
@@ -102,6 +108,9 @@ public class CodeGraphIntegrationService {
             CodeGraphResultMapper.MappingResult mapping = resultMapper.map(chunks, locations);
             Set<Long> ids = new LinkedHashSet<>(mapping.chunkIds());
             ids.remove(current.getId());
+            log.debug("任务 {} CodeGraph Agent 上下文查询完成：callers={}，callees={}，mapped={}，unmapped={}",
+                    taskId, related.callers().size(), related.callees().size(), ids.size(),
+                    mapping.unmappedLocations());
             if (ids.isEmpty()) return CandidateContext.empty();
 
             Map<Long, CodeChunk> byId = new LinkedHashMap<>();
@@ -125,8 +134,9 @@ public class CodeGraphIntegrationService {
     }
 
     public void release(UUID taskId) {
-        preparedTasks.remove(taskId);
+        boolean prepared = preparedTasks.remove(taskId);
         safeClientRelease(taskId);
+        if (prepared) log.info("任务 {} CodeGraph 任务状态已释放", taskId);
     }
 
     private void safeClientRelease(UUID taskId) {

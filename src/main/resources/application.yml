@@ -27,6 +27,9 @@ spring:
 
 deepaudit:
   storage-root: ${DEEPAUDIT_STORAGE_ROOT:./data}
+  rag:
+    # 关闭后保留代码块、语义分析和 CodeGraph，但不生成或检索向量。
+    enabled: ${DEEPAUDIT_RAG_ENABLED:true}
   git:
     allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
     allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
@@ -67,8 +70,10 @@ deepaudit:
     max-states-per-entry: 1000
   codegraph:
     # OFF 完全禁用；SHADOW 只比较影响范围；AUGMENT 扩展影响范围和 Agent 候选上下文。
-    mode: ${DEEPAUDIT_CODEGRAPH_MODE:OFF}
+    mode: ${DEEPAUDIT_CODEGRAPH_MODE:SHADOW}
     executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:codegraph}
+    # Windows 官方 ZIP 可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
+    bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
     expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
     timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:120}
     max-output-bytes: ${DEEPAUDIT_CODEGRAPH_MAX_OUTPUT_BYTES:8388608}

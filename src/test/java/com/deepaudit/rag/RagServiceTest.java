@@ -45,6 +45,26 @@ class RagServiceTest {
         verify(embeddings, never()).deserialize(any());
     }
 
+    @Test
+    void disabledRagDoesNotCreateQueryEmbeddingOrSearchVectorStore() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk current = chunk(1L, taskId, "Controller#read", "/orders/{id}",
+                "return service.load(id)", "load");
+        EmbeddingService embeddings = mock(EmbeddingService.class);
+        VectorRecallStore vectorStore = mock(VectorRecallStore.class);
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(false);
+        RagService service = new RagService(mock(CodeChunkMapper.class), embeddings, vectorStore, properties);
+
+        List<RagService.RetrievedCode> results = service.retrieveDetailed(
+                List.of(current), new RagService.RetrievalRequest(taskId, 1L, "load order",
+                        current.getEndpoint(), current.getFilePath(), Set.of("load"), 5));
+
+        assertThat(results).isEmpty();
+        verify(embeddings, never()).embed(any());
+        verify(vectorStore, never()).search(anyList(), any(), any(), any(), anyInt());
+    }
+
     private CodeChunk chunk(long id, UUID taskId, String symbol, String endpoint,
                             String content, String calledSymbols) {
         CodeChunk chunk = new CodeChunk(taskId, "demo/Source.java", symbol, endpoint,

@@ -30,24 +30,32 @@ final class AgentPrompts {
             + "安全流、Mapper、框架安全配置或相关代码位置。不得创造输入之外的 unitId 或 primaryChunkId，"
             + "不得把线索直接描述成已确认漏洞。";
 
-    private static final String PROFESSIONAL_AGENT_TOOLS = "工具: get_call_chain(已解析跨文件调用边), "
+    private static final String PROFESSIONAL_AGENT_CORE_TOOLS = "工具: get_call_chain(已解析跨文件调用边), "
             + "trace_data_flow(结构化 Source-to-Sink 路径), "
-            + "find_security_guards(路径上的权限/租户/验证控制), hybrid_search(动态语义与关键词检索), "
-            + "call_context(调用方法与同文件上下文), security_controls(语义安全控制+源码检索), "
-            + "data_access(语义数据流+SQL/Mapper源码), get_chunk(按ID读取候选), "
+            + "find_security_guards(路径上的权限/租户/验证控制), "
+            + "call_context(调用方法与同文件上下文), security_controls(语义安全控制), "
+            + "data_access(语义数据流), get_chunk(按ID读取候选), "
             + "verify_relation(输入候选chunkId，确定性验证候选与目标的调用/配置关系)。";
+
+    private static final String PROFESSIONAL_AGENT_RAG_TOOLS = "RAG 已启用，可使用 hybrid_search(动态语义与关键词检索)；"
+            + "security_controls 和 data_access 在结构化语义证据缺失时会补充 RAG 源码候选。";
+
+    private static final String PROFESSIONAL_AGENT_RAG_DISABLED = "RAG 已通过配置关闭。"
+            + "不得调用 hybrid_search；security_controls 和 data_access 只返回结构化语义证据，"
+            + "需要更多上下文时使用调用链、数据流、安全控制、call_context 或 get_chunk。";
 
     private static final String PROFESSIONAL_AGENT_RULES = "turn.recon 包含 Recon Agent 结论和本地确定性 technologyProfile，"
             + "必须结合框架、安全组件与注解生效条件判断，不得孤立地把注解存在或缺失直接当成漏洞。"
-            + "每轮只能返回一种 action: TOOL、FINDING、REJECT。证据不足时必须先调用工具；"
-            + "标记为 RAG_CANDIDATE 的结果只是发现线索，禁止直接作为漏洞证据；必须继续调用 verify_relation，"
-            + "只有 VERIFIED_EVIDENCE、语义调用链或当前目标才能进入 FINDING 的 evidenceChunkIds。"
+            + "每轮只能返回一种 action: TOOL、FINDING、REJECT。证据不足时必须先调用工具；";
+
+    private static final String PROFESSIONAL_AGENT_COMMON_RULES = "候选结果只是发现线索，禁止直接作为漏洞证据；"
+            + "必须继续调用 verify_relation，只有 VERIFIED_EVIDENCE、语义调用链或当前目标才能进入 FINDING 的 evidenceChunkIds。"
             + "FINDING 时 primaryChunkId 和 evidenceChunkIds 必须来自当前目标或已验证工具结果。"
             + "target.changeType、analysisScope 和 baseCodeExcerpt 描述提交差异；增量任务必须说明风险与直接变更"
             + "或语义影响面的关系，禁止把无关的历史漏洞报告为本次新增问题。"
-            + "严格使用以下 JSON 形状之一，所有字段名必须使用双引号："
-            + "TOOL={\"action\":\"TOOL\",\"tool\":\"hybrid_search\",\"query\":\"检索词\","
-            + "\"limit\":5,\"summary\":\"简短中文摘要\",\"finding\":null}；"
+            + "严格使用以下 JSON 形状之一，所有字段名必须使用双引号：";
+
+    private static final String PROFESSIONAL_AGENT_RESPONSE_RULES = "\"limit\":5,\"summary\":\"简短中文摘要\",\"finding\":null}；"
             + "REJECT={\"action\":\"REJECT\",\"tool\":null,\"query\":null,\"limit\":1,"
             + "\"summary\":\"简短中文原因\",\"finding\":null}；FINDING 的 finding 必须是对象。";
 
@@ -73,8 +81,21 @@ final class AgentPrompts {
     }
 
     static String professionalAgent(VulnerabilityType vulnerabilityType) {
+        return professionalAgent(vulnerabilityType, true);
+    }
+
+    static String professionalAgent(VulnerabilityType vulnerabilityType, boolean ragEnabled) {
+        String retrievalRules = ragEnabled
+                ? PROFESSIONAL_AGENT_RAG_TOOLS
+                    + "标记为 RAG_CANDIDATE 或 CODEGRAPH_CANDIDATE 的结果均属于候选。"
+                : PROFESSIONAL_AGENT_RAG_DISABLED
+                    + "标记为 CODEGRAPH_CANDIDATE 的结果属于候选。";
+        String exampleTool = ragEnabled ? "hybrid_search" : "get_call_chain";
         return complete("你是专业代码安全审计 Agent，当前专注 " + vulnerabilityType + "。"
-                + PROFESSIONAL_AGENT_TOOLS + PROFESSIONAL_AGENT_RULES);
+                + PROFESSIONAL_AGENT_CORE_TOOLS + retrievalRules + PROFESSIONAL_AGENT_RULES
+                + PROFESSIONAL_AGENT_COMMON_RULES
+                + "TOOL={\"action\":\"TOOL\",\"tool\":\"" + exampleTool
+                + "\",\"query\":\"调查目标\"," + PROFESSIONAL_AGENT_RESPONSE_RULES);
     }
 
     static String criticAgent() {

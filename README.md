@@ -96,6 +96,8 @@ Flyway 的 `V9` 迁移也会执行这条语句。若应用数据库账号没有�
 
 ```yaml
 deepaudit:
+  rag:
+    enabled: true
   ai:
     required: true
     base-url: http://localhost:11434/v1
@@ -125,6 +127,14 @@ deepaudit:
     max-states-per-entry: 1000
 ```
 
+`deepaudit.rag.enabled`（环境变量 `DEEPAUDIT_RAG_ENABLED`）控制运行时 RAG。默认值为 `true`。
+设为 `false` 后，系统仍会建立代码块、确定性语义关系和 CodeGraph 上下文，并继续执行完整 Agent
+审计流程；但不会生成代码或查询 Embedding，不会读写 Embedding 缓存，不会同步或查询向量库。
+`hybrid_search` 也不会提供给专业 Agent，`security_controls` 和 `data_access` 仅使用结构化语义证据。
+
+关闭 RAG 不会跳过 PostgreSQL 的既有 pgvector Flyway 迁移。该设计用于保证已迁移数据库仍能正常
+校验，并允许后续直接重新开启 RAG；它关闭的是向量计算和检索，不删除已有向量字段或数据。
+
 模型服务需要支持：
 
 ```text
@@ -145,9 +155,13 @@ AI 是完整审计流程的必要条件。Chat 模型不可用、返回无法解
 ## CodeGraph 可选增强
 
 DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 补充跨文件调用关系，
-不复制其索引器，也不把它作为新的漏洞判定引擎。CodeGraph 必须安装在运行 DeepAudit 的机器或容器内，
-并且应当能被同一个服务账号从 `PATH` 调用；无需为被审计项目单独执行 `codegraph init`，DeepAudit 会在
-每个任务的不可变 Target 快照中自动建立临时索引。
+不复制其索引器，也不把它作为新的漏洞判定引擎。CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
+可以从 `PATH` 调用，也可以配置 Windows 官方 ZIP 的解压根目录。无需为被审计项目单独执行
+`codegraph init`，DeepAudit 会在每个任务的不可变 Target 快照中自动建立临时索引。
+
+Windows 官方 ZIP 无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
+然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI
+脚本，不经过 `codegraph.cmd` 或 `cmd.exe`。
 
 已有 Node.js 时可按上游说明安装：
 
@@ -165,6 +179,7 @@ codegraph version
 ```text
 DEEPAUDIT_CODEGRAPH_MODE=SHADOW
 DEEPAUDIT_CODEGRAPH_EXECUTABLE=codegraph
+DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT=
 DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION=<codegraph version 的完整输出>
 ```
 

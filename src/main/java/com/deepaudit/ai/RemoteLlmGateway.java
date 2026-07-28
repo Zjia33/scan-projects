@@ -2,6 +2,7 @@ package com.deepaudit.ai;
 
 import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.recon.ReconSummary;
+import com.deepaudit.rag.RagProperties;
 import com.fasterxml.jackson.core.JsonLocation;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -11,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -29,10 +31,17 @@ public class RemoteLlmGateway implements LlmGateway {
     private final ObjectMapper objectMapper;
     private final ObjectMapper tolerantObjectMapper;
     private final RestClient restClient;
+    private final RagProperties ragProperties;
 
     public RemoteLlmGateway(AiProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, enabledRagProperties());
+    }
+
+    @Autowired
+    public RemoteLlmGateway(AiProperties properties, ObjectMapper objectMapper, RagProperties ragProperties) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.ragProperties = ragProperties;
         this.tolerantObjectMapper = objectMapper.copy()
                 .enable(JsonReadFeature.ALLOW_TRAILING_COMMA.mappedFeature())
                 .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS.mappedFeature())
@@ -70,7 +79,7 @@ public class RemoteLlmGateway implements LlmGateway {
     // 请求专业 Agent 在 TOOL、FINDING 和 REJECT 三类受控动作中选择下一步。
     @Override
     public AgentDecision decide(AgentTurn turn) {
-        String systemPrompt = AgentPrompts.professionalAgent(turn.vulnerabilityType());
+        String systemPrompt = AgentPrompts.professionalAgent(turn.vulnerabilityType(), ragProperties.isEnabled());
         String userPrompt = json(Map.of("turn", turn, "outputSchema", Map.of(
                 "action", "TOOL|FINDING|REJECT", "tool", "string|null", "query", "string|null",
                 "limit", "1..10", "summary", "string", "finding",
@@ -261,5 +270,11 @@ public class RemoteLlmGateway implements LlmGateway {
         JsonLocation location = exception.getLocation();
         if (location == null) return "未知";
         return "第 " + location.getLineNr() + " 行，第 " + location.getColumnNr() + " 列";
+    }
+
+    private static RagProperties enabledRagProperties() {
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(true);
+        return properties;
     }
 }

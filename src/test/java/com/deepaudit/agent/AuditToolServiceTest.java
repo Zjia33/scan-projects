@@ -3,6 +3,7 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.rag.RagProperties;
 import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,42 @@ class AuditToolServiceTest {
         assertThat(result.evidenceChunkIds()).isEmpty();
         assertThat(result.candidateChunkIds()).containsExactly(2L);
         assertThat(result.text()).contains("CODEGRAPH_CANDIDATE");
+    }
+
+    @Test
+    void disabledRagReturnsExplicitStatusWithoutCallingRetrieval() {
+        RagService rag = mock(RagService.class);
+        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(false);
+        AuditToolService tools = new AuditToolService(rag, semantic, null, properties);
+        CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
+
+        AuditToolService.ToolResult result = tools.execute("hybrid_search", "load order", 5,
+                current, List.of(current), VulnerabilityType.AUTHORIZATION);
+
+        assertThat(result.evidenceChunkIds()).isEmpty();
+        assertThat(result.candidateChunkIds()).isEmpty();
+        assertThat(result.text()).contains("RAG_DISABLED", "未执行向量或关键词检索");
+        verifyNoInteractions(rag);
+    }
+
+    @Test
+    void disabledRagKeepsSemanticToolsWithoutRetrievalFallback() {
+        RagService rag = mock(RagService.class);
+        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+        RagProperties properties = new RagProperties();
+        properties.setEnabled(false);
+        AuditToolService tools = new AuditToolService(rag, semantic, null, properties);
+        CodeChunk current = chunk(1L, "Controller#entry", "/search", "statement.execute(sql)", "execute");
+        when(semantic.query(current.getTaskId(), 1L, "trace_data_flow", 5, VulnerabilityType.SQL_INJECTION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("未发现结构化数据流", Set.of()));
+
+        AuditToolService.ToolResult result = tools.execute("data_access", "SQL", 5,
+                current, List.of(current), VulnerabilityType.SQL_INJECTION);
+
+        assertThat(result.text()).contains("SEMANTIC_EVIDENCE", "未发现结构化数据流");
+        verifyNoInteractions(rag);
     }
 
     private CodeChunk chunk(long id, String symbol, String endpoint, String content, String calls) {

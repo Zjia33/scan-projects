@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 public class CodeGraphProperties {
     private CodeGraphMode mode = CodeGraphMode.OFF;
     private String executable = "codegraph";
+    private String bundleRoot = "";
     private String expectedVersion = "";
     private int timeoutSeconds = 120;
     private long maxOutputBytes = 8L * 1024L * 1024L;

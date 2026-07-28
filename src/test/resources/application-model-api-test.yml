@@ -9,6 +9,8 @@ spring:
 
 deepaudit:
   storage-root: ./target/model-api-test-data
+  rag:
+    enabled: true
   ai:
     required: true
     # 通过环境变量提供真实模型凭据，然后直接在 IDEA 中运行 ModelApiManualIT。
