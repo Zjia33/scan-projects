@@ -6,6 +6,9 @@ import com.deepaudit.domain.AiReportSummary;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.Project;
+import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.ai.LlmGateway;
+import com.deepaudit.agent.FindingLocationResolver;
 import com.deepaudit.mapper.AuditTaskMapper;
 import com.deepaudit.mapper.FindingMapper;
 import com.deepaudit.mapper.ProjectMapper;
@@ -13,10 +16,16 @@ import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.mapper.GitFileChangeMapper;
+import com.deepaudit.mapper.CodeChunkMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.UUID;
 
 @Service
@@ -30,6 +39,7 @@ public class ReportService {
     private final AuditHypothesisMapper hypothesisMapper;
     private final AiReportSummaryMapper summaryMapper;
     private final GitFileChangeMapper changeMapper;
+    private final CodeChunkMapper chunkMapper;
 
     // 聚合任务、项目、确认发现、Agent 轨迹和假设为完整报告模型。
     public AuditReport report(UUID taskId) {
@@ -45,8 +55,41 @@ public class ReportService {
     // 查询风险排序后的发现，并移除不面向用户展示的内部证据段。
     public List<Finding> findings(UUID taskId) {
         List<Finding> findings = findingMapper.findByTaskIdOrderByRisk(taskId);
-        findings.forEach(finding -> finding.setEvidence(evidenceForDisplay(finding.getEvidence())));
+        Map<Long, CodeChunk> chunks = new LinkedHashMap<>();
+        chunkMapper.findByTaskId(taskId).forEach(chunk -> chunks.put(chunk.getId(), chunk));
+        findings.forEach(finding -> {
+            finding.setEvidence(evidenceForDisplay(finding.getEvidence()));
+            localizeLegacyEvidence(finding, chunks);
+        });
         return findings;
+    }
+
+    // 历史 Finding 保存的是完整方法；读取时利用仍在任务索引中的代码块转换为局部上下文。
+    private void localizeLegacyEvidence(Finding finding, Map<Long, CodeChunk> chunks) {
+        if (finding.getEvidence().contains("[漏洞位置]")) return;
+        List<Long> evidenceIds = evidenceChunkIds(finding.getEvidence());
+        CodeChunk primary = evidenceIds.stream().map(chunks::get).filter(Objects::nonNull)
+                .findFirst().orElseGet(() -> chunks.values().stream()
+                        .filter(chunk -> Objects.equals(chunk.getFilePath(), finding.getFilePath()))
+                        .filter(chunk -> finding.getStartLine() >= chunk.getStartLine()
+                                && finding.getStartLine() <= chunk.getEndLine())
+                        .findFirst().orElse(null));
+        if (primary == null) return;
+        if (evidenceIds.isEmpty()) evidenceIds = List.of(primary.getId());
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                finding.getType(), finding.getSeverity(), finding.getConfidence(), finding.getTitle(),
+                finding.getDescription(), finding.getRemediation(), primary.getId(), evidenceIds);
+        FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
+        finding.setStartLine(location.startLine());
+        finding.setEndLine(location.endLine());
+        finding.setEvidence(FindingLocationResolver.formatEvidence(proposal, chunks));
+    }
+
+    private List<Long> evidenceChunkIds(String evidence) {
+        Matcher matcher = Pattern.compile("\\[CHUNK (\\d+)]").matcher(evidence == null ? "" : evidence);
+        java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
+        while (matcher.find()) ids.add(Long.parseLong(matcher.group(1)));
+        return ids.stream().distinct().toList();
     }
 
     // 将结构化报告渲染为自包含的中文 HTML 页面。
@@ -59,16 +102,20 @@ public class ReportService {
                     .append(severityLabel(finding.getSeverity())).append(" · 可信度 ")
                     .append(confidenceLabel(finding.getConfidence())).append(" · ")
                     .append(deltaLabel(finding.getDeltaStatus())).append("</b></p>")
-                    .append("<p>").append(escape(finding.getFilePath())).append(":").append(finding.getStartLine()).append("</p>")
+                    .append("<p class='vulnerability-location'><b>实际漏洞位置：</b>")
+                    .append(escape(finding.getFilePath())).append(":").append(finding.getStartLine())
+                    .append(finding.getEndLine() == finding.getStartLine()
+                            ? "" : "-" + finding.getEndLine()).append("</p>")
                     .append(descriptionHtml(finding.getDescription()))
-                    .append("<pre>").append(escape(finding.getEvidence())).append("</pre>")
+                    .append(evidenceHtml(finding.getEvidence()))
                     .append("<p><b>修复建议：</b>").append(escape(finding.getRemediation())).append("</p></section>");
         }
         return "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>安全审计报告</title>"
                 + "<style>body{max-width:980px;margin:40px auto;font:15px/1.7 sans-serif;color:#172033}"
                 + "h1{border-bottom:3px solid #5b5cf0}section{margin:28px 0;padding:20px;border:1px solid #ddd;border-radius:12px}"
                 + ".finding-description{margin-bottom:0}.critic-review{margin-top:1.2em;padding-top:1.2em;border-top:1px dashed #d7dce5}"
-                + "pre{white-space:pre-wrap;background:#101727;color:#d8e3ff;padding:16px;border-radius:8px}</style></head><body>"
+                + ".vulnerability-location{color:#a22818}.finding-evidence{white-space:pre-wrap;background:#101727;color:#d8e3ff;padding:16px;border-radius:8px}"
+                + ".finding-evidence span{display:block}.finding-evidence .vulnerable-line{margin:0 -8px;padding:0 8px;background:#6b2429;color:#fff3cf;font-weight:700}</style></head><body>"
                 + "<h1>DeepAudit Java 安全审计报告</h1><p>项目：" + escape(report.project().getName()) + "</p>"
                 + "<p>范围：" + escape(report.task().getScanMode().name()) + "　Target："
                 + escape(shortSha(report.task().getTargetCommitSha()))
@@ -112,6 +159,16 @@ public class ReportService {
         String review = description.substring(critic + marker.length()).strip();
         return "<p class='finding-description'>" + escape(findingDescription) + "</p>"
                 + "<p class='critic-review'><b>" + marker + "</b>" + escape(review) + "</p>";
+    }
+
+    private String evidenceHtml(String value) {
+        String evidence = value == null ? "" : value;
+        StringBuilder html = new StringBuilder("<pre class='finding-evidence'>");
+        for (String line : evidence.split("\\R", -1)) {
+            html.append(line.startsWith(">>> ") ? "<span class='vulnerable-line'>" : "<span>")
+                    .append(escape(line)).append("</span>");
+        }
+        return html.append("</pre>").toString();
     }
 
     private String severityLabel(com.deepaudit.domain.Severity severity) {

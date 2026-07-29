@@ -825,11 +825,26 @@ function findingCard(finding) {
             + ` / ${deltaStatusText(finding.deltaStatus)}`));
     const body = document.createElement('div');
     body.className = 'finding-body';
-    body.append(node('p', '', `${finding.filePath}:${finding.startLine}${finding.endpoint ? ` · ${finding.endpoint}` : ''}`));
+    const location = `${finding.filePath}:${finding.startLine}`
+        + `${finding.endLine && finding.endLine !== finding.startLine ? `-${finding.endLine}` : ''}`;
+    body.append(node('p', 'vulnerability-location', `实际漏洞位置：${location}`
+        + `${finding.endpoint ? ` · ${finding.endpoint}` : ''}`));
     appendFindingDescription(body, finding.description);
-    body.append(node('pre', '', finding.evidence), node('p', '', `修复建议：${finding.remediation}`));
+    body.append(buildFindingEvidence(finding.evidence), node('p', '', `修复建议：${finding.remediation}`));
     details.append(summary, body);
     return details;
+}
+
+function buildFindingEvidence(value) {
+    const code = document.createElement('pre');
+    code.className = 'finding-evidence';
+    String(value || '').split(/\r?\n/).forEach(line => {
+        const row = document.createElement('span');
+        row.textContent = line;
+        if (line.startsWith('>>> ')) row.className = 'vulnerable-line';
+        code.append(row);
+    });
+    return code;
 }
 
 function appendFindingDescription(container, value) {
@@ -941,8 +956,7 @@ function summarizeToolCall(message) {
         trace_data_flow: '追踪输入到敏感操作的数据流',
         find_security_guards: '查找调用路径上的认证、授权与校验保护',
         security_controls: '检索适用于当前目标的安全控制',
-        data_access: '追踪当前目标关联的数据访问',
-        hybrid_search: '检索与当前审计目标相关的代码线索'
+        data_access: '追踪当前目标关联的数据访问'
     };
     if (summaries[tool]) return `${tool}：${summaries[tool]}`;
     if (tool && /^[a-z0-9_-]{1,48}$/.test(tool)) return `${tool}：调用只读工具补充审计证据`;

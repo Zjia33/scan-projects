@@ -51,7 +51,7 @@ class IncrementalScopeServiceTest {
 
     private CodeChunk chunk(long id, String path, String symbol) {
         CodeChunk chunk = new CodeChunk(UUID.randomUUID(), path, symbol, null,
-                1, 20, "method", "", "JAVA_METHOD", "", "", "");
+                1, 20, "method", "JAVA_METHOD", "", "", "");
         chunk.setId(id);
         chunk.setAnalysisScope(AnalysisScope.CONTEXT);
         return chunk;

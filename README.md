@@ -12,16 +12,14 @@
 - 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
 - 将增量语义变化分类为方法新增、修改、删除、签名变化、Guard 新增和 Guard 删除，纯删除行不再依赖 Target 新增行范围
 - Git Diff 行区间与方法语义差异共同确定变更块，并通过跨文件调用图双向扩展两层影响范围
-- 增量任务只为直接变更块和语义影响块生成必要 Embedding，同时保留完整 Target 项目事实
-- 按模型、输入内容哈希复用 Embedding；漏洞使用独立于行号的稳定指纹
+- 增量任务只深入调查直接变更块和语义影响块，同时保留完整 Target 项目事实
+- 漏洞使用独立于行号的稳定指纹进行跨扫描匹配
 - Critic 将目标提交中的确认问题标记为新增、回归、持续存在或受变更影响；全量结果标记为基线
 - JavaParser 方法级切块、接口、参数、注解和调用方法提取；模板与配置文件按行数和字符数切窗
 - JavaParser Symbol Solver 全局符号索引、跨文件方法解析和接口实现分派
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
 - 面向七类漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
 - Java、XML、HTML、JSP、Vue、JavaScript、TypeScript、YAML 等文本索引
-- OpenAI-compatible 批量远程 Embedding
-- PostgreSQL pgvector + HNSW 余弦近邻召回，并结合关键词、代码符号和同文件关系重排
 - Recon Agent：理解项目架构、攻击面和已有安全机制
 - Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
 - `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
@@ -67,8 +65,7 @@
 - Maven 3.9
 - IDEA 中启用 Lombok 插件和 Annotation Processing（仅 IDE 代码提示需要，Maven 会自动处理）
 - 可访问的 OpenAI-compatible Chat Completions 服务
-- 可访问的 OpenAI-compatible Embeddings 服务
-- PostgreSQL 13+，并在目标数据库中启用 pgvector 0.8+
+- PostgreSQL 13+
 - 可访问的、已经获得审计授权的 HTTPS Git 仓库
 
 默认使用 PostgreSQL。应用会自动读取项目根目录的 `.env`，也支持使用同名的操作系统环境变量覆盖配置。首次运行可复制 `.env.example` 为 `.env`，然后填写真实连接信息：
@@ -77,27 +74,15 @@
 DEEPAUDIT_DATASOURCE_URL=jdbc:postgresql://localhost:5432/deepaudit
 DEEPAUDIT_DATASOURCE_USERNAME=deepaudit
 DEEPAUDIT_DATASOURCE_PASSWORD=<由运行环境提供>
-DEEPAUDIT_EMBEDDING_DIMENSIONS=1024
-DEEPAUDIT_VECTOR_STORE_PROVIDER=pgvector
 DEEPAUDIT_GIT_ALLOWED_HOSTS=github.com,gitlab.com,gitee.com
 ```
 
 `.env` 已加入 `.gitignore`，不得强制提交；`.env.example` 只保存无效占位值。远程数据库端口应只放行受信任来源，不要把真实地址、用户名、密码或模型 API Key 写入受版本控制的配置文件。
 
-pgvector 必须在 DeepAudit 实际连接的数据库中启用，而不只是安装到 PostgreSQL 服务器：
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-Flyway 的 `V9` 迁移也会执行这条语句。若应用数据库账号没有创建扩展的权限，请先用数据库管理员账号执行一次。
-
-## AI 与 Embedding 配置
+## AI 配置
 
 ```yaml
 deepaudit:
-  rag:
-    enabled: true
   ai:
     required: true
     base-url: http://localhost:11434/v1
@@ -111,15 +96,6 @@ deepaudit:
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
     triage-batch-size: 40
-  embedding:
-    provider: remote
-    base-url: http://localhost:11434/v1
-    api-key: ${DEEPAUDIT_EMBEDDING_API_KEY:}
-    model: nomic-embed-text
-    dimensions: 768
-  vector-store:
-    provider: pgvector
-    hnsw-ef-search: 100
   semantic:
     enabled: true
     max-call-depth: 10
@@ -127,30 +103,13 @@ deepaudit:
     max-states-per-entry: 1000
 ```
 
-`deepaudit.rag.enabled`（环境变量 `DEEPAUDIT_RAG_ENABLED`）控制运行时 RAG。默认值为 `true`。
-设为 `false` 后，系统仍会建立代码块、确定性语义关系和 CodeGraph 上下文，并继续执行完整 Agent
-审计流程；但不会生成代码或查询 Embedding，不会读写 Embedding 缓存，不会同步或查询向量库。
-`hybrid_search` 也不会提供给专业 Agent，`security_controls` 和 `data_access` 仅使用结构化语义证据。
-
-关闭 RAG 不会跳过 PostgreSQL 的既有 pgvector Flyway 迁移。该设计用于保证已迁移数据库仍能正常
-校验，并允许后续直接重新开启 RAG；它关闭的是向量计算和检索，不删除已有向量字段或数据。
-
 模型服务需要支持：
 
 ```text
 POST {base-url}/chat/completions
-POST {base-url}/embeddings
 ```
 
-AI 是完整审计流程的必要条件。Chat 模型不可用、返回无法解析的 JSON 或 Embedding 失败时，任务会进入 `FAILED`，不会退化为规则扫描后仍显示成功。
-
-`deepaudit.embedding.dimensions` 必须与模型实际返回维度一致，并且会用于创建
-`code_chunk.embedding_vector vector(n)`。修改模型或维度后不能直接复用原来的向量列；
-需要新增数据库迁移或重建开发数据库后重新扫描。修改配置后需要重启应用。
-
-代码块的原始序列化 Embedding 仍保留在 `code_chunk.embedding`，用于缓存兼容和诊断；
-实际召回使用 `embedding_vector`、余弦距离运算符 `<=>` 和 HNSW 索引在 PostgreSQL
-内部完成。Java 层只对数据库返回的候选执行关键词和确定性结构关系重排，不再逐块计算向量距离。
+AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解析的 JSON 时，任务会进入 `FAILED`，不会退化为规则扫描后仍显示成功。
 
 ## CodeGraph 可选增强
 
@@ -205,7 +164,7 @@ DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION=<codegraph version 的完整输出>
 
 代码盘点默认只保留可审计的生产源码和配置。`src/test`、`tests`、`__tests__`、集成测试、
 测试夹具、`*Test.java`、`*IT.java`、构建输出、生成代码、依赖目录、文档目录和压缩后的前端
-Bundle 不会物化到分析快照，也不会生成 Chunk、Embedding、语义关系、增量变更或 Agent 任务。
+Bundle 不会物化到分析快照，也不会生成 Chunk、语义关系、增量变更或 Agent 任务。
 `pom.xml`、生产环境 XML/YAML/Properties、MyBatis Mapper 和数据库迁移仍会保留。
 
 生产环境只允许 `deepaudit.git.allowed-hosts` 中的 HTTPS 主机。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
@@ -241,13 +200,16 @@ http://localhost:8080/
 - `V9__add_pgvector_recall.sql`：启用 pgvector、增加定维向量列并创建 HNSW 余弦索引
 - `V10__add_project_management.sql`：增加项目描述、更新时间和归档状态
 - `V11__add_semantic_method_changes.sql`：持久化 Base/Target 方法新增、修改、删除、签名及 Guard 变化
+- `V12__remove_rag_storage.sql`：删除历史 Embedding 缓存和代码块向量文本
+- `V13__remove_pgvector_recall.sql`：删除历史 pgvector 列和 HNSW 索引
+
+`V7` 和 `V9` 是不可改写的历史迁移，新版本会继续保留文件用于已有数据库校验；当前运行时代码不再使用 RAG、Embedding 或向量召回。
 
 ## Agent 只读工具
 
 专业 Agent 只能选择以下受控工具，不能执行 Shell、网络请求或仓库代码：
 
 - `get_chunk`
-- `hybrid_search`
 - `call_context`
 - `get_call_chain`
 - `trace_data_flow`
@@ -299,7 +261,7 @@ GitHub 私有仓库建议使用 fine-grained personal access token：`Resource o
 创建全量任务时提交 `{"scanMode":"FULL","targetCommit":"<sha>"}`；创建增量任务时提交 `{"scanMode":"INCREMENTAL","baseCommit":"<sha>","targetCommit":"<sha>"}`。服务端会把修订解析并固化为完整提交 SHA。
 
 归档只会阻止仓库刷新和新建扫描，不会删除仓库或历史报告。数据清理必须先归档项目，且请求体必须包含
-`{"confirmation":"DELETE_SCAN_DATA"}`；清理会级联删除该项目的扫描任务、代码块、向量、语义关系、
+`{"confirmation":"DELETE_SCAN_DATA"}`；清理会级联删除该项目的扫描任务、代码块、语义关系、
 Agent 轨迹、漏洞和报告，但保留项目基本信息与本地裸 Git 仓库，项目恢复后仍可继续扫描。
 
 ## 验证
@@ -309,19 +271,17 @@ mvn test
 mvn clean package
 ```
 
-测试环境使用确定性的测试 LLM Gateway、本地哈希 Embedding 和内存向量召回替身，但仍完整经过 Recon、规划、专业 Agent、工具调用、Critic 和 Report 协议，不会通过关闭 AI 绕过 Agent 工作流。生产环境默认且只应使用 `pgvector` 召回。
+测试环境使用确定性的测试 LLM Gateway，并完整经过 Recon、规划、专业 Agent、工具调用、Critic 和 Report 协议，不会通过关闭 AI 绕过 Agent 工作流。
 
-### 在 IDEA 中测试真实对话模型和嵌入模型
+### 在 IDEA 中测试真实对话模型
 
 1. 打开 `src/test/resources/application-model-api-test.yml`。
 2. 在 `deepaudit.ai` 下填写对话模型的 `base-url`、`api-key` 和 `model`。
-3. 在 `deepaudit.embedding` 下填写嵌入模型配置。文件中已经预填硅基流动 `BAAI/bge-m3`，只需替换 API Key。
-4. 打开 `src/test/java/com/deepaudit/ModelApiManualIT.java`。
-5. 点击类名左侧绿色按钮运行全部测试，或者点击某个测试方法左侧按钮单独运行。
+3. 打开 `src/test/java/com/deepaudit/ModelApiManualIT.java`。
+4. 点击类名左侧绿色按钮运行测试。
 
 可单独运行的方法：
 
 - `conversationModelRecognizesSqlInjectionAndReturnsAgentJson`：打印 Triage Orchestrator 和专业 Agent 的结构化 JSON，并验证模型能够识别示例中的 SQL 注入。
-- `embeddingModelRanksSecurityRelatedCodeAboveUnrelatedCode`：打印向量维度、相关代码相似度、无关代码相似度及差值。
 
 测试使用 H2 且关闭 Flyway，不会连接或修改云端 PostgreSQL。测试类以 `IT` 结尾，普通 `mvn test` 不会自动运行它，避免意外调用付费 API；仍可通过 IDEA 绿色按钮随时运行。

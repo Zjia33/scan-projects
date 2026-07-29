@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -34,12 +35,33 @@ class DeepAuditApplicationTests {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     @Test
     void loadsMyBatisAndFlywayWithoutJpa() {
         assertThat(sqlSessionFactory).isNotNull();
         assertThat(applicationContext.containsBean("entityManagerFactory")).isFalse();
         assertThat(applicationContext.containsBean("projectMapper")).isTrue();
         assertThat(flyway.info().applied()).hasSizeGreaterThanOrEqualTo(3);
+    }
+
+    @Test
+    void removesLegacyRetrievalStorageFromCurrentSchema() {
+        Integer cacheTables = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE UPPER(TABLE_NAME) = 'EMBEDDING_CACHE'
+                """, Integer.class);
+        Integer vectorColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'CODE_CHUNK'
+                  AND UPPER(COLUMN_NAME) IN ('EMBEDDING', 'EMBEDDING_VECTOR')
+                """, Integer.class);
+
+        assertThat(cacheTables).isZero();
+        assertThat(vectorColumns).isZero();
     }
 
     @Test

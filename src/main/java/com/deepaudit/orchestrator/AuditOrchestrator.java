@@ -95,7 +95,7 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.INVENTORY, 28,
                             "项目盘点：" + targetSnapshot.fileCount() + " 个文件");
                     task = update(task, AuditStatus.INDEXING, 42,
-                            task.getScanMode() == ScanMode.FULL ? "构建全量代码与 RAG 索引"
+                            task.getScanMode() == ScanMode.FULL ? "构建全量代码与语义索引"
                                     : "构建 Base/Target 方法差异、完整语义事实和增量代码索引");
                     var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, task.getScanMode(), changes);
 

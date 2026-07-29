@@ -106,7 +106,7 @@ class AuditUnitServiceTest {
 
     private CodeChunk chunk(long id, String path, String symbol, String endpoint, String content) {
         CodeChunk chunk = new CodeChunk(UUID.randomUUID(), path, symbol, endpoint,
-                1, 3, content, "", "JAVA_METHOD", "String input", "", "helper");
+                1, 3, content, "JAVA_METHOD", "String input", "", "helper");
         chunk.setId(id);
         return chunk;
     }

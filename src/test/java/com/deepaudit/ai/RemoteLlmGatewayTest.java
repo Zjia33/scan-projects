@@ -4,7 +4,6 @@ import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.VulnerabilityType;
-import com.deepaudit.rag.RagProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -68,7 +67,8 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("所有供人阅读的摘要", "简体中文", "technologyProfile",
-                        "RAG_CANDIDATE", "verify_relation", "VERIFIED_EVIDENCE");
+                        "UNVERIFIED_CANDIDATE", "verify_relation", "VERIFIED_EVIDENCE")
+                .contains("get_call_chain", "call_context", "verify_relation");
     }
 
     @Test
@@ -98,23 +98,6 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests).hasSize(2);
     }
 
-    @Test
-    void disabledRagRemovesRetrievalGuidanceFromProfessionalAgentPrompt() {
-        AiProperties properties = properties(1);
-        RagProperties ragProperties = new RagProperties();
-        ragProperties.setEnabled(false);
-        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, ragProperties, """
-                {"action":"REJECT","tool":null,"query":null,"limit":1,
-                 "summary":"现有确定性证据不足","finding":null}
-                """);
-
-        gateway.decide(turn());
-
-        assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("RAG 已通过配置关闭", "不得调用 hybrid_search", "get_call_chain")
-                .doesNotContain("可使用 hybrid_search", "RAG_CANDIDATE");
-    }
-
     private AiProperties properties(int repairAttempts) {
         AiProperties properties = new AiProperties();
         properties.setRequired(true);
@@ -141,11 +124,6 @@ class RemoteLlmGatewayTest {
 
         StubRemoteLlmGateway(AiProperties properties, String... responses) {
             super(properties, new ObjectMapper());
-            this.responses.addAll(List.of(responses));
-        }
-
-        StubRemoteLlmGateway(AiProperties properties, RagProperties ragProperties, String... responses) {
-            super(properties, new ObjectMapper(), ragProperties);
             this.responses.addAll(List.of(responses));
         }
 

@@ -23,13 +23,11 @@ spring:
       - classpath:db/migration/common
       - classpath:db/migration/postgresql
     placeholders:
-      embeddingDimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
+      # 仅供不可改写的历史 V9 迁移校验；V13 会删除对应向量列。
+      embeddingDimensions: 1024
 
 deepaudit:
   storage-root: ${DEEPAUDIT_STORAGE_ROOT:./data}
-  rag:
-    # 关闭后保留代码块、语义分析和 CodeGraph，但不生成或检索向量。
-    enabled: ${DEEPAUDIT_RAG_ENABLED:true}
   git:
     allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
     allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
@@ -54,15 +52,6 @@ deepaudit:
     professional-agent-queue-capacity: 1000
     # 轻量编排只传输审计单元摘要；该值控制单次请求大小，不限制项目总覆盖范围。
     triage-batch-size: 40
-  embedding:
-    provider: ${DEEPAUDIT_EMBEDDING_PROVIDER:remote}
-    base-url: ${DEEPAUDIT_EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
-    api-key: ${DEEPAUDIT_EMBEDDING_API_KEY:}
-    model: ${DEEPAUDIT_EMBEDDING_MODEL:BAAI/bge-m3}
-    dimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
-  vector-store:
-    provider: ${DEEPAUDIT_VECTOR_STORE_PROVIDER:pgvector}
-    hnsw-ef-search: ${DEEPAUDIT_VECTOR_HNSW_EF_SEARCH:100}
   semantic:
     enabled: true
     max-call-depth: 10

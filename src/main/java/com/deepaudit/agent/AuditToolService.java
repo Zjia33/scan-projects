@@ -3,8 +3,6 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
-import com.deepaudit.rag.RagProperties;
-import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -19,28 +17,18 @@ import java.util.stream.Collectors;
 
 @Service
 public class AuditToolService {
-    private final RagService ragService;
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
-    private final RagProperties ragProperties;
 
     @Autowired
-    public AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService,
-                            CodeGraphIntegrationService codeGraphIntegrationService,
-                            RagProperties ragProperties) {
-        this.ragService = ragService;
+    public AuditToolService(SemanticEvidenceService semanticEvidenceService,
+                            CodeGraphIntegrationService codeGraphIntegrationService) {
         this.semanticEvidenceService = semanticEvidenceService;
         this.codeGraphIntegrationService = codeGraphIntegrationService;
-        this.ragProperties = ragProperties;
     }
 
-    AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService) {
-        this(ragService, semanticEvidenceService, null, enabledProperties());
-    }
-
-    AuditToolService(RagService ragService, SemanticEvidenceService semanticEvidenceService,
-                     CodeGraphIntegrationService codeGraphIntegrationService) {
-        this(ragService, semanticEvidenceService, codeGraphIntegrationService, enabledProperties());
+    AuditToolService(SemanticEvidenceService semanticEvidenceService) {
+        this(semanticEvidenceService, null);
     }
 
     // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
@@ -48,9 +36,7 @@ public class AuditToolService {
                               CodeChunk current, List<CodeChunk> chunks,
                               VulnerabilityType vulnerabilityType) {
         int limit = Math.max(1, Math.min(requestedLimit <= 0 ? 6 : requestedLimit, 10));
-        String normalizedTool = tool == null
-                ? ragProperties.isEnabled() ? "hybrid_search" : "call_context"
-                : tool.toLowerCase(Locale.ROOT);
+        String normalizedTool = tool == null ? "call_context" : tool.toLowerCase(Locale.ROOT);
         return switch (normalizedTool) {
             case "get_chunk" -> getChunk(query, current, chunks);
             case "verify_relation" -> verifyRelation(query, current, chunks);
@@ -61,15 +47,9 @@ public class AuditToolService {
             case "trace_data_flow", "find_security_guards" ->
                     semantic(normalizedTool, current, limit, vulnerabilityType);
             case "security_controls" -> addCodeGraphCandidates(
-                    semanticFirst("find_security_guards", current, chunks,
-                            append(query, "authentication authorization currentUser owner tenant role permission guard validate"),
-                            limit, vulnerabilityType), current, chunks, limit);
+                    semantic("find_security_guards", current, limit, vulnerabilityType), current, chunks, limit);
             case "data_access" -> addCodeGraphCandidates(
-                    semanticFirst("trace_data_flow", current, chunks,
-                            append(query, "SQL mapper repository select insert update delete execute query parameter"),
-                            limit, vulnerabilityType), current, chunks, limit);
-            case "hybrid_search" -> addCodeGraphCandidates(
-                    search(current, chunks, query, limit), current, chunks, limit);
+                    semantic("trace_data_flow", current, limit, vulnerabilityType), current, chunks, limit);
             default -> throw new IllegalArgumentException("不允许的 Agent 工具: " + tool);
         };
     }
@@ -93,42 +73,6 @@ public class AuditToolService {
         SemanticEvidenceService.EvidenceResult result = semanticEvidenceService.query(
                 current.getTaskId(), current.getId(), tool, limit, vulnerabilityType);
         return new ToolResult("[SEMANTIC_EVIDENCE]\n" + result.text(), result.evidenceChunkIds());
-    }
-
-    // 在语义证据缺失时合并 RAG 候选，同时保留两类结果的信任级别。
-    private ToolResult merge(ToolResult first, ToolResult second) {
-        Set<Long> evidence = new LinkedHashSet<>(first.evidenceChunkIds());
-        evidence.addAll(second.evidenceChunkIds());
-        Set<Long> candidates = new LinkedHashSet<>(first.candidateChunkIds());
-        candidates.addAll(second.candidateChunkIds());
-        return new ToolResult("<SEMANTIC_EVIDENCE>\n" + first.text() + "\n</SEMANTIC_EVIDENCE>\n\n"
-                + second.text(), evidence, candidates);
-    }
-
-    // 优先返回可验证语义关系，找不到时才使用混合检索扩大调查范围。
-    private ToolResult semanticFirst(String tool, CodeChunk current, List<CodeChunk> chunks,
-                                     String query, int limit, VulnerabilityType vulnerabilityType) {
-        ToolResult semantic = semantic(tool, current, limit, vulnerabilityType);
-        if (!semantic.evidenceChunkIds().isEmpty()) return semantic;
-        if (!ragProperties.isEnabled()) return semantic;
-        return merge(semantic, search(current, chunks, query, limit));
-    }
-
-    // 执行混合检索并明确把结果标为必须继续验证关系的候选证据。
-    private ToolResult search(CodeChunk current, List<CodeChunk> chunks, String query, int limit) {
-        if (!ragProperties.isEnabled()) {
-            return new ToolResult("[RAG_DISABLED] 当前配置已关闭 RAG，未执行向量或关键词检索。",
-                    Set.of(), Set.of());
-        }
-        Set<String> symbols = splitSymbols(current.getCalledSymbols());
-        RagService.RetrievalRequest request = new RagService.RetrievalRequest(current.getTaskId(), current.getId(),
-                query, current.getEndpoint(), current.getFilePath(), symbols, limit);
-        List<RagService.RetrievedCode> results = ragService.retrieveDetailed(chunks, request);
-        return new ToolResult("[RAG_CANDIDATE] 以下结果只能用于发现线索；必须调用 verify_relation 验证后才能引用。\n\n"
-                + results.stream().map(item -> format(item.chunk(), item.reason(), item.score()))
-                .collect(Collectors.joining("\n\n")),
-                Set.of(), results.stream().map(item -> item.chunk().getId())
-                .collect(Collectors.toCollection(LinkedHashSet::new)));
     }
 
     // 从同文件和精确调用符号中提取当前目标的直接上下文。
@@ -159,11 +103,11 @@ public class AuditToolService {
         if (result.getId().equals(current.getId())) {
             return new ToolResult(format(result, "当前审计目标", 1.0), Set.of(result.getId()));
         }
-        return new ToolResult("[RAG_CANDIDATE] 读取候选源码不等于证明关系。\n"
+        return new ToolResult("[UNVERIFIED_CANDIDATE] 读取候选源码不等于证明关系。\n"
                 + format(result, "按ID读取候选", 1.0), Set.of(), Set.of(result.getId()));
     }
 
-    // 通过语义图或确定性结构关系把 RAG 候选提升为已验证证据。
+    // 通过语义图或确定性结构关系把候选提升为已验证证据。
     private ToolResult verifyRelation(String query, CodeChunk current, List<CodeChunk> chunks) {
         Long candidateId = parseChunkId(query);
         if (candidateId == null) {
@@ -274,16 +218,6 @@ public class AuditToolService {
         if (symbol == null) return "";
         int hash = symbol.lastIndexOf('#');
         return hash < 0 ? symbol : symbol.substring(hash + 1);
-    }
-
-    private String append(String query, String suffix) {
-        return (query == null ? "" : query) + " " + suffix;
-    }
-
-    private static RagProperties enabledProperties() {
-        RagProperties properties = new RagProperties();
-        properties.setEnabled(true);
-        return properties;
     }
 
     public record ToolResult(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {

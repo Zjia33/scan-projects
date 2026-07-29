@@ -28,7 +28,15 @@ public interface LlmGateway {
     record Target(long chunkId, String filePath, String symbolName, String endpoint,
                   String chunkType, String parameters, String annotations,
                   String calledSymbols, String codeExcerpt, String changeType,
-                  String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints) {
+                  String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints,
+                  int startLine, int endLine) {
+        public Target(long chunkId, String filePath, String symbolName, String endpoint,
+                      String chunkType, String parameters, String annotations,
+                      String calledSymbols, String codeExcerpt, String changeType,
+                      String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints) {
+            this(chunkId, filePath, symbolName, endpoint, chunkType, parameters, annotations,
+                    calledSymbols, codeExcerpt, changeType, analysisScope, baseCodeExcerpt, hints, 0, 0);
+        }
     }
 
     record ReconInsight(String architectureSummary, List<String> attackSurfaces,
@@ -76,9 +84,17 @@ public interface LlmGateway {
 
     record FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
                            String title, String description, String remediation,
-                           Long primaryChunkId, List<Long> evidenceChunkIds) {
+                           Long primaryChunkId, List<Long> evidenceChunkIds,
+                           Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
         public FindingProposal {
             evidenceChunkIds = evidenceChunkIds == null ? List.of() : List.copyOf(evidenceChunkIds);
+        }
+
+        public FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
+                               String title, String description, String remediation,
+                               Long primaryChunkId, List<Long> evidenceChunkIds) {
+            this(type, severity, confidence, title, description, remediation,
+                    primaryChunkId, evidenceChunkIds, null, null);
         }
     }
 

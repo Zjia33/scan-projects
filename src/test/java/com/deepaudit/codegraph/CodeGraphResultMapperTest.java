@@ -62,7 +62,7 @@ class CodeGraphResultMapperTest {
 
     private CodeChunk chunk(long id, String path, String symbol, int start, int end) {
         CodeChunk chunk = new CodeChunk(UUID.randomUUID(), path, symbol, null,
-                start, end, "method", "", "JAVA_METHOD", "", "", "");
+                start, end, "method", "JAVA_METHOD", "", "", "");
         chunk.setId(id);
         return chunk;
     }

@@ -10,7 +10,6 @@
         <result column="start_line" property="startLine"/>
         <result column="end_line" property="endLine"/>
         <result column="content" property="content"/>
-        <result column="embedding" property="embedding"/>
         <result column="chunk_type" property="chunkType"/>
         <result column="parameters" property="parameters"/>
         <result column="annotations" property="annotations"/>
@@ -21,7 +20,7 @@
     </resultMap>
 
     <sql id="columns">
-        id, task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
+        id, task_id, file_path, symbol_name, endpoint, start_line, end_line, content,
         chunk_type, parameters, annotations, called_symbols, change_type, analysis_scope, base_content
     </sql>
 
@@ -46,12 +45,12 @@
 
     <insert id="insertBatch">
         INSERT INTO code_chunk
-            (task_id, file_path, symbol_name, endpoint, start_line, end_line, content, embedding,
+            (task_id, file_path, symbol_name, endpoint, start_line, end_line, content,
              chunk_type, parameters, annotations, called_symbols, change_type, analysis_scope, base_content)
         VALUES
         <foreach collection="chunks" item="chunk" separator=",">
             (#{chunk.taskId}, #{chunk.filePath}, #{chunk.symbolName}, #{chunk.endpoint},
-             #{chunk.startLine}, #{chunk.endLine}, #{chunk.content}, #{chunk.embedding},
+             #{chunk.startLine}, #{chunk.endLine}, #{chunk.content},
              #{chunk.chunkType}, #{chunk.parameters}, #{chunk.annotations}, #{chunk.calledSymbols},
              #{chunk.changeType}, #{chunk.analysisScope}, #{chunk.baseContent})
         </foreach>
@@ -59,8 +58,7 @@
 
     <update id="updateIncrementalMetadata" parameterType="com.deepaudit.domain.CodeChunk">
         UPDATE code_chunk
-        SET embedding = #{embedding},
-            change_type = #{changeType},
+        SET change_type = #{changeType},
             analysis_scope = #{analysisScope},
             base_content = #{baseContent}
         WHERE id = #{id}

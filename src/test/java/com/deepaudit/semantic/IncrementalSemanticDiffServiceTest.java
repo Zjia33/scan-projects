@@ -80,7 +80,7 @@ class IncrementalSemanticDiffServiceTest {
     }
 
     private CodeChunk chunk(UUID taskId, String path, String symbol, int start, int end) {
-        return new CodeChunk(taskId, path, symbol, null, start, end, "method", "",
+        return new CodeChunk(taskId, path, symbol, null, start, end, "method",
                 "JAVA_METHOD", "", "", "");
     }
 

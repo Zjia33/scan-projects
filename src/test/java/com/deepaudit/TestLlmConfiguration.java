@@ -86,7 +86,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "data_access";
                     case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> "security_controls";
-                    default -> "hybrid_search";
+                    default -> "call_context";
                 };
             }
 

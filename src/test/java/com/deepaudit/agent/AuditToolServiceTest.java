@@ -3,8 +3,6 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
-import com.deepaudit.rag.RagProperties;
-import com.deepaudit.rag.RagService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
 
@@ -13,37 +11,15 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class AuditToolServiceTest {
 
     @Test
-    void ragResultsRemainCandidatesUntilRelationIsVerified() {
-        RagService rag = mock(RagService.class);
-        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
-        AuditToolService tools = new AuditToolService(rag, semantic);
-        CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
-        CodeChunk candidate = chunk(2L, "UnrelatedService#load", null, "return cache.load(id)", "");
-        when(rag.retrieveDetailed(anyList(), any())).thenReturn(
-                List.of(new RagService.RetrievedCode(candidate, 0.8, "向量相似")));
-
-        AuditToolService.ToolResult result = tools.execute("hybrid_search", "load order", 5,
-                current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION);
-
-        assertThat(result.evidenceChunkIds()).isEmpty();
-        assertThat(result.candidateChunkIds()).containsExactly(2L);
-        assertThat(result.text()).contains("RAG_CANDIDATE", "只能用于发现线索", "verify_relation");
-    }
-
-    @Test
     void verifyRelationPromotesCandidateToEvidence() {
-        RagService rag = mock(RagService.class);
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
-        AuditToolService tools = new AuditToolService(rag, semantic);
+        AuditToolService tools = new AuditToolService(semantic);
         CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
         CodeChunk candidate = chunk(2L, "OrderService#load", null, "return repository.findById(id)", "findById");
         when(semantic.verifyRelation(current.getTaskId(), 1L, 2L))
@@ -58,10 +34,9 @@ class AuditToolServiceTest {
     }
 
     @Test
-    void dataAccessDoesNotInvokeRagWhenTypedSemanticEvidenceExists() {
-        RagService rag = mock(RagService.class);
+    void dataAccessReturnsTypedSemanticEvidence() {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
-        AuditToolService tools = new AuditToolService(rag, semantic);
+        AuditToolService tools = new AuditToolService(semantic);
         CodeChunk current = chunk(1L, "Controller#entry", "/search", "statement.execute(sql)", "execute");
         when(semantic.query(current.getTaskId(), 1L, "trace_data_flow", 5, VulnerabilityType.SQL_INJECTION))
                 .thenReturn(new SemanticEvidenceService.EvidenceResult("已验证 SQL 数据流", Set.of(1L, 3L)));
@@ -71,15 +46,13 @@ class AuditToolServiceTest {
 
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 3L);
         assertThat(result.text()).contains("SEMANTIC_EVIDENCE", "已验证 SQL 数据流");
-        verifyNoInteractions(rag);
     }
 
     @Test
     void codeGraphContextRemainsCandidateEvidence() {
-        RagService rag = mock(RagService.class);
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
-        AuditToolService tools = new AuditToolService(rag, semantic, codeGraph);
+        AuditToolService tools = new AuditToolService(semantic, codeGraph);
         CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
         CodeChunk candidate = chunk(2L, "OrderService#inspect", null, "return repository.findById(id)", "findById");
         candidate.setFilePath("demo/OrderService.java");
@@ -95,45 +68,9 @@ class AuditToolServiceTest {
         assertThat(result.text()).contains("CODEGRAPH_CANDIDATE");
     }
 
-    @Test
-    void disabledRagReturnsExplicitStatusWithoutCallingRetrieval() {
-        RagService rag = mock(RagService.class);
-        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
-        RagProperties properties = new RagProperties();
-        properties.setEnabled(false);
-        AuditToolService tools = new AuditToolService(rag, semantic, null, properties);
-        CodeChunk current = chunk(1L, "Controller#entry", "/orders/{id}", "service.load(id)", "load");
-
-        AuditToolService.ToolResult result = tools.execute("hybrid_search", "load order", 5,
-                current, List.of(current), VulnerabilityType.AUTHORIZATION);
-
-        assertThat(result.evidenceChunkIds()).isEmpty();
-        assertThat(result.candidateChunkIds()).isEmpty();
-        assertThat(result.text()).contains("RAG_DISABLED", "未执行向量或关键词检索");
-        verifyNoInteractions(rag);
-    }
-
-    @Test
-    void disabledRagKeepsSemanticToolsWithoutRetrievalFallback() {
-        RagService rag = mock(RagService.class);
-        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
-        RagProperties properties = new RagProperties();
-        properties.setEnabled(false);
-        AuditToolService tools = new AuditToolService(rag, semantic, null, properties);
-        CodeChunk current = chunk(1L, "Controller#entry", "/search", "statement.execute(sql)", "execute");
-        when(semantic.query(current.getTaskId(), 1L, "trace_data_flow", 5, VulnerabilityType.SQL_INJECTION))
-                .thenReturn(new SemanticEvidenceService.EvidenceResult("未发现结构化数据流", Set.of()));
-
-        AuditToolService.ToolResult result = tools.execute("data_access", "SQL", 5,
-                current, List.of(current), VulnerabilityType.SQL_INJECTION);
-
-        assertThat(result.text()).contains("SEMANTIC_EVIDENCE", "未发现结构化数据流");
-        verifyNoInteractions(rag);
-    }
-
     private CodeChunk chunk(long id, String symbol, String endpoint, String content, String calls) {
         CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "demo/Source.java", symbol, endpoint,
-                1, 5, content, "1,0", "JAVA_METHOD", "Long id", "", calls);
+                1, 5, content, "JAVA_METHOD", "Long id", "", calls);
         chunk.setId(id);
         return chunk;
     }

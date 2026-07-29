@@ -66,7 +66,7 @@ public class AgentRuntime {
                 traceService.update(run);
                 String action = decision.action() == null ? "" : decision.action().toUpperCase();
                 if ("TOOL".equals(action)) {
-                    // 工具返回分别标记为已验证证据或仍需关系验证的 RAG 候选。
+                    // 工具返回分别标记为已验证证据或仍需关系验证的候选。
                     if (run.getToolCallCount() >= properties.getMaxToolCallsPerAgent()) break;
                     run.setToolCallCount(run.getToolCallCount() + 1);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.TOOL_CALL,
@@ -83,7 +83,8 @@ public class AgentRuntime {
                 }
                 if ("FINDING".equals(action)) {
                     // FINDING 必须匹配任务类型且只能引用当前已获准的代码块。
-                    LlmGateway.FindingProposal proposal = validate(decision.finding(), task, allowedEvidence);
+                    LlmGateway.FindingProposal proposal = validate(
+                            decision.finding(), task, allowedEvidence, byId);
                     if (proposal == null) {
                         String feedback = invalidEvidenceFeedback(decision.finding(), allowedEvidence, candidateEvidence);
                         observations.add(new LlmGateway.Observation("evidence_validator", "验证漏洞证据引用", feedback));
@@ -128,7 +129,7 @@ public class AgentRuntime {
 
     // 校验漏洞类型和所有证据 ID，并为缺省风险等级填入保守值。
     private LlmGateway.FindingProposal validate(LlmGateway.FindingProposal proposal, AgentTask task,
-                                                Set<Long> allowedEvidence) {
+                                                Set<Long> allowedEvidence, Map<Long, CodeChunk> chunks) {
         if (proposal == null || proposal.type() != task.vulnerabilityType()
                 || proposal.primaryChunkId() == null || !allowedEvidence.contains(proposal.primaryChunkId())) {
             return null;
@@ -138,11 +139,15 @@ public class AgentRuntime {
         if (!ids.contains(proposal.primaryChunkId())) ids.add(0, proposal.primaryChunkId());
         Severity severity = proposal.severity() == null ? Severity.HIGH : proposal.severity();
         Confidence confidence = proposal.confidence() == null ? Confidence.MEDIUM : proposal.confidence();
+        CodeChunk primary = chunks.get(proposal.primaryChunkId());
+        if (primary == null) return null;
+        FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
         return new LlmGateway.FindingProposal(proposal.type(), severity, confidence,
-                proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids);
+                proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids,
+                location.startLine(), location.endLine());
     }
 
-    // 向模型解释证据拒绝原因，引导其先验证 RAG 候选关系再重试。
+    // 向模型解释证据拒绝原因，引导其先验证候选关系再重试。
     private String invalidEvidenceFeedback(LlmGateway.FindingProposal proposal, Set<Long> allowedEvidence,
                                            Set<Long> candidateEvidence) {
         if (proposal == null) return "[EVIDENCE_REJECTED] FINDING 缺少 finding 对象，请重新调查。";
@@ -152,7 +157,7 @@ public class AgentRuntime {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (!unverifiedCandidates.isEmpty()) {
             return "[EVIDENCE_REJECTED] 代码块 " + unverifiedCandidates
-                    + " 仍是 RAG_CANDIDATE。必须逐个调用 verify_relation，验证通过后才能提交 FINDING。";
+                    + " 仍是未验证候选。必须逐个调用 verify_relation，验证通过后才能提交 FINDING。";
         }
         Set<Long> invalid = submitted.stream().filter(id -> !allowedEvidence.contains(id))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -163,11 +168,7 @@ public class AgentRuntime {
 
     // 只从已加载的真实代码块构造带文件和行号的证据正文。
     private String buildEvidence(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks) {
-        return proposal.evidenceChunkIds().stream().distinct().map(chunks::get).filter(java.util.Objects::nonNull)
-                .map(chunk -> "[CHUNK " + chunk.getId() + "] " + chunk.getFilePath() + ":"
-                        + chunk.getStartLine() + " " + chunk.getSymbolName() + "\n"
-                        + chunk.getContent().substring(0, Math.min(4_000, chunk.getContent().length())))
-                .collect(Collectors.joining("\n\n"));
+        return FindingLocationResolver.formatEvidence(proposal, chunks);
     }
 
     private String safe(String value) {

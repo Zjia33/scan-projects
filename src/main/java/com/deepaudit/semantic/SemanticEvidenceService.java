@@ -58,7 +58,7 @@ public class SemanticEvidenceService {
             return new EvidenceResult(text, evidence);
         }
         if ("get_call_chain".equals(tool)) return callEdges(taskId, currentChunkId, limit);
-        return new EvidenceResult("语义分析未找到与当前代码块关联的可验证路径；应继续使用 RAG 检索源码。", Set.of());
+        return new EvidenceResult("语义分析未找到与当前代码块关联的可验证路径；应继续读取相关代码块和调用上下文。", Set.of());
     }
 
     // 为 Critic 提供独立于专业 Agent 工具观察的原始语义证据。

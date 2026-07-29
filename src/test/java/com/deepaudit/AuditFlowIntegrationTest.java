@@ -92,13 +92,16 @@ class AuditFlowIntegrationTest {
         assertThat(types).doesNotContain("HORIZONTAL_AUTHORIZATION", "VERTICAL_AUTHORIZATION");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
+        assertThat(findingsJson).contains("[漏洞位置]", ">>>");
         assertThat(findingsJson).contains("\"deltaStatus\":\"BASELINE\"");
 
         String report = mockMvc.perform(get("/api/tasks/{taskId}/report.html", taskId))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(report).contains("DeepAudit Java 安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
-        assertThat(report).contains("class='finding-description'", "class='critic-review'")
+        assertThat(report).contains("class='finding-description'", "class='critic-review'",
+                        "class='vulnerability-location'", "class='vulnerable-line'", "实际漏洞位置",
+                        "&gt;&gt;&gt;")
                 .doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
 
         String events = mockMvc.perform(get("/api/tasks/{taskId}/events", taskId))

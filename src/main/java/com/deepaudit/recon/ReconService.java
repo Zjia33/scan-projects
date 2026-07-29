@@ -5,10 +5,6 @@ import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.ChunkChangeType;
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.ScanMode;
-import com.deepaudit.rag.EmbeddingService;
-import com.deepaudit.rag.EmbeddingCacheService;
-import com.deepaudit.rag.RagProperties;
-import com.deepaudit.rag.VectorRecallStore;
 import com.deepaudit.mapper.CodeChunkMapper;
 import com.deepaudit.source.AuditSourceFilter;
 import com.deepaudit.semantic.IncrementalSemanticDiffService;
@@ -47,46 +43,35 @@ public class ReconService {
     private static final long MAX_SOURCE_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_TEXT_CHUNK_CHARS = 12_000;
     private static final int MAX_TEXT_CHUNK_LINES = 160;
-    private static final int MAX_EMBEDDING_INPUT_CHARS = 16_000;
     private static final Set<String> TEXT_EXTENSIONS = Set.of(
             "java", "xml", "html", "htm", "jsp", "ftl", "vue", "jsx", "tsx", "js", "ts",
             "properties", "yml", "yaml", "sql"
     );
 
     private final CodeChunkMapper chunkMapper;
-    private final EmbeddingService embeddingService;
-    private final EmbeddingCacheService embeddingCacheService;
-    private final VectorRecallStore vectorRecallStore;
     private final IncrementalSemanticDiffService incrementalSemanticDiffService;
-    private final RagProperties ragProperties;
     private final ProjectTechnologyDetector technologyDetector = new ProjectTechnologyDetector();
 
-    public ReconService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService) {
-        this(chunkMapper, embeddingService, null, null, null, enabledProperties());
+    public ReconService(CodeChunkMapper chunkMapper) {
+        this(chunkMapper, null);
     }
 
     @Autowired
-    public ReconService(CodeChunkMapper chunkMapper, EmbeddingService embeddingService,
-                        EmbeddingCacheService embeddingCacheService, VectorRecallStore vectorRecallStore,
-                        IncrementalSemanticDiffService incrementalSemanticDiffService,
-                        RagProperties ragProperties) {
+    public ReconService(CodeChunkMapper chunkMapper,
+                        IncrementalSemanticDiffService incrementalSemanticDiffService) {
         this.chunkMapper = chunkMapper;
-        this.embeddingService = embeddingService;
-        this.embeddingCacheService = embeddingCacheService;
-        this.vectorRecallStore = vectorRecallStore;
         this.incrementalSemanticDiffService = incrementalSemanticDiffService;
-        this.ragProperties = ragProperties;
         StaticJavaParser.setConfiguration(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
     }
 
-    // 扫描受支持源码，生成代码块、Embedding 和项目技术栈摘要。
+    // 扫描受支持源码，生成代码块和项目技术栈摘要。
     @Transactional
     public ReconSummary buildIndex(UUID taskId, Path root) throws IOException {
         return buildIndex(taskId, root, root, ScanMode.FULL, List.of());
     }
 
-    // 全量模式为全部代码生成向量；增量模式先只处理直接变更块，语义扩展后再补齐影响块。
+    // 全量模式建立完整代码索引；增量模式同时保留 Base/Target 差异和完整目标上下文。
     @Transactional
     public ReconSummary buildIndex(UUID taskId, Path root, Path baseRoot,
                                    ScanMode scanMode, List<GitFileChange> changes) throws IOException {
@@ -101,73 +86,31 @@ public class ReconService {
                     .filter(this::isSupportedTextFile)
                     .forEach(path -> indexFile(taskId, root, path, chunks, counters));
         }
-        // 批量生成向量并按代码块顺序回填，维持检索数据一一对应。
         applyIncrementalMetadata(chunks, scanMode, changes);
         // 增量模式进一步比较 Base/Target 方法快照，覆盖纯删除、签名和安全 Guard 变化。
         if (scanMode == ScanMode.INCREMENTAL && incrementalSemanticDiffService != null) {
             incrementalSemanticDiffService.analyze(taskId, baseRoot, root, chunks, changes);
         }
-        List<CodeChunk> embeddingTargets = !ragProperties.isEnabled() ? List.of()
-                : scanMode == ScanMode.FULL ? chunks : chunks.stream()
-                .filter(chunk -> chunk.getAnalysisScope() == AnalysisScope.CHANGED).toList();
-        List<String> embeddingInputs = embeddingTargets.stream().map(this::embeddingInput).toList();
-        List<String> serializedEmbeddings = embedSerialized(embeddingInputs);
-        if (serializedEmbeddings.size() != embeddingTargets.size()) {
-            throw new IllegalStateException("Embedding 数量与代码块数量不一致");
-        }
-        for (CodeChunk chunk : chunks) chunk.setEmbedding("");
-        for (int index = 0; index < embeddingTargets.size(); index++) {
-            embeddingTargets.get(index).setEmbedding(serializedEmbeddings.get(index));
-        }
         for (int start = 0; start < chunks.size(); start += 500) {
             chunkMapper.insertBatch(chunks.subList(start, Math.min(start + 500, chunks.size())));
         }
-        // PostgreSQL 环境把文本序列化向量同步到 pgvector 列，后续召回不再由 JVM 全量计算。
-        if (ragProperties.isEnabled()) synchronizeVectorStore(taskId);
         // 独立识别构建工具、框架和安全组件，供 Recon Agent 理解项目背景。
         TechnologyProfile technologyProfile = technologyDetector.detect(root);
         return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(), technologyProfile);
     }
 
-    // 将调用图扩展得到的代码块提升为深度分析范围，并按需补生成向量。
+    // 将调用图扩展得到的代码块提升为深度分析范围。
     public void promoteImpactScope(UUID taskId, Set<Long> impactedChunkIds) {
         List<CodeChunk> chunks = chunkMapper.findByTaskId(taskId);
         List<CodeChunk> promoted = new ArrayList<>();
-        List<CodeChunk> toEmbed = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
             if (chunk.getAnalysisScope() == AnalysisScope.CHANGED) continue;
             if (chunk.getId() != null && impactedChunkIds.contains(chunk.getId())) {
                 chunk.setAnalysisScope(AnalysisScope.IMPACTED);
                 promoted.add(chunk);
-                if (ragProperties.isEnabled()
-                        && (chunk.getEmbedding() == null || chunk.getEmbedding().isBlank())) {
-                    toEmbed.add(chunk);
-                }
             }
         }
-        List<String> serializedEmbeddings = embedSerialized(toEmbed.stream().map(this::embeddingInput).toList());
-        if (serializedEmbeddings.size() != toEmbed.size()) throw new IllegalStateException("影响范围 Embedding 数量不一致");
-        for (int index = 0; index < toEmbed.size(); index++) {
-            toEmbed.get(index).setEmbedding(serializedEmbeddings.get(index));
-        }
         promoted.forEach(chunkMapper::updateIncrementalMetadata);
-        if (ragProperties.isEnabled() && !toEmbed.isEmpty()) synchronizeVectorStore(taskId);
-    }
-
-    private List<String> embedSerialized(List<String> inputs) {
-        if (inputs.isEmpty()) return List.of();
-        if (embeddingCacheService != null) return embeddingCacheService.embedSerialized(inputs);
-        return embeddingService.embedAll(inputs).stream().map(embeddingService::serialize).toList();
-    }
-
-    private void synchronizeVectorStore(UUID taskId) {
-        if (vectorRecallStore != null) vectorRecallStore.synchronizeTask(taskId);
-    }
-
-    private static RagProperties enabledProperties() {
-        RagProperties properties = new RagProperties();
-        properties.setEnabled(true);
-        return properties;
     }
 
     private void applyIncrementalMetadata(List<CodeChunk> chunks, ScanMode scanMode,
@@ -292,7 +235,8 @@ public class ReconService {
                     .map(MethodCallExpr::getNameAsString).distinct().sorted()
                     .collect(java.util.stream.Collectors.joining(","));
             addChunk(chunks, taskId, relativePath, owner + "#" + method.getNameAsString(), endpoint,
-                    start, end, truncate(method.toString()), "JAVA_METHOD", parameters, annotations, calledSymbols);
+                    start, end, truncate(sourceLines(content, start, end)),
+                    "JAVA_METHOD", parameters, annotations, calledSymbols);
             counters[1]++;
         }
     }
@@ -371,17 +315,8 @@ public class ReconService {
     private void addChunk(List<CodeChunk> chunks, UUID taskId, String path, String symbol,
                           String endpoint, int start, int end, String content, String chunkType,
                           String parameters, String annotations, String calledSymbols) {
-        chunks.add(new CodeChunk(taskId, path, symbol, endpoint, start, end, content, "",
+        chunks.add(new CodeChunk(taskId, path, symbol, endpoint, start, end, content,
                 chunkType, parameters, annotations, calledSymbols));
-    }
-
-    // 组合结构化元数据和源码正文作为 Embedding 输入，并限制模型载荷大小。
-    private String embeddingInput(CodeChunk chunk) {
-        String input = chunk.getFilePath() + " " + chunk.getSymbolName() + " "
-                + (chunk.getEndpoint() == null ? "" : chunk.getEndpoint()) + " "
-                + chunk.getParameters() + " " + chunk.getAnnotations() + " "
-                + chunk.getCalledSymbols() + " " + chunk.getContent();
-        return input.substring(0, Math.min(input.length(), MAX_EMBEDDING_INPUT_CHARS));
     }
 
     private String extension(String path) {
@@ -397,5 +332,12 @@ public class ReconService {
 
     private String truncate(String value) {
         return value.length() <= 100_000 ? value : value.substring(0, 100_000);
+    }
+
+    private String sourceLines(String content, int startLine, int endLine) {
+        String[] lines = content.split("\\R", -1);
+        int from = Math.max(0, startLine - 1);
+        int to = Math.min(lines.length, Math.max(from, endLine));
+        return String.join("\n", java.util.Arrays.copyOfRange(lines, from, to));
     }
 }

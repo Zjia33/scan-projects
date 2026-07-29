@@ -393,7 +393,7 @@ class LightweightSemanticAnalyzerTest {
 
     private CodeChunk chunk(Long id, UUID taskId, String file, String symbol, String endpoint,
                             int start, int end, String content, String type, String parameters) {
-        CodeChunk chunk = new CodeChunk(taskId, file, symbol, endpoint, start, end, content, "1,0",
+        CodeChunk chunk = new CodeChunk(taskId, file, symbol, endpoint, start, end, content,
                 type, parameters, "", "");
         chunk.setId(id);
         return chunk;

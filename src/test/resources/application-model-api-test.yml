@@ -9,8 +9,6 @@ spring:
 
 deepaudit:
   storage-root: ./target/model-api-test-data
-  rag:
-    enabled: true
   ai:
     required: true
     # 通过环境变量提供真实模型凭据，然后直接在 IDEA 中运行 ModelApiManualIT。
@@ -19,12 +17,3 @@ deepaudit:
     model: deepseek-v4-flash
     connect-timeout-seconds: 10
     read-timeout-seconds: 120
-  embedding:
-    provider: remote
-    # Embedding 凭据通过独立环境变量注入，避免测试配置提交真实密钥。
-    base-url: https://api.siliconflow.cn/v1
-    api-key: ${DEEPAUDIT_MODEL_TEST_EMBEDDING_API_KEY:}
-    model: BAAI/bge-m3
-    dimensions: 1024
-  vector-store:
-    provider: memory

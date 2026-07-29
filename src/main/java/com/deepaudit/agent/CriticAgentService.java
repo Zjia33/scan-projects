@@ -69,10 +69,11 @@ public class CriticAgentService {
             candidate.hypothesis().setConfidence(confidence);
             hypothesisMapper.update(candidate.hypothesis());
             LlmGateway.FindingProposal proposal = candidate.proposal();
+            FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
             Finding finding = new Finding(taskId, proposal.type(),
                     proposal.severity() == null ? Severity.HIGH : proposal.severity(), confidence,
-                    truncate(proposal.title(), 500), primary.getFilePath(), primary.getStartLine(),
-                    primary.getEndLine(), primary.getEndpoint(),
+                    truncate(proposal.title(), 500), primary.getFilePath(), location.startLine(),
+                    location.endLine(), primary.getEndpoint(),
                     safeText(proposal.description()) + "\n\nCritic Agent 复核：" + safeText(decision.reason()),
                     reportEvidence(candidate.evidence()),
                     safeText(proposal.remediation()));

@@ -296,7 +296,10 @@ h1 em { color: var(--ember); font-style: normal; }
 .finding-body p { font-size: 13px; line-height: 1.75; }
 .finding-body .finding-description { margin-bottom: 0; white-space: pre-wrap; }
 .finding-body .critic-review { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--line); white-space: pre-wrap; }
+.finding-body .vulnerability-location { color: #9e2f1b; font: 700 11px/1.6 var(--mono); }
 .finding-body pre { max-height: 300px; overflow: auto; padding: 13px; color: #dce6d4; background: var(--ink); white-space: pre-wrap; font: 11px/1.65 var(--mono); }
+.finding-evidence span { display: block; min-height: 1.65em; }
+.finding-evidence .vulnerable-line { margin: 0 -7px; padding: 0 7px; color: #fff4cd; background: #69262a; font-weight: 800; }
 .error-message { padding: 12px; color: #872b18; background: #ffe1d8; border: 1px solid rgba(135,43,24,.25); font-size: 12px; }
 
 footer { padding: 22px 4vw; display: flex; justify-content: space-between; color: #788071; background: var(--ink); font: 10px var(--mono); letter-spacing: .1em; }

@@ -69,7 +69,7 @@ class CodeGraphIntegrationServiceTest {
 
     private CodeChunk chunk(UUID taskId, long id, String path, String symbol, int start, int end) {
         CodeChunk chunk = new CodeChunk(taskId, path, symbol, null,
-                start, end, "method", "", "JAVA_METHOD", "", "", "");
+                start, end, "method", "JAVA_METHOD", "", "", "");
         chunk.setId(id);
         return chunk;
     }

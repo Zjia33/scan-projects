@@ -19,7 +19,6 @@ public class CodeChunk {
     private int startLine; // 代码块在文件中的起始行号
     private int endLine; // 代码块在文件中的结束行号
     private String content; // 目标快照中的代码块原文
-    private String embedding; // 用于语义召回的向量序列化文本
     private String chunkType; // 代码块类型，如方法、配置或普通文本
     private String parameters; // 符号参数信息的序列化文本
     private String annotations; // 符号注解信息的序列化文本
@@ -29,13 +28,13 @@ public class CodeChunk {
     private String baseContent; // 增量扫描中与当前代码块对应的基线内容
 
     public CodeChunk(UUID taskId, String filePath, String symbolName, String endpoint,
-                     int startLine, int endLine, String content, String embedding) {
-        this(taskId, filePath, symbolName, endpoint, startLine, endLine, content, embedding,
+                     int startLine, int endLine, String content) {
+        this(taskId, filePath, symbolName, endpoint, startLine, endLine, content,
                 "TEXT", "", "", "");
     }
 
     public CodeChunk(UUID taskId, String filePath, String symbolName, String endpoint,
-                     int startLine, int endLine, String content, String embedding,
+                     int startLine, int endLine, String content,
                      String chunkType, String parameters, String annotations, String calledSymbols) {
         this.taskId = taskId;
         this.filePath = filePath;
@@ -44,7 +43,6 @@ public class CodeChunk {
         this.startLine = startLine;
         this.endLine = endLine;
         this.content = content;
-        this.embedding = embedding;
         this.chunkType = chunkType;
         this.parameters = parameters;
         this.annotations = annotations;
