@@ -26,6 +26,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+// 负责 AuditUnitService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class AuditUnitService {
@@ -46,9 +47,6 @@ public class AuditUnitService {
     private static final Set<String> VALIDATION_MARKERS = Set.of(
             "validate", "verify", "captcha", "otp", "token", "signature", "skipverify",
             "bypass", "isvalid", "check");
-    private static final Set<String> FINANCIAL_MARKERS = Set.of(
-            "payment", "refund", "transfer", "balance", "amount", "price", "money",
-            "withdraw", "deposit", "settlement", "order");
     private static final Set<String> AUTHORIZATION_MARKERS = Set.of(
             "preauthorize", "secured", "rolesallowed", "permitall", "hasrole", "hasauthority",
             "tenant", "owner", "userid", "accountid", "deletebyid", "findbyid");
@@ -63,6 +61,7 @@ public class AuditUnitService {
                                  Map<Long, String> hintDescriptions) {
         Map<Long, List<SecurityFlow>> flowsByChunk = flowMapper.findByTaskId(taskId).stream()
                 .filter(flow -> flow.getPrimaryChunkId() != null)
+                .filter(flow -> flow.getType() != null && flow.getType().isDetectable())
                 .collect(Collectors.groupingBy(SecurityFlow::getPrimaryChunkId,
                         LinkedHashMap::new, Collectors.toList()));
         Map<Long, List<SemanticCallEdge>> edgesByCaller = edgeMapper.findByTaskId(taskId).stream()
@@ -87,7 +86,9 @@ public class AuditUnitService {
                     .toList();
             Set<VulnerabilityType> candidateTypes = EnumSet.noneOf(VulnerabilityType.class);
             Set<String> reasonCodes = new LinkedHashSet<>();
-            Set<VulnerabilityType> chunkHints = hints.getOrDefault(chunk.getId(), Set.of());
+            Set<VulnerabilityType> chunkHints = hints.getOrDefault(chunk.getId(), Set.of()).stream()
+                    .filter(VulnerabilityType::isDetectable)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
 
             if (!chunkHints.isEmpty()) {
                 reasonCodes.add("RULE_HINT");
@@ -95,7 +96,8 @@ public class AuditUnitService {
             }
             if (!flows.isEmpty()) {
                 reasonCodes.add("SEMANTIC_FLOW");
-                flows.stream().map(SecurityFlow::getType).forEach(candidateTypes::add);
+                flows.stream().map(SecurityFlow::getType).filter(java.util.Objects::nonNull)
+                        .filter(VulnerabilityType::isDetectable).forEach(candidateTypes::add);
             }
             if (!semanticChanges.isEmpty()) {
                 reasonCodes.add("SEMANTIC_CHANGE");
@@ -131,7 +133,7 @@ public class AuditUnitService {
             }
             if (candidateTypes.isEmpty() && scanMode == ScanMode.INCREMENTAL
                     && (reasonCodes.contains("DIRECT_CHANGE") || reasonCodes.contains("IMPACTED_BY_CHANGE"))) {
-                candidateTypes.addAll(EnumSet.allOf(VulnerabilityType.class));
+                candidateTypes.addAll(VulnerabilityType.detectableValues());
             }
             if (reasonCodes.isEmpty() || candidateTypes.isEmpty()) continue;
 
@@ -154,6 +156,7 @@ public class AuditUnitService {
         List<SemanticCallEdge> allEdges = edgeMapper.findByTaskId(taskId);
         Map<Long, List<SecurityFlow>> flowsByChunk = flowMapper.findByTaskId(taskId).stream()
                 .filter(flow -> flow.getPrimaryChunkId() != null)
+                .filter(flow -> flow.getType() != null && flow.getType().isDetectable())
                 .collect(Collectors.groupingBy(SecurityFlow::getPrimaryChunkId));
         return units.stream().map(unit -> {
             List<SemanticCallEdge> relatedEdges = allEdges.stream()
@@ -178,11 +181,13 @@ public class AuditUnitService {
         }).toList();
     }
 
+    // 执行 AuditUnitService 中的 insideDeepScope 处理。
     private boolean insideDeepScope(CodeChunk chunk, ScanMode scanMode) {
         return scanMode == ScanMode.FULL || chunk.getAnalysisScope() == AnalysisScope.CHANGED
                 || chunk.getAnalysisScope() == AnalysisScope.IMPACTED;
     }
 
+    // 向当前结果添加 addMarkerFacts 对应的数据。
     private void addMarkerFacts(String searchable, Set<VulnerabilityType> types, Set<String> reasons) {
         if (containsAny(searchable, SQL_MARKERS)) {
             reasons.add("DANGEROUS_DATA_ACCESS");
@@ -197,10 +202,6 @@ public class AuditUnitService {
             reasons.add("VALIDATION_BOUNDARY");
             types.add(VulnerabilityType.VALIDATION_BYPASS);
         }
-        if (containsAny(searchable, FINANCIAL_MARKERS)) {
-            reasons.add("SENSITIVE_FINANCIAL_OPERATION");
-            types.add(VulnerabilityType.FINANCIAL_RISK);
-        }
         if (containsAny(searchable, AUTHORIZATION_MARKERS)) {
             reasons.add("AUTHORIZATION_BOUNDARY");
             types.add(VulnerabilityType.AUTHORIZATION);
@@ -208,11 +209,13 @@ public class AuditUnitService {
         }
     }
 
+    // 判断是否满足 hasExternalEntry 对应的条件。
     private boolean hasExternalEntry(CodeChunk chunk, String searchable) {
         if (chunk.getEndpoint() != null && !chunk.getEndpoint().isBlank()) return true;
         return containsAny(searchable, EXTERNAL_ENTRY_MARKERS);
     }
 
+    // 判断是否满足 isSecurityConfiguration 对应的条件。
     private boolean isSecurityConfiguration(CodeChunk chunk, String searchable) {
         String path = chunk.getFilePath() == null ? "" : chunk.getFilePath().toLowerCase(Locale.ROOT);
         boolean configurationFile = path.endsWith(".yml") || path.endsWith(".yaml")
@@ -221,22 +224,26 @@ public class AuditUnitService {
         return configurationFile && containsAny(searchable, SECURITY_CONFIG_MARKERS);
     }
 
+    // 判断是否满足 isUnresolved 对应的条件。
     private boolean isUnresolved(SemanticCallEdge edge) {
         return "UNRESOLVED".equals(edge.getEdgeType()) || edge.getCalleeChunkId() == null;
     }
 
+    // 查询并返回 searchable 对应的数据。
     private String searchable(CodeChunk chunk) {
         return String.join(" ", safe(chunk.getFilePath()), safe(chunk.getSymbolName()),
                 safe(chunk.getEndpoint()), safe(chunk.getParameters()), safe(chunk.getAnnotations()),
                 safe(chunk.getCalledSymbols()), safe(chunk.getContent())).toLowerCase(Locale.ROOT);
     }
 
+    // 判断是否满足 containsAny 对应的条件。
     private boolean containsAny(String value, Set<String> markers) {
         String normalized = value.toLowerCase(Locale.ROOT);
         return markers.stream().map(marker -> marker.toLowerCase(Locale.ROOT))
                 .anyMatch(normalized::contains);
     }
 
+    // 执行 AuditUnitService 中的 unitType 处理。
     private String unitType(Set<String> reasonCodes) {
         if (reasonCodes.contains("SEMANTIC_FLOW")) return "SECURITY_FLOW";
         if (reasonCodes.contains("EXTERNAL_ENTRY")) return "EXTERNAL_ENTRY";
@@ -245,6 +252,7 @@ public class AuditUnitService {
         return "SECURITY_RELEVANT_CODE";
     }
 
+    // 执行 AuditUnitService 中的 callSummary 处理。
     private String callSummary(List<SemanticCallEdge> edges) {
         if (edges.isEmpty()) return "没有已解析调用边";
         return edges.stream().limit(20).map(edge ->
@@ -254,6 +262,7 @@ public class AuditUnitService {
                 .collect(Collectors.joining("\n"));
     }
 
+    // 执行 AuditUnitService 中的 flowSummary 处理。
     private String flowSummary(List<SecurityFlow> flows) {
         return flows.stream().limit(10).map(flow ->
                 flow.getType() + " | source=" + safe(flow.getSourceDescription())
@@ -263,6 +272,7 @@ public class AuditUnitService {
                 .collect(Collectors.joining("\n"));
     }
 
+    // 执行 AuditUnitService 中的 methodChangeSummary 处理。
     private String methodChangeSummary(List<SemanticMethodChange> changes) {
         return changes.stream().limit(20)
                 .map(change -> change.getChangeKind() + " | " + change.getDetails()
@@ -273,25 +283,30 @@ public class AuditUnitService {
                 .collect(Collectors.joining("\n"));
     }
 
+    // 执行 AuditUnitService 中的 outline 处理。
     private String outline(String content) {
         if (content == null || content.isBlank()) return "";
         return truncate(content.replaceAll("\\s+", " ").strip(), 1_200);
     }
 
+    // 执行 AuditUnitService 中的 joinNonBlank 处理。
     private String joinNonBlank(String... values) {
         return java.util.Arrays.stream(values).filter(java.util.Objects::nonNull)
                 .map(String::strip).filter(value -> !value.isBlank())
                 .collect(Collectors.joining("\n\n"));
     }
 
+    // 执行 AuditUnitService 中的 truncate 处理。
     private String truncate(String value, int maxLength) {
         return value == null ? "" : value.substring(0, Math.min(maxLength, value.length()));
     }
 
+    // 执行 AuditUnitService 中的 value 处理。
     private long value(Long value) {
         return value == null ? Long.MIN_VALUE : value;
     }
 
+    // 执行 AuditUnitService 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value;
     }

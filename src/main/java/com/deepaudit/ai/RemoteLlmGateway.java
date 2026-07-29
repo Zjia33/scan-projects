@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+// 封装 RemoteLlmGateway 相关的数据与处理逻辑。
 @Slf4j
 @Service
 public class RemoteLlmGateway implements LlmGateway {
@@ -30,6 +31,7 @@ public class RemoteLlmGateway implements LlmGateway {
     private final ObjectMapper tolerantObjectMapper;
     private final RestClient restClient;
 
+    // 创建 RemoteLlmGateway 实例并初始化所需依赖或状态。
     public RemoteLlmGateway(AiProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
@@ -46,11 +48,11 @@ public class RemoteLlmGateway implements LlmGateway {
         this.restClient = RestClient.builder().baseUrl(properties.getBaseUrl()).requestFactory(factory).build();
     }
 
-    // 请求 Recon 模型在确定性技术栈和代表代码样本上总结攻击面。
+    // 请求 Recon 模型基于完整项目的结构化画像总结攻击面，不发送普通业务源码正文。
     @Override
-    public ReconInsight inspectProject(UUID taskId, ReconSummary summary, List<Target> targets) {
+    public ReconInsight inspectProject(UUID taskId, ReconSummary summary) {
         String systemPrompt = AgentPrompts.reconAgent();
-        String userPrompt = json(Map.of("taskId", taskId, "statistics", summary, "representativeTargets", targets,
+        String userPrompt = json(Map.of("taskId", taskId, "projectFacts", summary,
                 "outputSchema", Map.of("architectureSummary", "string", "attackSurfaces", "string[]",
                         "securityMechanisms", "string[]", "riskAreas", "string[]")));
         return call(systemPrompt, userPrompt, ReconInsight.class);
@@ -87,7 +89,10 @@ public class RemoteLlmGateway implements LlmGateway {
         String systemPrompt = AgentPrompts.criticAgent();
         String userPrompt = json(Map.of("candidate", request, "outputSchema",
                 Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string",
-                        "deltaStatus", "BASELINE|NEW|REGRESSED|PERSISTING|AFFECTED")));
+                        "deltaStatus", "BASELINE|NEW|PERSISTING",
+                        "primaryChunkId", "confirmed=true 时必填，且必须来自候选 evidenceChunkIds",
+                        "vulnerabilityStartLine", "confirmed=true 时必填的实际漏洞起始行",
+                        "vulnerabilityEndLine", "confirmed=true 时必填，最多覆盖连续 5 行")));
         return call(systemPrompt, userPrompt, CriticDecision.class);
     }
 
@@ -153,6 +158,7 @@ public class RemoteLlmGateway implements LlmGateway {
                 .path("message").path("content").asText();
     }
 
+    // 执行 RemoteLlmGateway 中的 json 处理。
     private String json(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -248,6 +254,7 @@ public class RemoteLlmGateway implements LlmGateway {
         return repaired.toString();
     }
 
+    // 判断是否满足 isClosingQuote 对应的条件。
     private boolean isClosingQuote(String json, int start) {
         for (int index = start; index < json.length(); index++) {
             char next = json.charAt(index);
@@ -257,6 +264,7 @@ public class RemoteLlmGateway implements LlmGateway {
         return true;
     }
 
+    // 格式化并输出 formatLocation 对应的展示内容。
     private String formatLocation(JsonProcessingException exception) {
         if (exception == null) return "未知";
         JsonLocation location = exception.getLocation();

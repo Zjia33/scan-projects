@@ -286,6 +286,17 @@ function projectField(labelText, type) {
     return { wrapper, control };
 }
 
+function auditCommitRange(audit) {
+    const target = audit.targetCommit?.slice(0, 8) || '—';
+    if (!audit.baseCommit) return target;
+    const selectedBase = audit.baseCommit.slice(0, 8);
+    const comparisonBase = audit.mergeBase?.slice(0, 8);
+    if (comparisonBase && comparisonBase !== selectedBase) {
+        return `${selectedBase}（共同祖先 ${comparisonBase}） → ${target}`;
+    }
+    return `${selectedBase} → ${target}`;
+}
+
 function projectHistoryRow(audit) {
     const row = document.createElement('button');
     row.type = 'button';
@@ -296,8 +307,7 @@ function projectHistoryRow(audit) {
         await loadTasks(true);
         document.querySelector('#audit-workspace').scrollIntoView({ behavior: 'smooth' });
     });
-    const commit = `${audit.baseCommit ? `${audit.baseCommit.slice(0, 8)} → ` : ''}`
-        + `${audit.targetCommit?.slice(0, 8) || '—'}`;
+    const commit = auditCommitRange(audit);
     const copy = document.createElement('span');
     copy.append(node('strong', '', `${audit.scanMode === 'INCREMENTAL' ? '增量扫描' : '全量扫描'} · ${commit}`),
         node('small', '', `${formatTime(audit.createdAt)} · ${audit.findingCount} 个确认问题`));
@@ -401,7 +411,8 @@ function populateCommits(commits) {
     elements.targetCommit.replaceChildren();
     elements.baseCommit.replaceChildren();
     state.commits.forEach(commit => {
-        const label = `${commit.shortSha} · ${commit.message} · ${formatTime(commit.committedAt)}`;
+        const branchLabel = commit.branches?.length ? commit.branches.join(', ') : '未关联活动分支';
+        const label = `[${branchLabel}] ${commit.shortSha} · ${commit.message} · ${formatTime(commit.committedAt)}`;
         elements.targetCommit.add(new Option(label, commit.sha));
         elements.baseCommit.add(new Option(label, commit.sha));
     });
@@ -539,8 +550,7 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
     const title = document.createElement('div');
     title.append(node('h3', '', task.projectName),
         node('p', '', `${task.scanMode === 'INCREMENTAL' ? '增量' : '全量'} · `
-            + `${task.baseCommit ? `${task.baseCommit.slice(0, 8)} → ` : ''}`
-            + `${task.targetCommit?.slice(0, 8) || '—'} / ${formatTime(task.createdAt)}`),
+            + `${auditCommitRange(task)} / ${formatTime(task.createdAt)}`),
         node('p', '', task.changeSummary || task.repositoryUrl || ''));
     const report = document.createElement(task.status === 'COMPLETED' ? 'a' : 'span');
     report.className = `report-link${task.status === 'COMPLETED' ? '' : ' disabled'}`;
@@ -1039,7 +1049,7 @@ function agentText(agent) {
     return ({
         RECON: 'Recon Agent', ORCHESTRATOR: 'Orchestrator', SQL_INJECTION: 'SQL 注入 Agent',
         AUTHORIZATION: '权限审计 Agent', STORED_XSS: '存储 XSS Agent',
-        VALIDATION_BYPASS: '验证绕过 Agent', FINANCIAL_RISK: '资金风险 Agent',
+        VALIDATION_BYPASS: '验证绕过 Agent',
         CRITIC: 'Critic Agent', REPORT: 'Report Agent'
     })[agent] || agent || 'SYSTEM';
 }

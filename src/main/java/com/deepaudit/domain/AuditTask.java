@@ -7,6 +7,7 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
+// 表示审计领域中的 AuditTask 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
@@ -27,10 +28,12 @@ public class AuditTask {
     private Instant completedAt; // 任务进入终态的时间
     private long version; // 乐观锁版本号，防止并发状态覆盖
 
+    // 创建 AuditTask 实例并初始化所需依赖或状态。
     public AuditTask(UUID projectId) {
         this(projectId, ScanMode.FULL, null, null, null);
     }
 
+    // 创建 AuditTask 实例并初始化所需依赖或状态。
     public AuditTask(UUID projectId, ScanMode scanMode, String baseCommitSha,
                      String targetCommitSha, String mergeBaseSha) {
         this.id = UUID.randomUUID();
@@ -45,6 +48,7 @@ public class AuditTask {
         this.createdAt = Instant.now();
     }
 
+    // 执行 AuditTask 中的 moveTo 处理。
     public void moveTo(AuditStatus status, int progress, String currentStage) {
         this.status = status;
         this.progress = progress;
@@ -54,6 +58,7 @@ public class AuditTask {
         }
     }
 
+    // 执行 AuditTask 中的 fail 处理。
     public void fail(String message) {
         this.errorMessage = message == null ? "未知扫描错误" : message.substring(0, Math.min(message.length(), 2000));
         moveTo(AuditStatus.FAILED, progress, "扫描失败");

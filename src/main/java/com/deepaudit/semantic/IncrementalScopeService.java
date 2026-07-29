@@ -22,6 +22,7 @@ import java.util.EnumMap;
 import java.util.Set;
 import java.util.UUID;
 
+// 负责 IncrementalScopeService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class IncrementalScopeService {
@@ -107,6 +108,7 @@ public class IncrementalScopeService {
                 Map.copyOf(semanticCounts));
     }
 
+    // 执行 IncrementalScopeService 中的 globalSecurityContext 处理。
     private boolean globalSecurityContext(CodeChunk chunk) {
         if (chunk.getEndpoint() != null) return true;
         String text = (chunk.getAnnotations() + " " + chunk.getSymbolName() + " "
@@ -116,6 +118,7 @@ public class IncrementalScopeService {
                 || text.contains("interceptor") || text.contains("controller") || text.contains("mapper"));
     }
 
+    // 执行 IncrementalScopeService 中的 analyzableSource 处理。
     private boolean analyzableSource(String path) {
         if (!AuditSourceFilter.shouldAnalyze(path)) return false;
         String normalized = path.toLowerCase(Locale.ROOT);
@@ -126,16 +129,20 @@ public class IncrementalScopeService {
                 || normalized.endsWith(".ts") || normalized.endsWith(".vue");
     }
 
+    // 封装 NodeDepth 使用的不可变结构化数据。
     private record NodeDepth(Long chunkId, int depth) {
     }
 
+    // 封装 ScopeResult 使用的不可变结构化数据。
     public record ScopeResult(Set<Long> changedChunkIds, Set<Long> impactedChunkIds,
                               boolean globalConfigurationChanged,
                               Map<SemanticChangeKind, Long> semanticChangeCounts) {
+        // 转换并返回 totalDeepTargets 对应的数据表示。
         public int totalDeepTargets() {
             return changedChunkIds.size() + impactedChunkIds.size();
         }
 
+        // 执行 ScopeResult 中的 semanticChangeSummary 处理。
         public String semanticChangeSummary() {
             if (semanticChangeCounts.isEmpty()) return "无方法级语义变化";
             return semanticChangeCounts.entrySet().stream().sorted(Map.Entry.comparingByKey())

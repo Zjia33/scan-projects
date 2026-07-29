@@ -12,8 +12,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+// 封装 CodeGraphResultMapper 相关的数据与处理逻辑。
 @Component
 public class CodeGraphResultMapper {
+    // 执行 map 对应的数据库访问操作。
     public MappingResult map(List<CodeChunk> chunks, List<CodeGraphClient.CodeGraphLocation> locations) {
         Map<String, List<CodeChunk>> byPath = new LinkedHashMap<>();
         for (CodeChunk chunk : chunks) {
@@ -32,6 +34,7 @@ public class CodeGraphResultMapper {
         return new MappingResult(Set.copyOf(ids), unmapped);
     }
 
+    // 执行 candidates 对应的数据库访问操作。
     private List<CodeChunk> candidates(Map<String, List<CodeChunk>> byPath, String path) {
         String normalized = normalizePath(path);
         List<CodeChunk> exact = byPath.get(normalized);
@@ -44,6 +47,7 @@ public class CodeGraphResultMapper {
         return pathMatches.size() == 1 ? pathMatches.get(0) : List.of();
     }
 
+    // 从数据库查询 select 对应的记录。
     private CodeChunk select(List<CodeChunk> candidates, CodeGraphClient.CodeGraphLocation location) {
         if (candidates.isEmpty()) return null;
         if (location.startLine() != null && location.startLine() > 0) {
@@ -58,6 +62,7 @@ public class CodeGraphResultMapper {
         return named != null ? named : candidates.size() == 1 ? candidates.get(0) : null;
     }
 
+    // 执行 named 对应的数据库访问操作。
     private CodeChunk named(List<CodeChunk> candidates, String locationName) {
         String expected = simpleName(locationName);
         if (expected.isBlank()) return null;
@@ -66,6 +71,7 @@ public class CodeGraphResultMapper {
         return matches.size() == 1 ? matches.get(0) : null;
     }
 
+    // 执行 simpleName 对应的数据库访问操作。
     private String simpleName(String value) {
         if (value == null) return "";
         String name = value.strip();
@@ -75,6 +81,7 @@ public class CodeGraphResultMapper {
         return (separator >= 0 ? name.substring(separator + 1) : name).toLowerCase(Locale.ROOT);
     }
 
+    // 执行 normalizePath 对应的数据库访问操作。
     private String normalizePath(String value) {
         if (value == null) return "";
         String path = value.replace('\\', '/').strip();
@@ -82,6 +89,7 @@ public class CodeGraphResultMapper {
         return path;
     }
 
+    // 封装 MappingResult 使用的不可变结构化数据。
     public record MappingResult(Set<Long> chunkIds, int unmappedLocations) {
     }
 }

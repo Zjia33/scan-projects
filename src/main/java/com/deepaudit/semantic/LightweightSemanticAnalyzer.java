@@ -58,6 +58,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+// 负责 LightweightSemanticAnalyzer 对应的确定性分析与事实提取。
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -354,6 +355,7 @@ public class LightweightSemanticAnalyzer {
         return List.copyOf(results.values());
     }
 
+    // 判断是否满足 candidateScore 对应的条件。
     private int candidateScore(MethodCallExpr call, MethodModel caller, MethodModel candidate,
                                String scopeType, Map<String, String> variableTypes,
                                int candidateCount, Program program) {
@@ -373,6 +375,7 @@ public class LightweightSemanticAnalyzer {
         return Math.min(score, 100);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 argumentCompatibilityScore 处理。
     private int argumentCompatibilityScore(MethodCallExpr call, MethodModel candidate,
                                            Map<String, String> variableTypes) {
         // 将可推断的实参类型与候选形参类型逐位比较，作为候选排序的补充证据。
@@ -387,6 +390,7 @@ public class LightweightSemanticAnalyzer {
         return Math.min(20, compatible * Math.max(4, 20 / call.getArguments().size()));
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 typesCompatible 处理。
     private boolean typesCompatible(String actual, String expected) {
         String left = simpleType(actual).toLowerCase(Locale.ROOT);
         String right = simpleType(expected).toLowerCase(Locale.ROOT);
@@ -396,10 +400,12 @@ public class LightweightSemanticAnalyzer {
                 || left.equals("string") && (right.equals("charsequence") || right.equals("object"));
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 edgeType 处理。
     private String edgeType(MethodModel method, String fallback) {
         return lower(method.symbol.getAnnotations()).contains("@async") ? "SPRING_ASYNC" : fallback;
     }
 
+    // 向当前结果添加 addImplementations 对应的数据。
     private void addImplementations(MethodModel method, Map<UUID, TargetResolution> results,
                                     Program program, boolean springAware) {
         // 只有接口方法需要展开实现类；普通类方法已经有确定的调用目标。
@@ -419,6 +425,7 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 判断是否满足 isInjectedScope 对应的条件。
     private boolean isInjectedScope(MethodCallExpr call, MethodModel caller) {
         // final 字段、@Autowired 或 @Resource 字段被视为 Spring 注入接收者，用于标记 SPRING_DI 边。
         if (call.getScope().isEmpty() || !(call.getScope().get() instanceof NameExpr name)) return false;
@@ -429,6 +436,7 @@ public class LightweightSemanticAnalyzer {
                                 || annotation.getNameAsString().equals("Resource"))));
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 frameworkTarget 处理。
     private FrameworkModel frameworkTarget(UUID taskId, MethodCallExpr call, MethodModel caller,
                                            String scopeType, Program program) {
         // 当项目内方法无法解析时，根据接收者类型和调用名称识别持久化 API 或安全 Guard 边界。
@@ -473,12 +481,14 @@ public class LightweightSemanticAnalyzer {
         return model;
     }
 
+    // 判断是否满足 isSecurityGuardCall 对应的条件。
     private boolean isSecurityGuardCall(String name, String expression) {
         return containsAny(name + " " + expression, "checkpermission", "checkrole", "haspermission", "hasrole",
                 "hasauthority", "checklogin", "checkowner", "checktenant", "isallowed", "authorize",
                 "stputil.check", "subject.checkpermission", "subject.hasrole");
     }
 
+    // 解析并确定 resolvedExternalSignature 对应的目标。
     private Optional<String> resolvedExternalSignature(MethodCallExpr call, Program program) {
         try {
             String signature = call.resolve().getQualifiedSignature();
@@ -626,6 +636,7 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 effectKind 处理。
     private String effectKind(MethodCallExpr call, String scopeType) {
         String value = lower(scopeType) + " " + lower(call.toString());
         String name = lower(call.getNameAsString());
@@ -638,11 +649,11 @@ public class LightweightSemanticAnalyzer {
             if (name.matches("(?:save|insert|update|delete|remove).*")) return "MUTATION";
             return "DATA_ACCESS";
         }
-        if (containsAny(name, "refund", "withdraw", "setamount", "setprice", "setbalance")) return "FINANCIAL";
         if (containsAny(name, "delete", "update", "save", "insert", "approve", "disable")) return "MUTATION";
         return null;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 composeDependencies 处理。
     private Set<Integer> composeDependencies(Set<Integer> targetParameters,
                                              Map<Integer, Set<Integer>> argumentDependencies) {
         Set<Integer> result = new LinkedHashSet<>();
@@ -772,18 +783,6 @@ public class LightweightSemanticAnalyzer {
                     "失败即终止控制流：未确认", program, best);
         }
 
-        // 资金风险线索要求外部输入影响金额类 Sink 且缺少可信金额、验签、幂等或状态约束。
-        boolean money = containsAny(current, "amount", "price", "balance", "payment", "refund", "coupon", "withdraw")
-                || summary.hasEffect("FINANCIAL");
-        boolean moneySink = containsAny(current, "setamount(", "setprice(", "setbalance(", "refund(", "withdraw(", "double amount", "float amount");
-        moneySink = moneySink || summary.hasEffect("FINANCIAL");
-        boolean moneyGuard = containsAny(path, "compareto(", "signum(", "maxamount", "minamount",
-                "idempot", "for update", "verifysign", "checksignature", "hmac");
-        if (money && moneySink && !moneyGuard) {
-            offer(taskId, VulnerabilityType.FINANCIAL_RISK, entry, state,
-                    "客户端金额、订单状态或支付通知", "余额、退款、提现或金额更新",
-                    "服务端可信金额/验签/幂等/状态约束：路径中未完整发现", program, best);
-        }
     }
 
     // 将风险路径固化为调查线索，并按入口和风险维度保留最佳路径。
@@ -842,6 +841,7 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 格式化并输出 formatPath 对应的展示内容。
     private String formatPath(VulnerabilityType type, PathState state, String source, String sink,
                               String guard, int unresolved) {
         // 统一格式化 TYPE、SOURCE、CALL、SINK、GUARD 和 COVERAGE，供工具结果与 Critic 直接读取。
@@ -879,17 +879,20 @@ public class LightweightSemanticAnalyzer {
         return result;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 policyProtects 处理。
     private boolean policyProtects(String endpoint, List<SecurityPolicy> policies, boolean requireRole) {
         return policies.stream().filter(policy -> endpointMatches(endpoint, policy.pattern))
                 .anyMatch(policy -> !policy.action.equalsIgnoreCase("permitAll")
                         && (!requireRole || policy.action.toLowerCase(Locale.ROOT).startsWith("has")));
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 policyPermits 处理。
     private boolean policyPermits(String endpoint, List<SecurityPolicy> policies) {
         return policies.stream().anyMatch(policy -> endpointMatches(endpoint, policy.pattern)
                 && policy.action.equalsIgnoreCase("permitAll"));
     }
 
+    // 判断是否满足 hasAuthorizationGuard 对应的条件。
     private boolean hasAuthorizationGuard(String path) {
         return containsAny(path, "@preauthorize", "@postauthorize", "@secured", "@rolesallowed",
                 "@requirespermissions", "@requiresroles", "@sacheckpermission", "@sacheckrole",
@@ -897,6 +900,7 @@ public class LightweightSemanticAnalyzer {
                 "stputil.check", "subject.checkpermission") || hasAuthorizationAnnotation(path);
     }
 
+    // 判断是否满足 hasAuthorizationAnnotation 对应的条件。
     private boolean hasAuthorizationAnnotation(String value) {
         if (value == null) return false;
         Matcher matcher = Pattern.compile("@([A-Za-z_$][\\w$]*)").matcher(value);
@@ -908,6 +912,7 @@ public class LightweightSemanticAnalyzer {
         return false;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 endpointMatches 处理。
     private boolean endpointMatches(String endpoint, String antPattern) {
         if (endpoint == null || antPattern == null) return false;
         StringBuilder regex = new StringBuilder("^");
@@ -933,6 +938,7 @@ public class LightweightSemanticAnalyzer {
         return endpoint.matches(regex.append('$').toString());
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 variableTypes 处理。
     private Map<String, String> variableTypes(MethodModel method) {
         // 建立字段、形参和局部变量名到简单类型名的映射，为调用目标启发式解析提供接收者类型。
         Map<String, String> result = new LinkedHashMap<>();
@@ -950,6 +956,7 @@ public class LightweightSemanticAnalyzer {
         return result;
     }
 
+    // 解析并确定 resolvedVariableType 对应的目标。
     private String resolvedVariableType(VariableDeclarator variable) {
         // var 声明优先根据初始化表达式推断类型，其他变量优先符号求解并在失败时使用源码类型。
         if (variable.getTypeAsString().equals("var") && variable.getInitializer().isPresent()) {
@@ -960,6 +967,7 @@ public class LightweightSemanticAnalyzer {
         catch (RuntimeException exception) { return simpleType(variable.getTypeAsString()); }
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 variableDependencies 处理。
     private Map<String, Set<Integer>> variableDependencies(MethodModel method, Node before) {
         // 依赖集合中的整数表示当前方法形参序号，例如变量依赖 {0,2} 表示来源于第 0、2 个形参。
         Map<String, Set<Integer>> result = new LinkedHashMap<>();
@@ -994,6 +1002,7 @@ public class LightweightSemanticAnalyzer {
         return result;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 expressionDependencies 处理。
     private Set<Integer> expressionDependencies(Expression expression, Map<String, Set<Integer>> variables) {
         // 收集表达式自身及其所有子表达式中的变量引用，并合并这些变量对应的形参来源。
         Set<Integer> result = new LinkedHashSet<>();
@@ -1002,6 +1011,7 @@ public class LightweightSemanticAnalyzer {
         return Set.copyOf(result);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 inferScopeType 处理。
     private String inferScopeType(MethodCallExpr call, MethodModel caller, Map<String, String> variables) {
         // 无显式接收者时使用当前类，字段、变量和嵌套调用则依次尝试本地类型表与符号求解。
         if (call.getScope().isEmpty()) return caller.owner.simpleName;
@@ -1017,6 +1027,7 @@ public class LightweightSemanticAnalyzer {
         return null;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 inferExpressionType 处理。
     private String inferExpressionType(Expression expression, Map<String, String> variables) {
         // 优先处理常见字面量和对象创建表达式，复杂表达式再交给 JavaParser 类型求解。
         if (expression instanceof NameExpr name) return variables.getOrDefault(name.getNameAsString(), "");
@@ -1030,6 +1041,7 @@ public class LightweightSemanticAnalyzer {
         catch (RuntimeException exception) { return ""; }
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 typeMatches 处理。
     private boolean typeMatches(TypeModel owner, String scopeType, Program program) {
         String normalized = simpleType(scopeType);
         if (owner.simpleName.equals(normalized) || owner.qualifiedName.equals(scopeType)) return true;
@@ -1037,6 +1049,7 @@ public class LightweightSemanticAnalyzer {
                 || program.implementations.getOrDefault(normalized, List.of()).contains(owner);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 propagateTaint 处理。
     private Set<Integer> propagateTaint(Set<Integer> current, Map<Integer, Set<Integer>> argumentDependencies) {
         // 某个实参依赖当前污点参数时，对应的被调用方法形参序号成为下一节点污点。
         Set<Integer> result = new LinkedHashSet<>();
@@ -1046,6 +1059,7 @@ public class LightweightSemanticAnalyzer {
         return Set.copyOf(result);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 edge 处理。
     private SemanticCallEdge edge(UUID taskId, SemanticSymbol caller, SemanticSymbol callee, int line,
                                   String name, String expression, String type, Confidence confidence,
                                   String reason, String argumentMapping) {
@@ -1055,6 +1069,7 @@ public class LightweightSemanticAnalyzer {
                 truncate(expression, 4_000), type, confidence, reason, argumentMapping);
     }
 
+    // 转换并返回 mapping 对应的数据表示。
     private String mapping(Map<Integer, Set<Integer>> dependencies) {
         return dependencies.entrySet().stream().filter(entry -> !entry.getValue().isEmpty())
                 .map(entry -> entry.getKey() + "<-" + entry.getValue().stream().map(String::valueOf)
@@ -1062,6 +1077,7 @@ public class LightweightSemanticAnalyzer {
                 .collect(Collectors.joining(";"));
     }
 
+    // 解析并确定 resolvedSignature 对应的目标。
     private Optional<String> resolvedSignature(MethodDeclaration method) {
         try {
             return Optional.of(method.resolve().getQualifiedSignature());
@@ -1070,11 +1086,13 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 fallbackSignature 处理。
     private String fallbackSignature(String owner, MethodDeclaration method) {
         return owner + "." + method.getNameAsString() + "(" + method.getParameters().stream()
                 .map(parameter -> parameter.getTypeAsString()).collect(Collectors.joining(",")) + ")";
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 fallbackOwner 处理。
     private String fallbackOwner(CompilationUnit unit, TypeDeclaration<?> declaration) {
         String packageName = unit.getPackageDeclaration().map(value -> value.getNameAsString() + ".").orElse("");
         List<String> owners = new ArrayList<>();
@@ -1086,6 +1104,7 @@ public class LightweightSemanticAnalyzer {
         return packageName + String.join(".", owners);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 implementedTypes 处理。
     private Set<String> implementedTypes(TypeDeclaration<?> declaration) {
         if (!(declaration instanceof ClassOrInterfaceDeclaration classType)) return Set.of();
         Set<String> result = new LinkedHashSet<>();
@@ -1094,12 +1113,14 @@ public class LightweightSemanticAnalyzer {
         return Set.copyOf(result);
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 assignedName 处理。
     private String assignedName(Expression target) {
         if (target instanceof NameExpr name) return name.getNameAsString();
         if (target instanceof FieldAccessExpr field) return field.getNameAsString();
         return null;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 simpleType 处理。
     private String simpleType(String type) {
         if (type == null) return "";
         String value = type.replaceAll("<.*>", "").replace("[]", "").strip();
@@ -1107,43 +1128,58 @@ public class LightweightSemanticAnalyzer {
         return dot < 0 ? value : value.substring(dot + 1);
     }
 
+    // 判断是否满足 isMutation 对应的条件。
     private boolean isMutation(String content) {
         return containsAny(content, "delete", "update", "save", "insert", "refund", "withdraw", "approve", "disable", "setrole", "setpermission");
     }
 
+    // 判断是否满足 containsAny 对应的条件。
     private boolean containsAny(String content, String... tokens) {
         if (content == null) return false;
         for (String token : tokens) if (content.contains(token.toLowerCase(Locale.ROOT))) return true;
         return false;
     }
 
+    // 执行 LightweightSemanticAnalyzer 中的 lower 处理。
     private String lower(String value) { return value == null ? "" : value.toLowerCase(Locale.ROOT); }
+    // 执行 LightweightSemanticAnalyzer 中的 line 处理。
     private int line(Node node) { return node.getBegin().map(position -> position.line).orElse(1); }
+    // 执行 LightweightSemanticAnalyzer 中的 column 处理。
     private int column(Node node) { return node.getBegin().map(position -> position.column).orElse(1); }
+    // 执行 LightweightSemanticAnalyzer 中的 endLine 处理。
     private int endLine(Node node) { return node.getEnd().map(position -> position.line).orElse(line(node)); }
+    // 执行 LightweightSemanticAnalyzer 中的 countLines 处理。
     private int countLines(String value, int endExclusive) {
         return (int) value.substring(0, Math.min(value.length(), endExclusive)).chars().filter(character -> character == '\n').count();
     }
+    // 规范化 normalized 对应的输入。
     private String normalized(Path path) { return path.toString().replace('\\', '/'); }
+    // 执行 LightweightSemanticAnalyzer 中的 truncate 处理。
     private String truncate(String value, int max) { return value == null ? "" : value.substring(0, Math.min(max, value.length())); }
+    // 执行 LightweightSemanticAnalyzer 中的 key 处理。
     private String key(String name, int arity) { return name + "#" + arity; }
+    // 执行 LightweightSemanticAnalyzer 中的 location 处理。
     private String location(SemanticSymbol symbol) {
         return symbol.getFilePath() + ":" + symbol.getStartLine() + " " + symbol.getQualifiedName()
                 + (symbol.getChunkId() == null ? "" : " [CHUNK " + symbol.getChunkId() + "]");
     }
 
+    // 向当前结果添加 append 对应的数据。
     private <T> List<T> append(List<T> source, T item) {
         List<T> result = new ArrayList<>(source);
         result.add(item);
         return List.copyOf(result);
     }
 
+    // 封装 Result 使用的不可变结构化数据。
     public record Result(List<SemanticSymbol> symbols, List<SemanticCallEdge> edges,
                          List<SecurityFlow> flows, CallGraphCoverage coverage) {}
 
+    // 封装 CallGraphCoverage 使用的不可变结构化数据。
     public record CallGraphCoverage(int totalCallSites, int exactResolvedCallSites,
                                     int heuristicResolvedCallSites, int frameworkResolvedCallSites,
                                     int externalCallSites, int unresolvedCallSites) {
+        // 执行 CallGraphCoverage 中的 internalResolutionRate 处理。
         public double internalResolutionRate() {
             int internal = exactResolvedCallSites + heuristicResolvedCallSites
                     + frameworkResolvedCallSites + unresolvedCallSites;
@@ -1152,8 +1188,13 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
-    private interface ProgramNode { SemanticSymbol symbol(); }
+    // 定义 ProgramNode 的协作接口和能力边界。
+    private interface ProgramNode {
+        // 返回当前程序节点对应的语义符号。
+        SemanticSymbol symbol();
+    }
 
+    // 封装 Program 相关的数据与处理逻辑。
     private static final class Program {
         private final Path root;
         private final List<CodeChunk> chunks;
@@ -1175,8 +1216,10 @@ public class LightweightSemanticAnalyzer {
         private int externalCallSites;
         private int unresolvedCallSites;
 
+        // 创建 Program 实例并初始化所需依赖或状态。
         private Program(Path root, List<CodeChunk> chunks) { this.root = root; this.chunks = chunks; }
 
+        // 查询并返回 findChunk 对应的数据。
         private CodeChunk findChunk(String file, int line, String type) {
             // 在同文件同类型且覆盖目标行的 Chunk 中，选择起始行距离最近的一块作为语义证据载体。
             return chunks.stream().filter(chunk -> chunk.getFilePath().equals(file))
@@ -1185,6 +1228,7 @@ public class LightweightSemanticAnalyzer {
                     .min(Comparator.comparingInt(chunk -> Math.abs(chunk.getStartLine() - line))).orElse(null);
         }
 
+        // 执行 Program 中的 index 处理。
         private void index() {
             // 完整签名索引服务精确解析，方法名加参数个数索引服务缺少依赖时的启发式回退。
             methods.forEach(method -> {
@@ -1200,6 +1244,7 @@ public class LightweightSemanticAnalyzer {
             }
         }
 
+        // 构建并返回 buildOutgoing 对应的结果。
         private void buildOutgoing() {
             // 路径搜索按当前符号查询下一跳，因此将扁平边列表重建为调用方邻接表。
             outgoing.clear();
@@ -1208,6 +1253,7 @@ public class LightweightSemanticAnalyzer {
             }
         }
 
+        // 执行 Program 中的 coverage 处理。
         private CallGraphCoverage coverage() {
             // 将构图期间累计的精确、启发式、框架、外部和未解析计数封装为覆盖率快照。
             return new CallGraphCoverage(totalCallSites, exactResolvedCallSites, heuristicResolvedCallSites,
@@ -1215,6 +1261,7 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 封装 TypeModel 相关的数据与处理逻辑。
     private static final class TypeModel {
         private final String qualifiedName;
         private final String simpleName;
@@ -1225,6 +1272,7 @@ public class LightweightSemanticAnalyzer {
         private final Set<String> imports;
         private final List<MethodModel> methods = new ArrayList<>();
 
+        // 创建 TypeModel 实例并初始化所需依赖或状态。
         private TypeModel(String qualifiedName, String simpleName, TypeDeclaration<?> declaration,
                           boolean interfaceType, Set<String> implementedTypes) {
             this.qualifiedName = qualifiedName;
@@ -1241,6 +1289,7 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
+    // 封装 MethodModel 相关的数据与处理逻辑。
     private static final class MethodModel implements ProgramNode {
         private final SemanticSymbol symbol;
         private final MethodDeclaration declaration;
@@ -1249,49 +1298,64 @@ public class LightweightSemanticAnalyzer {
         private final List<String> parameterTypes;
         private final MethodSummary summary = new MethodSummary();
 
+        // 创建 MethodModel 实例并初始化所需依赖或状态。
         private MethodModel(SemanticSymbol symbol, MethodDeclaration declaration, TypeModel owner,
                             List<String> parameterNames, List<String> parameterTypes) {
             this.symbol = symbol; this.declaration = declaration; this.owner = owner;
             this.parameterNames = parameterNames; this.parameterTypes = parameterTypes;
         }
+        // 执行 MethodModel 中的 symbol 处理。
+        // 返回 SQL 节点对应的语义符号。
         @Override public SemanticSymbol symbol() { return symbol; }
     }
 
+    // 封装 SqlModel 相关的数据与处理逻辑。
     private static final class SqlModel implements ProgramNode {
         private final SemanticSymbol symbol;
         private final String namespace;
         private final String statementId;
+        // 创建 SqlModel 实例并初始化所需依赖或状态。
         private SqlModel(SemanticSymbol symbol, String namespace, String statementId) {
             this.symbol = symbol; this.namespace = namespace; this.statementId = statementId;
         }
+        // 返回静态资源节点对应的语义符号。
         @Override public SemanticSymbol symbol() { return symbol; }
     }
 
+    // 封装 ArtifactModel 相关的数据与处理逻辑。
     private static final class ArtifactModel implements ProgramNode {
         private final SemanticSymbol symbol;
+        // 创建 ArtifactModel 实例并初始化所需依赖或状态。
         private ArtifactModel(SemanticSymbol symbol) { this.symbol = symbol; }
+        // 返回框架节点对应的语义符号。
         @Override public SemanticSymbol symbol() { return symbol; }
     }
 
+    // 封装 FrameworkModel 相关的数据与处理逻辑。
     private static final class FrameworkModel implements ProgramNode {
         private final SemanticSymbol symbol;
         private final String edgeType;
         private final Confidence confidence;
         private final String reason;
 
+        // 创建 FrameworkModel 实例并初始化所需依赖或状态。
         private FrameworkModel(SemanticSymbol symbol, String edgeType, Confidence confidence, String reason) {
             this.symbol = symbol; this.edgeType = edgeType; this.confidence = confidence; this.reason = reason;
         }
+        // 返回框架节点对应的语义符号。
         @Override public SemanticSymbol symbol() { return symbol; }
     }
 
+    // 封装 MethodSummary 相关的数据与处理逻辑。
     private static final class MethodSummary {
         private static final MethodSummary EMPTY = new MethodSummary();
         private final Set<Integer> returnFromParameters = new LinkedHashSet<>();
         private final Map<String, Set<Integer>> effects = new LinkedHashMap<>();
         private final Set<String> guards = new LinkedHashSet<>();
 
+        // 执行 MethodSummary 中的 empty 处理。
         private static MethodSummary empty() { return EMPTY; }
+        // 合并 mergeEffect 对应的结果。
         private boolean mergeEffect(String kind, Collection<Integer> parameters) {
             boolean newKind = !effects.containsKey(kind);
             Set<Integer> merged = new LinkedHashSet<>(effects.getOrDefault(kind, Set.of()));
@@ -1299,19 +1363,27 @@ public class LightweightSemanticAnalyzer {
             effects.put(kind, Set.copyOf(merged));
             return newKind || changed;
         }
+        // 判断是否满足 hasEffect 对应的条件。
         private boolean hasEffect(String kind) { return effects.containsKey(kind); }
+        // 执行 MethodSummary 中的 taintedEffect 处理。
         private boolean taintedEffect(String kind, Set<Integer> tainted) {
             Set<Integer> affected = effects.get(kind);
             return affected != null && (affected.isEmpty() || affected.stream().anyMatch(tainted::contains));
         }
     }
 
+    // 封装 GraphEdge 使用的不可变结构化数据。
     private record GraphEdge(SemanticCallEdge persisted, MethodModel caller, ProgramNode target,
                              Map<Integer, Set<Integer>> argumentDependencies) {}
+    // 封装 TargetResolution 使用的不可变结构化数据。
     private record TargetResolution(MethodModel method, String edgeType, Confidence confidence, String reason) {}
+    // 封装 ScoredMethod 使用的不可变结构化数据。
     private record ScoredMethod(MethodModel method, int score) {}
+    // 封装 PathState 使用的不可变结构化数据。
     private record PathState(ProgramNode current, Set<Integer> taintedParameters,
                              List<ProgramNode> nodes, List<GraphEdge> edges) {}
+    // 封装 SecurityPolicy 使用的不可变结构化数据。
     private record SecurityPolicy(String pattern, String action) {}
+    // 封装 SecurityFlowCandidate 使用的不可变结构化数据。
     private record SecurityFlowCandidate(SecurityFlow flow, int pathLength) {}
 }

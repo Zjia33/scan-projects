@@ -6,6 +6,7 @@ import lombok.Setter;
 
 import java.util.UUID;
 
+// 表示审计领域中的 SecurityFlow 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
@@ -25,6 +26,7 @@ public class SecurityFlow {
     private int resolvedEdges; // 路径中已成功解析的调用边数量
     private int unresolvedEdges; // 路径中未能解析的调用边数量
 
+    // 创建 SecurityFlow 实例并初始化所需依赖或状态。
     public SecurityFlow(UUID taskId, VulnerabilityType type, UUID sourceSymbolId, UUID sinkSymbolId,
                         Long primaryChunkId, String sourceDescription, String sinkDescription,
                         String guardSummary, String pathText, String evidenceChunkIds,

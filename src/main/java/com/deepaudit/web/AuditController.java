@@ -41,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
 
+// 提供 AuditController 对应的 HTTP 接口。
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
@@ -68,44 +69,52 @@ public class AuditController {
                 repository(imported.project()), imported.commits(), "Git 仓库已导入，请选择审计提交"));
     }
 
+    // 处理 projects 对应的 HTTP 请求。
     @GetMapping("/projects")
     public List<RepositoryResponse> projects(
             @RequestParam(defaultValue = "false") boolean includeArchived) {
         return projectService.projects(includeArchived).stream().map(this::repository).toList();
     }
 
+    // 处理 project 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}")
     public RepositoryResponse project(@PathVariable UUID projectId) {
         return repository(projectService.project(projectId));
     }
 
+    // 处理 updateProject 对应的 HTTP 请求。
     @PatchMapping(value = "/projects/{projectId}", consumes = MediaType.APPLICATION_JSON_VALUE)
     public RepositoryResponse updateProject(@PathVariable UUID projectId,
                                             @RequestBody UpdateProjectRequest request) {
         return repository(projectService.updateProject(projectId, request.name(), request.description()));
     }
 
+    // 处理 archiveProject 对应的 HTTP 请求。
     @PostMapping("/projects/{projectId}/archive")
     public RepositoryResponse archiveProject(@PathVariable UUID projectId) {
         return repository(projectService.archive(projectId));
     }
 
+    // 处理 restoreProject 对应的 HTTP 请求。
     @PostMapping("/projects/{projectId}/restore")
     public RepositoryResponse restoreProject(@PathVariable UUID projectId) {
         return repository(projectService.restore(projectId));
     }
 
+    // 处理 projectAudits 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}/audits")
     public List<TaskResponse> projectAudits(@PathVariable UUID projectId) {
         return projectService.auditHistory(projectId).stream().map(this::toResponse).toList();
     }
 
+    // 处理 cleanupProject 对应的 HTTP 请求。
     @PostMapping(value = "/projects/{projectId}/cleanup", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ProjectService.CleanupResult cleanupProject(@PathVariable UUID projectId,
                                                        @RequestBody CleanupProjectRequest request) {
         return projectService.cleanupAuditData(projectId, request.confirmation());
     }
 
+    // 处理 commits 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}/commits")
     public List<GitRepositoryService.CommitInfo> commits(@PathVariable UUID projectId,
                                                          @RequestParam(defaultValue = "100") int limit)
@@ -113,6 +122,7 @@ public class AuditController {
         return projectService.commits(projectId, limit);
     }
 
+    // 处理 refresh 对应的 HTTP 请求。
     @PostMapping(value = "/projects/{projectId}/refresh", consumes = MediaType.APPLICATION_JSON_VALUE)
     public List<GitRepositoryService.CommitInfo> refresh(@PathVariable UUID projectId,
                                                          @RequestBody(required = false) RefreshRepositoryRequest request)
@@ -132,6 +142,7 @@ public class AuditController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new AuditSubmissionResponse(
                 submission.project().getId(), task.getId(), submission.project().getName(),
                 task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
+                task.getMergeBaseSha(),
                 "Git 审计任务已创建，正在后台执行"));
     }
 
@@ -186,6 +197,7 @@ public class AuditController {
         return hypothesisMapper.findByTaskId(taskId);
     }
 
+    // 处理 changes 对应的 HTTP 请求。
     @GetMapping("/tasks/{taskId}/changes")
     public List<GitFileChange> changes(@PathVariable UUID taskId) {
         requireTask(taskId);
@@ -224,7 +236,7 @@ public class AuditController {
         int toolCalls = runs.stream().mapToInt(AgentRun::getToolCallCount).sum();
         return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getOriginalFilename(),
                 project.getRepositoryUrl(), task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
-                task.getChangeSummary(),
+                task.getMergeBaseSha(), task.getChangeSummary(),
                 task.getStatus().name(), task.getProgress(), task.getCurrentStage(), task.getErrorMessage(),
                 findingMapper.countByTaskId(task.getId()), runs.size(), modelCalls, toolCalls,
                 task.getCreatedAt(), task.getCompletedAt());
@@ -237,46 +249,56 @@ public class AuditController {
         return task;
     }
 
+    // 执行 AuditController 中的 repository 处理。
     private RepositoryResponse repository(Project project) {
         return new RepositoryResponse(project.getId(), project.getName(), project.getRepositoryUrl(),
                 project.getDefaultBranch(), project.getDescription(), project.isArchived(),
                 project.getCreatedAt(), project.getUpdatedAt(), project.getArchivedAt());
     }
 
+    // 封装 ImportRepositoryRequest 使用的不可变结构化数据。
     public record ImportRepositoryRequest(String name, String repositoryUrl,
                                           String username, String accessToken) {
     }
 
+    // 封装 RefreshRepositoryRequest 使用的不可变结构化数据。
     public record RefreshRepositoryRequest(String username, String accessToken) {
     }
 
+    // 封装 UpdateProjectRequest 使用的不可变结构化数据。
     public record UpdateProjectRequest(String name, String description) {
     }
 
+    // 封装 CleanupProjectRequest 使用的不可变结构化数据。
     public record CleanupProjectRequest(String confirmation) {
     }
 
+    // 封装 CreateAuditRequest 使用的不可变结构化数据。
     public record CreateAuditRequest(ScanMode scanMode, String baseCommit, String targetCommit) {
     }
 
+    // 封装 RepositoryResponse 使用的不可变结构化数据。
     public record RepositoryResponse(UUID projectId, String name, String repositoryUrl,
                                      String defaultBranch, String description, boolean archived,
                                      java.time.Instant createdAt, java.time.Instant updatedAt,
                                      java.time.Instant archivedAt) {
     }
 
+    // 封装 ImportRepositoryResponse 使用的不可变结构化数据。
     public record ImportRepositoryResponse(RepositoryResponse project,
                                            List<GitRepositoryService.CommitInfo> commits, String message) {
     }
 
+    // 封装 AuditSubmissionResponse 使用的不可变结构化数据。
     public record AuditSubmissionResponse(UUID projectId, UUID taskId, String projectName,
                                           ScanMode scanMode, String baseCommit, String targetCommit,
-                                          String message) {
+                                          String mergeBase, String message) {
     }
 
+    // 封装 TaskResponse 使用的不可变结构化数据。
     public record TaskResponse(UUID taskId, UUID projectId, String projectName, String originalFilename,
                                String repositoryUrl, ScanMode scanMode, String baseCommit,
-                               String targetCommit, String changeSummary,
+                               String targetCommit, String mergeBase, String changeSummary,
                                String status, int progress, String currentStage, String errorMessage,
                                long findingCount, int agentRunCount, int modelCallCount, int toolCallCount,
                                java.time.Instant createdAt, java.time.Instant completedAt) {

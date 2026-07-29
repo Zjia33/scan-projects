@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
+// 负责 ProjectTechnologyDetector 对应的确定性分析与事实提取。
 @Slf4j
 final class ProjectTechnologyDetector {
     private static final long MAX_FILE_BYTES = 2L * 1024L * 1024L;
@@ -49,6 +50,7 @@ final class ProjectTechnologyDetector {
         return dot > 0 && INSPECTED_EXTENSIONS.contains(name.substring(dot + 1));
     }
 
+    // 封装 Detection 相关的数据与处理逻辑。
     private static final class Detection {
         private final Path root;
         private final Set<String> frameworks = new LinkedHashSet<>();
@@ -58,6 +60,7 @@ final class ProjectTechnologyDetector {
         private final Set<String> securityAnnotations = new LinkedHashSet<>();
         private final Set<String> evidence = new LinkedHashSet<>();
 
+        // 创建 Detection 实例并初始化所需依赖或状态。
         private Detection(Path root) {
             this.root = root;
         }
@@ -117,10 +120,12 @@ final class ProjectTechnologyDetector {
             }
         }
 
+        // 执行 Detection 中的 annotation 处理。
         private void annotation(String content, String relative, String annotation, String marker) {
             if (content.contains(marker)) add(securityAnnotations, annotation, relative, marker);
         }
 
+        // 分析并提取 detect 对应的事实。
         private void detect(String content, String relative, Set<String> target, String technology,
                             String... markers) {
             for (String marker : markers) {
@@ -132,6 +137,7 @@ final class ProjectTechnologyDetector {
             }
         }
 
+        // 向当前结果添加 add 对应的数据。
         private void add(Set<String> target, String value, String relative, String marker) {
             target.add(value);
             if (evidence.size() < MAX_EVIDENCE) evidence.add(value + " <- " + relative + " [" + marker + "]");

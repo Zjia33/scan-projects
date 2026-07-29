@@ -73,7 +73,7 @@
                         <div class="panel-title"><span>检测范围</span></div>
                         <div class="scope-list">
                             <span>越权漏洞</span><span>SQL 注入</span>
-                            <span>未授权</span><span>存储 XSS</span><span>验证绕过</span><span>资金风险</span>
+                        <span>未授权</span><span>存储 XSS</span><span>验证绕过</span>
                         </div>
                     </article>
                 </div>
@@ -82,7 +82,7 @@
             <section id="new-audit" class="page-section new-audit-section">
                 <div class="section-heading">
                     <div><p class="kicker">NEW INVESTIGATION</p><h2>新建代码审计</h2></div>
-                    <p>只读导入 Git 仓库，选择单个提交全量扫描，或选择 Base/Target 执行增量安全审计。</p>
+                    <p>只读导入 Git 仓库，选择单个提交全量扫描，或选择基准与目标分支提交执行分支变更审计。</p>
                 </div>
                 <form id="git-import-form" class="git-console">
                     <div class="field-group">
@@ -116,15 +116,15 @@
                         <label for="scan-mode">扫描模式</label>
                         <select id="scan-mode">
                             <option value="FULL">全量扫描 Target</option>
-                            <option value="INCREMENTAL">增量比较 Base → Target</option>
+                            <option value="INCREMENTAL">分支变更审计 Base → Target</option>
                         </select>
                     </div>
                     <div id="base-commit-group" class="field-group hidden">
-                        <label for="base-commit">Base Commit</label>
+                        <label for="base-commit">基准分支提交（Base）</label>
                         <select id="base-commit"></select>
                     </div>
                     <div class="field-group">
-                        <label for="target-commit">Target Commit</label>
+                        <label for="target-commit">目标分支提交（Target）</label>
                         <select id="target-commit" required></select>
                     </div>
                     <button id="refresh-commits-button" class="secondary-action" type="button">刷新提交</button>

@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+// 负责 ProjectService 对应的业务编排和处理。
 @Service
 public class ProjectService {
     private final GitRepositoryService gitRepositoryService;
@@ -24,6 +25,7 @@ public class ProjectService {
     private final AuditOrchestrator orchestrator;
     private final TransactionTemplate transactionTemplate;
 
+    // 创建 ProjectService 实例并初始化所需依赖或状态。
     public ProjectService(GitRepositoryService gitRepositoryService,
                           ProjectMapper projectMapper,
                           AuditTaskMapper taskMapper,
@@ -43,14 +45,17 @@ public class ProjectService {
         return gitRepositoryService.importRepository(name, repositoryUrl, username, accessToken);
     }
 
+    // 执行 ProjectService 中的 projects 处理。
     public List<Project> projects() {
         return gitRepositoryService.projects();
     }
 
+    // 执行 ProjectService 中的 projects 处理。
     public List<Project> projects(boolean includeArchived) {
         return gitRepositoryService.projects(includeArchived);
     }
 
+    // 执行 ProjectService 中的 project 处理。
     public Project project(UUID projectId) {
         return requireProject(projectId);
     }
@@ -78,12 +83,14 @@ public class ProjectService {
         return requireProject(projectId);
     }
 
+    // 执行 ProjectService 中的 restore 处理。
     public Project restore(UUID projectId) {
         requireProject(projectId);
         setArchivedAt(projectId, null);
         return requireProject(projectId);
     }
 
+    // 执行 ProjectService 中的 auditHistory 处理。
     public List<AuditTask> auditHistory(UUID projectId) {
         requireProject(projectId);
         return taskMapper.findByProjectIdOrderByCreatedAtDesc(projectId);
@@ -102,10 +109,12 @@ public class ProjectService {
                 "扫描任务及其代码块、向量、语义关系、Agent 轨迹、漏洞和报告已清理");
     }
 
+    // 执行 ProjectService 中的 commits 处理。
     public List<GitRepositoryService.CommitInfo> commits(UUID projectId, int limit) throws IOException {
         return gitRepositoryService.commits(projectId, limit);
     }
 
+    // 更新 refresh 对应的状态或数据。
     public List<GitRepositoryService.CommitInfo> refresh(UUID projectId, String username,
                                                          String accessToken) throws IOException {
         requireActiveProject(projectId);
@@ -130,30 +139,36 @@ public class ProjectService {
         return new Submission(project, task);
     }
 
+    // 封装 Submission 使用的不可变结构化数据。
     public record Submission(Project project, AuditTask task) {
     }
 
+    // 封装 CleanupResult 使用的不可变结构化数据。
     public record CleanupResult(UUID projectId, int deletedTaskCount, String message) {
     }
 
+    // 执行 ProjectService 中的 requireProject 处理。
     private Project requireProject(UUID projectId) {
         Project project = projectMapper.findById(projectId);
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + projectId);
         return project;
     }
 
+    // 执行 ProjectService 中的 requireActiveProject 处理。
     private Project requireActiveProject(UUID projectId) {
         Project project = gitRepositoryService.requireGitProject(projectId);
         if (project.isArchived()) throw new IllegalArgumentException("项目已归档，请先恢复后再操作");
         return project;
     }
 
+    // 执行 ProjectService 中的 requireNoActiveTasks 处理。
     private void requireNoActiveTasks(UUID projectId) {
         if (taskMapper.countActiveByProjectId(projectId) > 0) {
             throw new IllegalArgumentException("项目仍有运行中扫描，暂时不能归档或清理数据");
         }
     }
 
+    // 设置 ArchivedAt 对应的状态。
     private void setArchivedAt(UUID projectId, Instant archivedAt) {
         Instant now = Instant.now();
         transactionTemplate.executeWithoutResult(status -> {
@@ -163,6 +178,7 @@ public class ProjectService {
         });
     }
 
+    // 规范化 normalizeName 对应的输入。
     private String normalizeName(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("项目名称不能为空");
         String normalized = value.replaceAll("[\\r\\n\\t<>]", " ").strip();
@@ -170,6 +186,7 @@ public class ProjectService {
         return normalized.substring(0, Math.min(normalized.length(), 200));
     }
 
+    // 规范化 normalizeDescription 对应的输入。
     private String normalizeDescription(String value) {
         if (value == null) return "";
         String normalized = value.replace("\u0000", "").strip();

@@ -7,6 +7,7 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
+// 表示审计领域中的 AgentEvent 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
@@ -19,6 +20,7 @@ public class AgentEvent {
     private String message; // 事件的日志或过程说明
     private Instant createdAt; // 事件产生时间
 
+    // 创建 AgentEvent 实例并初始化所需依赖或状态。
     public AgentEvent(UUID taskId, UUID runId, AgentType agentType, AgentEventType eventType, String message) {
         this.taskId = taskId;
         this.runId = runId;

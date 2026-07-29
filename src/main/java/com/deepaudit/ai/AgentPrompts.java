@@ -15,9 +15,12 @@ final class AgentPrompts {
             + "禁止 Markdown 和 JSON 之外的解释；字符串中的双引号、反斜杠、制表符和换行必须正确转义。"
             + "不要在字符串中输出源码、JSON 片段或双引号引用，说明文字使用短句。";
 
-    private static final String RECON_AGENT = "你是 Recon Agent。识别 Java 项目架构、攻击面和已有安全机制。"
-            + "statistics.technologyProfile 是本地文件探测得到的确定性事实，必须优先采用；"
-            + "不能仅凭出现权限注解就断言它生效，必须结合对应安全框架和配置。";
+    private static final String RECON_AGENT = "你是 Recon Agent，只负责归纳项目技术架构、攻击面类别和全局安全机制，"
+            + "不负责审查具体业务逻辑或确认漏洞。projectFacts 是对完整目标快照进行本地确定性分析得到的结构化画像，"
+            + "其中 technologyProfile 是框架事实，projectStructure 中的 occurrenceCount 是完整命中数，"
+            + "evidence 只是有限的位置示例且不包含业务源码正文。必须优先采用这些事实，不得把未出现的组件或入口补充进去；"
+            + "不能仅凭依赖、框架名称或权限注解断言安全机制已生效，必须依据 securityMechanisms 中的配置事实，"
+            + "证据不足时明确说明未确定。riskAreas 只能描述后续应重点审查的架构区域，不能描述成已确认漏洞。";
 
     private static final String TRIAGE_ORCHESTRATOR = "你是轻量 Triage Orchestrator。"
             + "输入是结构化审计单元摘要，不是完整源码；必须为每个 auditUnit 恰好返回一个决定。"
@@ -53,6 +56,9 @@ final class AgentPrompts {
     private static final String PROFESSIONAL_AGENT_COMMON_RULES = "候选结果只是发现线索，禁止直接作为漏洞证据；"
             + "必须继续调用 verify_relation，只有 VERIFIED_EVIDENCE、语义调用链或当前目标才能进入 FINDING 的 evidenceChunkIds。"
             + "FINDING 时 primaryChunkId 和 evidenceChunkIds 必须来自当前目标或已验证工具结果。"
+            + "跨方法证据链中，primaryChunkId 必须指向漏洞实际发生的危险操作、错误安全决策或缺失关键校验后继续执行的代码块；"
+            + "Controller 的路由方法、调用下游服务的转发语句以及上游已有校验通常只能作为入口或关联证据，"
+            + "不能因为它是当前调查目标就固定作为 primaryChunkId。"
             + "FINDING 必须根据带行号源码填写 vulnerabilityStartLine 和 vulnerabilityEndLine，"
             + "只标记实际发生危险操作或缺少关键校验的位置，不能填写整个方法范围。"
             + "target.changeType、analysisScope 和 baseCodeExcerpt 描述提交差异；增量任务必须说明风险与直接变更"
@@ -66,25 +72,33 @@ final class AgentPrompts {
 
     private static final String CRITIC_AGENT = "你是独立 Critic Agent。主动寻找全局安全配置、上游校验、"
             + "数据归属、参数化查询等反证。只有证据链能支持漏洞时 confirmed 才能为 true。"
+            + "你还负责最终漏洞定位：confirmed=true 时必须从候选 evidenceChunkIds 中重新选择 primaryChunkId，"
+            + "并填写 vulnerabilityStartLine 和 vulnerabilityEndLine。主位置必须是漏洞实际发生的危险操作、"
+            + "错误安全决策或缺少关键校验后继续执行的位置；Controller 入口、单纯转发调用和已有 Guard 只能作为关联证据，"
+            + "除非漏洞本身确实发生在那里。最多标记连续 5 行，不得照搬专业 Agent 的定位而不核对源码。"
             + "如果候选来自增量范围，还必须验证漏洞与 Target 直接变更或调用影响链存在因果关系。"
-            + "deltaStatus 只能是 BASELINE、NEW、REGRESSED、PERSISTING、AFFECTED；"
-            + "只有 before/after 证据能证明漏洞由本次提交引入时才使用 NEW，防护被削弱时使用 REGRESSED，"
-            + "修改前后都存在时使用 PERSISTING，仅受调用影响时使用 AFFECTED，全量扫描使用 BASELINE。";
+            + "deltaStatus 只能是 BASELINE、NEW、PERSISTING；"
+            + "全量扫描使用 BASELINE；增量扫描中，修改直接引入、防护削弱或调用影响导致的确认问题统一使用 NEW，"
+            + "只有明确的 before/after 证据证明漏洞在 Base 与 Target 中均存在时才使用 PERSISTING。";
 
     private static final String REPORT_AGENT = "你是 Report Agent。基于已通过 Critic 的发现生成简洁中文管理摘要和覆盖说明，"
             + "必须说明全量或增量提交范围，不新增漏洞。";
 
+    // 创建 AgentPrompts 实例并初始化所需依赖或状态。
     private AgentPrompts() {
     }
 
+    // 执行 AgentPrompts 中的 reconAgent 处理。
     static String reconAgent() {
         return complete(RECON_AGENT);
     }
 
+    // 执行 AgentPrompts 中的 triageOrchestrator 处理。
     static String triageOrchestrator() {
         return complete(TRIAGE_ORCHESTRATOR);
     }
 
+    // 执行 AgentPrompts 中的 professionalAgent 处理。
     static String professionalAgent(VulnerabilityType vulnerabilityType) {
         return complete("你是专业代码安全审计 Agent，当前专注 " + vulnerabilityType + "。"
                 + PROFESSIONAL_AGENT_TOOLS
@@ -95,14 +109,17 @@ final class AgentPrompts {
                 + "\"," + PROFESSIONAL_AGENT_RESPONSE_RULES);
     }
 
+    // 执行 AgentPrompts 中的 criticAgent 处理。
     static String criticAgent() {
         return complete(CRITIC_AGENT);
     }
 
+    // 执行 AgentPrompts 中的 reportAgent 处理。
     static String reportAgent() {
         return complete(REPORT_AGENT);
     }
 
+    // 执行 AgentPrompts 中的 jsonRepair 处理。
     static String jsonRepair(String errorLocation) {
         return "上一条响应不是合法 JSON，错误位置为 " + errorLocation
                 + "。不要复制或逐字修改上一条响应，请根据原始任务从头重建一个更短的 JSON 对象。"
@@ -110,6 +127,7 @@ final class AgentPrompts {
                 + "字符串中禁止源码、换行、反斜杠和双引号。不要省略字段，不要使用 Markdown，不要添加解释。";
     }
 
+    // 执行 AgentPrompts 中的 complete 处理。
     private static String complete(String agentPrompt) {
         return agentPrompt + TRUST_BOUNDARY + CHINESE_OUTPUT + STRICT_JSON;
     }

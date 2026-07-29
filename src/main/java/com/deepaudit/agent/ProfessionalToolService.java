@@ -30,6 +30,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+// 负责 ProfessionalToolService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class ProfessionalToolService {
@@ -43,6 +44,7 @@ public class ProfessionalToolService {
     private final SemanticMethodChangeMapper methodChangeMapper;
     private final GitFileChangeMapper fileChangeMapper;
 
+    // 查询并返回 searchSymbols 对应的数据。
     public Result searchSymbols(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                 ToolArguments arguments, int limit) {
         String symbol = arguments.string("symbol");
@@ -80,6 +82,7 @@ public class ProfessionalToolService {
                 Set.of(current.getId()), candidates);
     }
 
+    // 执行 ProfessionalToolService 中的 exploreCallGraph 处理。
     public Result exploreCallGraph(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                    ToolArguments arguments, int limit) {
         String direction = arguments.string("direction").toUpperCase(Locale.ROOT);
@@ -109,6 +112,7 @@ public class ProfessionalToolService {
                 + " unresolvedEdges=" + unresolvedCount(allEdges) + "\n" + body, evidence, Set.of());
     }
 
+    // 读取并返回 getChangeContext 对应的信息。
     public Result getChangeContext(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                    ToolArguments arguments, int limit) {
         String selector = arguments.string("selector");
@@ -151,6 +155,7 @@ public class ProfessionalToolService {
                 + (methods.isBlank() || files.isBlank() ? "" : "\n\n") + files, evidence, candidates);
     }
 
+    // 解析并确定 resolveDataAccess 对应的目标。
     public Result resolveDataAccess(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                     ToolArguments arguments, int limit) {
         int depth = arguments.integer("depth", 3, 1, 5);
@@ -183,6 +188,7 @@ public class ProfessionalToolService {
                 + body, evidence, candidates);
     }
 
+    // 分析并提取 inspectSecurityPolicy 对应的事实。
     public Result inspectSecurityPolicy(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                         ToolArguments arguments, int limit) {
         String endpoint = arguments.string("endpoint");
@@ -222,6 +228,7 @@ public class ProfessionalToolService {
                 + String.join("\n\n", details), evidence, candidates);
     }
 
+    // 执行 ProfessionalToolService 中的 traceValue 处理。
     public Result traceValue(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                              ToolArguments arguments, int limit, VulnerabilityType vulnerabilityType) {
         String source = arguments.string("source");
@@ -262,6 +269,7 @@ public class ProfessionalToolService {
         return new Result("[VALUE_TRACE][ARGUMENT_MAPPING]\n" + body, evidence, Set.of());
     }
 
+    // 判断是否满足 matches 对应的条件。
     private boolean matches(CodeChunk chunk, SemanticSymbol metadata, String symbol, String kind,
                             String annotation, String filePath, String endpoint, String text) {
         if (!symbol.isBlank() && !contains(chunk.getSymbolName(), symbol)
@@ -282,6 +290,7 @@ public class ProfessionalToolService {
         return true;
     }
 
+    // 查询并返回 searchScore 对应的数据。
     private int searchScore(CodeChunk chunk, SemanticSymbol metadata, String symbol, String kind,
                             String annotation, String filePath, String endpoint, String text) {
         int score = 0;
@@ -295,6 +304,7 @@ public class ProfessionalToolService {
         return score;
     }
 
+    // 执行 ProfessionalToolService 中的 directedGraph 处理。
     private Map<Long, List<GraphStep>> directedGraph(List<SemanticCallEdge> edges, String direction) {
         Map<Long, List<GraphStep>> graph = new LinkedHashMap<>();
         for (SemanticCallEdge edge : edges) {
@@ -311,6 +321,7 @@ public class ProfessionalToolService {
         return graph;
     }
 
+    // 执行 ProfessionalToolService 中的 breadthFirstPaths 处理。
     private List<GraphPath> breadthFirstPaths(Long start, Long target, Map<Long, List<GraphStep>> graph,
                                               int maxDepth, int limit) {
         ArrayDeque<GraphPath> queue = new ArrayDeque<>();
@@ -335,6 +346,7 @@ public class ProfessionalToolService {
         return result;
     }
 
+    // 格式化并输出 formatPath 对应的展示内容。
     private String formatPath(GraphPath path) {
         return "PATH depth=" + path.steps().size() + " " + path.steps().stream().map(step ->
                 step.from() + " -[" + step.edge().getEdgeType() + "," + step.edge().getConfidence()
@@ -343,6 +355,7 @@ public class ProfessionalToolService {
                 .collect(Collectors.joining(" | "));
     }
 
+    // 执行 ProfessionalToolService 中的 reachableChunks 处理。
     private Set<Long> reachableChunks(UUID taskId, Long start, int depth) {
         Map<Long, List<GraphStep>> graph = directedGraph(edgeMapper.findByTaskId(taskId), "BOTH");
         Set<Long> result = new LinkedHashSet<>();
@@ -359,21 +372,25 @@ public class ProfessionalToolService {
         return result;
     }
 
+    // 执行 ProfessionalToolService 中的 directlyRelated 处理。
     private boolean directlyRelated(UUID taskId, Long left, Long right) {
         return edgeMapper.findByTaskId(taskId).stream().filter(this::reliable).anyMatch(edge ->
                 left.equals(edge.getCallerChunkId()) && right.equals(edge.getCalleeChunkId())
                         || right.equals(edge.getCallerChunkId()) && left.equals(edge.getCalleeChunkId()));
     }
 
+    // 执行 ProfessionalToolService 中的 reliable 处理。
     private boolean reliable(SemanticCallEdge edge) {
         return edge.getConfidence() != Confidence.LOW && !"UNRESOLVED".equals(edge.getEdgeType());
     }
 
+    // 执行 ProfessionalToolService 中的 unresolvedCount 处理。
     private long unresolvedCount(List<SemanticCallEdge> edges) {
         return edges.stream().filter(edge -> edge.getCalleeChunkId() == null
                 || "UNRESOLVED".equals(edge.getEdgeType())).count();
     }
 
+    // 执行 ProfessionalToolService 中的 changeMatches 处理。
     private boolean changeMatches(SemanticMethodChange change, CodeChunk current, String selector) {
         String target = selector.isBlank() ? current.getFilePath() + " " + current.getSymbolName() : selector;
         String value = lower(change.getBasePath() + " " + change.getTargetPath() + " "
@@ -382,11 +399,13 @@ public class ProfessionalToolService {
                 .anyMatch(value::contains);
     }
 
+    // 执行 ProfessionalToolService 中的 fileChangeMatches 处理。
     private boolean fileChangeMatches(GitFileChange change, CodeChunk current, String selector) {
         String target = selector.isBlank() ? current.getFilePath() : selector;
         return contains(change.getOldPath(), target) || contains(change.getNewPath(), target);
     }
 
+    // 转换并返回 mapChangeChunks 对应的数据表示。
     private Set<Long> mapChangeChunks(SemanticMethodChange change, List<CodeChunk> chunks) {
         return chunks.stream().filter(chunk -> samePath(change.getTargetPath(), chunk.getFilePath())
                         || samePath(change.getBasePath(), chunk.getFilePath()))
@@ -397,10 +416,12 @@ public class ProfessionalToolService {
                 .map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
+    // 执行 ProfessionalToolService 中的 overlaps 处理。
     private boolean overlaps(int start, int end, Integer otherStart, Integer otherEnd) {
         return otherStart != null && otherEnd != null && start <= otherEnd && otherStart <= end;
     }
 
+    // 格式化并输出 formatMethodChange 对应的展示内容。
     private String formatMethodChange(SemanticMethodChange change) {
         return "[METHOD_CHANGE] kind=" + change.getChangeKind() + " method=" + change.getMethodName()
                 + " base=" + change.getBasePath() + ":" + change.getBaseStartLine()
@@ -411,6 +432,7 @@ public class ProfessionalToolService {
                 + safe(change.getTargetContent(), 1_200) + "\n</UNTRUSTED_CODE_TARGET>";
     }
 
+    // 格式化并输出 formatFileChange 对应的展示内容。
     private String formatFileChange(GitFileChange change) {
         return "[FILE_CHANGE] type=" + change.getChangeType() + " old=" + change.getOldPath()
                 + " new=" + change.getNewPath() + " additions=" + change.getAdditions()
@@ -419,6 +441,7 @@ public class ProfessionalToolService {
                 + "\n<UNTRUSTED_DIFF>\n" + safe(change.getContextText(), 1_600) + "\n</UNTRUSTED_DIFF>";
     }
 
+    // 判断是否满足 isDataAccess 对应的条件。
     private boolean isDataAccess(CodeChunk chunk) {
         String value = searchable(chunk);
         return value.contains("mybatis") || value.contains("mapper") || value.contains("repository")
@@ -428,6 +451,7 @@ public class ProfessionalToolService {
                 || value.contains("#{") || value.contains("${");
     }
 
+    // 格式化并输出 formatDataAccess 对应的展示内容。
     private String formatDataAccess(CodeChunk chunk) {
         String content = lower(chunk.getContent());
         List<String> indicators = new ArrayList<>();
@@ -446,6 +470,7 @@ public class ProfessionalToolService {
         return formatChunk(chunk, "indicators=" + indicators, 2_000);
     }
 
+    // 判断是否满足 hasSecurityPolicySignal 对应的条件。
     private boolean hasSecurityPolicySignal(CodeChunk chunk) {
         String value = lower(chunk.getAnnotations() + " " + chunk.getContent());
         return value.contains("preauthorize") || value.contains("secured") || value.contains("rolesallowed")
@@ -456,11 +481,13 @@ public class ProfessionalToolService {
                 || value.contains("onceperrequestfilter") || value.contains("enablemethodsecurity");
     }
 
+    // 判断是否满足 hasMethodSecuritySignal 对应的条件。
     private boolean hasMethodSecuritySignal(CodeChunk chunk) {
         String value = lower(chunk.getAnnotations() + " " + chunk.getContent());
         return value.contains("preauthorize") || value.contains("secured") || value.contains("rolesallowed");
     }
 
+    // 判断是否满足 matchesEndpointPolicy 对应的条件。
     private boolean matchesEndpointPolicy(String endpoint, String content) {
         Matcher matcher = REQUEST_MATCHERS.matcher(content == null ? "" : content);
         while (matcher.find()) {
@@ -470,6 +497,7 @@ public class ProfessionalToolService {
         return false;
     }
 
+    // 格式化并输出 formatPolicy 对应的展示内容。
     private String formatPolicy(CodeChunk chunk, String relation, boolean verified) {
         String value = lower(chunk.getAnnotations() + " " + chunk.getContent());
         List<String> indicators = new ArrayList<>();
@@ -484,6 +512,7 @@ public class ProfessionalToolService {
                 + relation + " indicators=" + indicators + "\n" + formatChunk(chunk, relation, 1_600);
     }
 
+    // 执行 ProfessionalToolService 中的 endpointMatches 处理。
     private boolean endpointMatches(String endpoint, String antPattern) {
         StringBuilder regex = new StringBuilder("^");
         for (int index = 0; index < antPattern.length(); index++) {
@@ -504,6 +533,7 @@ public class ProfessionalToolService {
         return endpoint.matches(regex.append('$').toString());
     }
 
+    // 执行 ProfessionalToolService 中的 flowContains 处理。
     private boolean flowContains(SecurityFlow flow, String source, String sink, String variable) {
         if (!source.isBlank() && !contains(flow.getSourceDescription(), source)) return false;
         if (!sink.isBlank() && !contains(flow.getSinkDescription(), sink)) return false;
@@ -515,6 +545,7 @@ public class ProfessionalToolService {
         return true;
     }
 
+    // 格式化并输出 formatValueFlow 对应的展示内容。
     private String formatValueFlow(SecurityFlow flow) {
         return "[FLOW " + flow.getId() + "] type=" + flow.getType() + " confidence=" + flow.getConfidence()
                 + " resolvedEdges=" + flow.getResolvedEdges() + " unresolvedEdges=" + flow.getUnresolvedEdges()
@@ -522,6 +553,7 @@ public class ProfessionalToolService {
                 + "\nguards=" + flow.getGuardSummary() + "\npath=" + flow.getPathText();
     }
 
+    // 格式化并输出 formatArgumentMapping 对应的展示内容。
     private String formatArgumentMapping(SemanticCallEdge edge) {
         return "[ARGUMENT_MAPPING] " + edge.getCallerChunkId() + " -> " + edge.getCalleeChunkId()
                 + " line=" + edge.getCallSiteLine() + " confidence=" + edge.getConfidence()
@@ -529,6 +561,7 @@ public class ProfessionalToolService {
                 + "\n<UNTRUSTED_CODE>" + safe(edge.getExpression(), 600) + "</UNTRUSTED_CODE>";
     }
 
+    // 解析输入并生成 parseIds 对应的结构化结果。
     private Set<Long> parseIds(String value) {
         if (value == null || value.isBlank()) return Set.of();
         Set<Long> ids = new LinkedHashSet<>();
@@ -542,50 +575,61 @@ public class ProfessionalToolService {
         return ids;
     }
 
+    // 格式化并输出 formatChunk 对应的展示内容。
     private String formatChunk(CodeChunk chunk, String reason, int maxChars) {
         return "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":" + chunk.getStartLine()
                 + " | " + chunk.getSymbolName() + " | " + reason + "\n<UNTRUSTED_CODE>\n"
                 + safe(chunk.getContent(), maxChars) + "\n</UNTRUSTED_CODE>";
     }
 
+    // 查询并返回 searchable 对应的数据。
     private String searchable(CodeChunk chunk) {
         return lower(chunk.getFilePath() + " " + chunk.getSymbolName() + " " + chunk.getEndpoint() + " "
                 + chunk.getChunkType() + " " + chunk.getParameters() + " " + chunk.getAnnotations() + " "
                 + chunk.getCalledSymbols() + " " + chunk.getContent());
     }
 
+    // 执行 ProfessionalToolService 中的 firstNonBlank 处理。
     private String firstNonBlank(String... values) {
         for (String value : values) if (value != null && !value.isBlank()) return value;
         return "";
     }
 
+    // 判断是否满足 matchesAnyToken 对应的条件。
     private boolean matchesAnyToken(String haystack, String query) {
         return java.util.Arrays.stream(lower(query).split("[^a-z0-9_$#{}./-]+"))
                 .map(String::strip).filter(token -> token.length() >= 2).anyMatch(haystack::contains);
     }
 
+    // 判断是否满足 contains 对应的条件。
     private boolean contains(String value, String expected) {
         return !expected.isBlank() && lower(value).contains(lower(expected));
     }
 
+    // 执行 ProfessionalToolService 中的 equalsIgnoreCase 处理。
     private boolean equalsIgnoreCase(String left, String right) {
         return left != null && right != null && left.equalsIgnoreCase(right);
     }
 
+    // 执行 ProfessionalToolService 中的 samePath 处理。
     private boolean samePath(String left, String right) {
         return left != null && right != null && left.replace('\\', '/').equalsIgnoreCase(right.replace('\\', '/'));
     }
 
+    // 执行 ProfessionalToolService 中的 lower 处理。
     private String lower(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 
+    // 执行 ProfessionalToolService 中的 safe 处理。
     private String safe(String value, int maxChars) {
         if (value == null) return "";
         return value.substring(0, Math.min(value.length(), maxChars));
     }
 
+    // 封装 Result 使用的不可变结构化数据。
     public record Result(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {
+        // 校验并规范化 Result 的构造参数。
         public Result {
             text = text == null || text.isBlank() ? "工具未返回结果" : text;
             text = text.substring(0, Math.min(text.length(), 12_000));
@@ -593,13 +637,18 @@ public class ProfessionalToolService {
             candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
         }
 
+        // 执行 Result 中的 empty 处理。
         static Result empty(String text) {
             return new Result(text, Set.of(), Set.of());
         }
     }
 
+    // 封装 ScoredChunk 使用的不可变结构化数据。
     private record ScoredChunk(CodeChunk chunk, int score) {}
+    // 封装 GraphStep 使用的不可变结构化数据。
     private record GraphStep(Long from, Long to, SemanticCallEdge edge) {}
+    // 封装 GraphPath 使用的不可变结构化数据。
     private record GraphPath(Long end, List<GraphStep> steps) {}
+    // 封装 NodeDepth 使用的不可变结构化数据。
     private record NodeDepth(Long id, int depth) {}
 }

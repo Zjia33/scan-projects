@@ -54,7 +54,7 @@ class AuditFlowIntegrationTest {
         String console = mockMvc.perform(get("/index.html"))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "增量比较 Base → Target",
+        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "分支变更审计 Base → Target",
                 "扫描项目管理", "项目归档", "审计任务");
 
         Path repository = vulnerableProjectRepository();
@@ -78,7 +78,7 @@ class AuditFlowIntegrationTest {
 
         JsonNode task = waitForCompletion(taskId);
         assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
-        assertThat(task.path("findingCount").asLong()).isGreaterThanOrEqualTo(7);
+        assertThat(task.path("findingCount").asLong()).isGreaterThanOrEqualTo(6);
         assertThat(semanticCallEdgeMapper.findByTaskId(java.util.UUID.fromString(taskId))).isNotEmpty();
         assertThat(securityFlowMapper.findByTaskId(java.util.UUID.fromString(taskId))).isNotEmpty();
 
@@ -88,8 +88,9 @@ class AuditFlowIntegrationTest {
         Set<String> types = objectMapper.readTree(findingsJson).findValues("type").stream()
                 .map(JsonNode::asText).collect(Collectors.toSet());
         assertThat(types).contains("SQL_INJECTION", "AUTHORIZATION",
-                "UNAUTHORIZED_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS", "FINANCIAL_RISK");
-        assertThat(types).doesNotContain("HORIZONTAL_AUTHORIZATION", "VERTICAL_AUTHORIZATION");
+                "UNAUTHORIZED_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
+        assertThat(types).doesNotContain("FINANCIAL_RISK", "HORIZONTAL_AUTHORIZATION",
+                "VERTICAL_AUTHORIZATION");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
         assertThat(findingsJson).contains("[漏洞位置]", ">>>");
@@ -212,6 +213,52 @@ class AuditFlowIntegrationTest {
         assertThat(findings).contains("SQL_INJECTION", "\"deltaStatus\":\"NEW\"");
     }
 
+    @Test
+    void auditsDivergedTargetBranchFromMergeBaseAndReturnsCommitBranches() throws Exception {
+        BranchRepository source = divergedBranchRepository();
+        String importJson = mockMvc.perform(post("/api/projects/git")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "分支变更演示项目",
+                                "repositoryUrl", source.path().toUri().toString()))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode imported = objectMapper.readTree(importJson);
+        String projectId = imported.path("project").path("projectId").asText();
+        assertThat(commit(imported.path("commits"), source.mainCommit()).path("branches").toString())
+                .contains("\"main\"");
+        assertThat(commit(imported.path("commits"), source.featureCommit()).path("branches").toString())
+                .contains("\"feature/login\"");
+
+        String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "scanMode", "INCREMENTAL", "baseCommit", source.mainCommit(),
+                                "targetCommit", source.featureCommit()))))
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode submission = objectMapper.readTree(auditJson);
+        assertThat(submission.path("baseCommit").asText()).isEqualTo(source.mainCommit());
+        assertThat(submission.path("mergeBase").asText()).isEqualTo(source.commonCommit());
+
+        JsonNode task = waitForCompletion(submission.path("taskId").asText());
+        assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
+        assertThat(task.path("baseCommit").asText()).isEqualTo(source.mainCommit());
+        assertThat(task.path("mergeBase").asText()).isEqualTo(source.commonCommit());
+
+        String changes = mockMvc.perform(get("/api/tasks/{taskId}/changes", submission.path("taskId").asText()))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertThat(changes).contains("SearchController.java").doesNotContain("MainOnlyController.java");
+    }
+
+    private JsonNode commit(JsonNode commits, String sha) {
+        for (JsonNode commit : commits) {
+            if (sha.equals(commit.path("sha").asText())) return commit;
+        }
+        throw new AssertionError("提交列表中不存在 " + sha);
+    }
+
     private JsonNode waitForCompletion(String taskId) throws Exception {
         Instant deadline = Instant.now().plus(Duration.ofSeconds(25));
         JsonNode task = objectMapper.createObjectNode();
@@ -318,6 +365,55 @@ class AuditFlowIntegrationTest {
         }
     }
 
+    private BranchRepository divergedBranchRepository() throws Exception {
+        Path repository = temporaryDirectory.resolve("diverged-branch-demo");
+        Path source = repository.resolve("src/main/java/demo/SearchController.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, """
+                package demo;
+                class SearchController {
+                    Object search(String keyword) {
+                        return repository.findByName(keyword);
+                    }
+                }
+                """, StandardCharsets.UTF_8);
+        try (Git git = Git.init().setDirectory(repository.toFile()).call()) {
+            git.add().addFilepattern(".").call();
+            String common = git.commit().setMessage("common baseline")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            git.branchRename().setNewName("main").call();
+
+            Path mainOnly = repository.resolve("src/main/java/demo/MainOnlyController.java");
+            Files.writeString(mainOnly, "class MainOnlyController { void maintained() {} }\n",
+                    StandardCharsets.UTF_8);
+            git.add().addFilepattern(".").call();
+            String main = git.commit().setMessage("main branch maintenance")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+
+            git.checkout().setCreateBranch(true).setName("feature/login").setStartPoint(common).call();
+            Files.writeString(source, """
+                    package demo;
+                    class SearchController {
+                        Object search(String keyword) {
+                            String sql = "SELECT * FROM users WHERE name='" + keyword + "'";
+                            return statement.execute(sql);
+                        }
+                    }
+                    """, StandardCharsets.UTF_8);
+            git.add().addFilepattern(".").call();
+            String feature = git.commit().setMessage("feature introduces dynamic query")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            return new BranchRepository(repository, common, main, feature);
+        }
+    }
+
     private record IncrementalRepository(Path path, String baseCommit, String targetCommit) {
+    }
+
+    private record BranchRepository(Path path, String commonCommit, String mainCommit,
+                                    String featureCommit) {
     }
 }

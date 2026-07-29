@@ -37,6 +37,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+// 负责 IncrementalSemanticDiffService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -144,6 +145,7 @@ public class IncrementalSemanticDiffService {
         return summary;
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 classifyPair 处理。
     private void classifyPair(UUID taskId, MethodSnapshot before, MethodSnapshot after,
                               List<SemanticMethodChange> changes, List<CodeChunk> targetChunks,
                               boolean signatureChangedByMatching) {
@@ -172,12 +174,14 @@ public class IncrementalSemanticDiffService {
         }
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 record 处理。
     private void record(UUID taskId, SemanticChangeKind kind, MethodSnapshot before,
                         MethodSnapshot after, String details, List<SemanticMethodChange> changes,
                         List<CodeChunk> targetChunks) {
         record(taskId, kind, before, after, after == null ? null : after.path(), details, changes, targetChunks);
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 record 处理。
     private void record(UUID taskId, SemanticChangeKind kind, MethodSnapshot before,
                         MethodSnapshot after, String targetPath, String details,
                         List<SemanticMethodChange> changes, List<CodeChunk> targetChunks) {
@@ -192,6 +196,7 @@ public class IncrementalSemanticDiffService {
         if (after != null) markTargetChunk(after, before, kind, targetChunks);
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 markTargetChunk 处理。
     private void markTargetChunk(MethodSnapshot after, MethodSnapshot before, SemanticChangeKind kind,
                                  List<CodeChunk> targetChunks) {
         CodeChunk chunk = targetChunks.stream()
@@ -211,6 +216,7 @@ public class IncrementalSemanticDiffService {
         if (before != null) chunk.setBaseContent(truncate(before.source(), MAX_METHOD_CONTENT_CHARS));
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 index 处理。
     private MethodIndex index(Path root) throws IOException {
         JavaParser parser = new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
@@ -252,6 +258,7 @@ public class IncrementalSemanticDiffService {
         return new MethodIndex(List.copyOf(methods), Set.copyOf(parsedFiles));
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 signatureChangeScore 处理。
     private int signatureChangeScore(MethodSnapshot before, MethodSnapshot after,
                                      Map<String, String> targetPathByBasePath) {
         if (!before.name().equals(after.name())) return 0;
@@ -268,6 +275,7 @@ public class IncrementalSemanticDiffService {
         return Math.min(score, 100);
     }
 
+    // 转换并返回 tokenSimilarity 对应的数据表示。
     private double tokenSimilarity(String left, String right) {
         Set<String> leftTokens = tokens(left);
         Set<String> rightTokens = tokens(right);
@@ -279,11 +287,13 @@ public class IncrementalSemanticDiffService {
         return union.isEmpty() ? 0 : (double) intersection.size() / union.size();
     }
 
+    // 转换并返回 tokens 对应的数据表示。
     private Set<String> tokens(String value) {
         return Stream.of(value.toLowerCase(Locale.ROOT).split("[^a-z0-9_$]+"))
                 .filter(token -> !token.isBlank()).collect(Collectors.toSet());
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 pathPreference 处理。
     private int pathPreference(MethodSnapshot before, MethodSnapshot after,
                                Map<String, String> targetPathByBasePath) {
         if (after.path().equals(targetPathByBasePath.get(before.path()))) return 0;
@@ -291,6 +301,7 @@ public class IncrementalSemanticDiffService {
         return 2;
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 targetPathMapping 处理。
     private Map<String, String> targetPathMapping(List<GitFileChange> changes) {
         Map<String, String> result = new HashMap<>();
         for (GitFileChange change : changes) {
@@ -301,6 +312,7 @@ public class IncrementalSemanticDiffService {
         return result;
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 guards 处理。
     private Set<String> guards(MethodDeclaration method) {
         Set<String> result = new LinkedHashSet<>();
         method.getAnnotations().stream().filter(annotation -> SECURITY_ANNOTATIONS.contains(
@@ -312,6 +324,7 @@ public class IncrementalSemanticDiffService {
         return Set.copyOf(result);
     }
 
+    // 判断是否满足 isGuardCall 对应的条件。
     private boolean isGuardCall(String name, String expression) {
         String value = (name + " " + expression).toLowerCase(Locale.ROOT);
         return SECURITY_GUARD_CALLS.stream().anyMatch(value::contains)
@@ -319,6 +332,7 @@ public class IncrementalSemanticDiffService {
                 || value.contains("subject.hasrole");
     }
 
+    // 判断是否满足 canonicalBody 对应的条件。
     private String canonicalBody(MethodDeclaration method) {
         MethodDeclaration copy = method.clone();
         copy.getAllContainedComments().forEach(comment -> comment.remove());
@@ -328,16 +342,19 @@ public class IncrementalSemanticDiffService {
         return normalize(annotations + " " + copy.getBody().map(Node::toString).orElse(";"));
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 stableSignature 处理。
     private String stableSignature(String owner, MethodDeclaration method) {
         return owner + "." + method.getNameAsString() + "(" + method.getParameters().stream()
                 .map(parameter -> normalizeType(parameter.getTypeAsString()))
                 .collect(Collectors.joining(",")) + ")";
     }
 
+    // 规范化 normalizeType 对应的输入。
     private String normalizeType(String value) {
         return value.replaceAll("\\s+", "").replace("...", "[]");
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 fallbackOwner 处理。
     private String fallbackOwner(CompilationUnit unit, TypeDeclaration<?> declaration) {
         String packageName = unit.getPackageDeclaration().map(value -> value.getNameAsString() + ".").orElse("");
         List<String> owners = new ArrayList<>();
@@ -349,6 +366,7 @@ public class IncrementalSemanticDiffService {
         return packageName + String.join(".", owners);
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 sourceLines 处理。
     private String sourceLines(String[] lines, int startLine, int endLine) {
         StringBuilder result = new StringBuilder();
         for (int index = Math.max(0, startLine - 1); index < Math.min(lines.length, endLine); index++) {
@@ -358,45 +376,56 @@ public class IncrementalSemanticDiffService {
         return result.toString();
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 simpleOwner 处理。
     private String simpleOwner(String value) {
         int dot = value.lastIndexOf('.');
         return dot < 0 ? value : value.substring(dot + 1);
     }
 
+    // 规范化 normalize 对应的输入。
     private String normalize(String value) {
         return value == null ? "" : value.replaceAll("\\s+", " ").strip();
     }
 
+    // 规范化 normalized 对应的输入。
     private String normalized(Path path) {
         return path.toString().replace('\\', '/');
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 line 处理。
     private int line(Node node) {
         return node.getBegin().map(position -> position.line).orElse(1);
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 endLine 处理。
     private int endLine(Node node) {
         return node.getEnd().map(position -> position.line).orElse(line(node));
     }
 
+    // 执行 IncrementalSemanticDiffService 中的 truncate 处理。
     private String truncate(String value, int maxLength) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), maxLength));
     }
 
+    // 封装 MethodIndex 使用的不可变结构化数据。
     private record MethodIndex(List<MethodSnapshot> methods, Set<String> parsedFiles) {
     }
 
+    // 封装 MethodSnapshot 使用的不可变结构化数据。
     private record MethodSnapshot(String path, String owner, String name, String stableSignature,
                                   String declarationFingerprint, String bodyFingerprint,
                                   int startLine, int endLine, String source, Set<String> guards,
                                   int parameterCount) {
     }
 
+    // 封装 ScoredPair 使用的不可变结构化数据。
     private record ScoredPair(MethodSnapshot method, int score) {
     }
 
+    // 封装 Summary 使用的不可变结构化数据。
     public record Summary(int baseMethodCount, int targetMethodCount,
                           Map<SemanticChangeKind, Long> counts) {
+        // 执行 Summary 中的 from 处理。
         private static Summary from(int baseMethods, int targetMethods,
                                     List<SemanticMethodChange> changes) {
             Map<SemanticChangeKind, Long> counts = new EnumMap<>(SemanticChangeKind.class);
@@ -406,6 +435,7 @@ public class IncrementalSemanticDiffService {
             return new Summary(baseMethods, targetMethods, Map.copyOf(counts));
         }
 
+        // 执行 Summary 中的 description 处理。
         public String description() {
             if (counts.isEmpty()) return "未发现方法级语义变化";
             return counts.entrySet().stream().sorted(Map.Entry.comparingByKey())

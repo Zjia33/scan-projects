@@ -22,6 +22,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+// 负责 OrchestratorAgentService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -30,7 +31,7 @@ public class OrchestratorAgentService {
             "RULE_HINT", "SEMANTIC_FLOW", "GUARD_REMOVED");
     private static final Set<String> CONSERVATIVE_REASON_CODES = Set.of(
             "EXTERNAL_ENTRY", "SECURITY_CONFIGURATION", "DANGEROUS_DATA_ACCESS",
-            "DANGEROUS_OUTPUT", "VALIDATION_BOUNDARY", "SENSITIVE_FINANCIAL_OPERATION",
+            "DANGEROUS_OUTPUT", "VALIDATION_BOUNDARY",
             "AUTHORIZATION_BOUNDARY", "UNRESOLVED_CALL", "SEMANTIC_CHANGE", "GUARD_REMOVED");
 
     private final LlmGateway llmGateway;
@@ -55,6 +56,7 @@ public class OrchestratorAgentService {
                 AuditUnit unit = unitsByChunk.get(entry.getKey());
                 if (unit == null || unit.reasonCodes().stream().noneMatch(MANDATORY_REASON_CODES::contains)) continue;
                 for (VulnerabilityType type : entry.getValue()) {
+                    if (!type.isDetectable()) continue;
                     addTask(tasks, unit, type, "确定性线索要求专业 Agent 深入核查",
                             hintDescriptions.get(entry.getKey()));
                 }
@@ -148,6 +150,7 @@ public class OrchestratorAgentService {
                 if (unit == null || unit.primaryChunkId() != decision.primaryChunkId()) continue;
                 List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
                         .filter(java.util.Objects::nonNull)
+                        .filter(VulnerabilityType::isDetectable)
                         .filter(unit.candidateTypes()::contains).distinct().toList();
                 if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) {
                     continue;
@@ -158,9 +161,32 @@ public class OrchestratorAgentService {
                         decision.reason()));
             }
         }
+        TriageCounts counts = triageCounts(units, accepted);
+        log.info("任务 {} 审计单元三态统计（{}）：总数={}，INVESTIGATE={}，NEED_CONTEXT={}，SKIP={}",
+                taskId, phase, counts.total(), counts.investigate(), counts.needContext(), counts.skip());
         return accepted;
     }
 
+    // 未返回或未通过服务端校验的决定会按现有流程补充上下文，因此统计为 NEED_CONTEXT。
+    private TriageCounts triageCounts(List<AuditUnit> units,
+                                      Map<String, LlmGateway.TriageDecision> decisions) {
+        int investigate = 0;
+        int needContext = 0;
+        int skip = 0;
+        for (AuditUnit unit : units) {
+            LlmGateway.TriageDecision decision = decisions.get(unit.unitId());
+            TriageDisposition disposition = decision == null
+                    ? TriageDisposition.NEED_CONTEXT : decision.disposition();
+            switch (disposition) {
+                case INVESTIGATE -> investigate++;
+                case NEED_CONTEXT -> needContext++;
+                case SKIP -> skip++;
+            }
+        }
+        return new TriageCounts(units.size(), investigate, needContext, skip);
+    }
+
+    // 向当前结果添加 addDecisionTasks 对应的数据。
     private void addDecisionTasks(Map<String, AgentTask> tasks, AuditUnit unit,
                                   LlmGateway.TriageDecision decision, String hintDescription) {
         for (VulnerabilityType type : decision.vulnerabilityTypes()) {
@@ -168,28 +194,33 @@ public class OrchestratorAgentService {
         }
     }
 
+    // 向当前结果添加 addTask 对应的数据。
     private void addTask(Map<String, AgentTask> tasks, AuditUnit unit, VulnerabilityType type,
                          String reason, String hintDescription) {
-        if (type == null || !unit.candidateTypes().contains(type)) return;
+        if (type == null || !type.isDetectable() || !unit.candidateTypes().contains(type)) return;
         AgentTask task = new AgentTask(unit.primaryChunkId(), agentFor(type), type,
                 reason == null || reason.isBlank() ? "轻量编排确认需要深入调查" : reason,
                 hintDescription);
         tasks.putIfAbsent(key(task), task);
     }
 
+    // 判断是否满足 shouldConservativelyInvestigate 对应的条件。
     private boolean shouldConservativelyInvestigate(AuditUnit unit) {
         return unit.reasonCodes().stream().anyMatch(CONSERVATIVE_REASON_CODES::contains);
     }
 
+    // 判断是否满足 hasTaskFor 对应的条件。
     private boolean hasTaskFor(Map<String, AgentTask> tasks, long chunkId) {
         return tasks.values().stream().anyMatch(task -> task.chunkId() == chunkId);
     }
 
+    // 执行 OrchestratorAgentService 中的 intersect 处理。
     private List<String> intersect(List<String> returned, List<String> allowed) {
         Set<String> allowedSet = new LinkedHashSet<>(allowed);
         return returned.stream().filter(allowedSet::contains).distinct().toList();
     }
 
+    // 执行 OrchestratorAgentService 中的 truncate 处理。
     private String truncate(String value, int maxLength) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), maxLength));
     }
@@ -199,6 +230,10 @@ public class OrchestratorAgentService {
         return task.chunkId() + "|" + task.vulnerabilityType();
     }
 
+    // 封装 TriageCounts 使用的不可变结构化数据。
+    private record TriageCounts(int total, int investigate, int needContext, int skip) {
+    }
+
     // 将每类漏洞固定路由到具备相应提示词和工具策略的专业 Agent。
     public static AgentType agentFor(VulnerabilityType type) {
         return switch (type) {
@@ -206,7 +241,7 @@ public class OrchestratorAgentService {
             case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> AgentType.AUTHORIZATION;
             case STORED_XSS -> AgentType.STORED_XSS;
             case VALIDATION_BYPASS -> AgentType.VALIDATION_BYPASS;
-            case FINANCIAL_RISK -> AgentType.FINANCIAL_RISK;
+            case FINANCIAL_RISK -> throw new IllegalArgumentException("资金损失风险检测已停用");
         };
     }
 }

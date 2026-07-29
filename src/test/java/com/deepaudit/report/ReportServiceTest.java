@@ -3,6 +3,9 @@ package com.deepaudit.report;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
+import com.deepaudit.domain.FindingDeltaStatus;
+import com.deepaudit.domain.AuditTask;
+import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AgentRunMapper;
@@ -23,6 +26,34 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class ReportServiceTest {
+
+    @Test
+    void normalizesLegacyIncrementalDeltaStatusesForFinalReport() {
+        UUID taskId = UUID.randomUUID();
+        AuditTaskMapper taskMapper = mock(AuditTaskMapper.class);
+        FindingMapper findingMapper = mock(FindingMapper.class);
+        CodeChunkMapper chunkMapper = mock(CodeChunkMapper.class);
+        AuditTask task = new AuditTask(UUID.randomUUID(), ScanMode.INCREMENTAL,
+                "base", "target", "base");
+        task.setId(taskId);
+        Finding baseline = finding(taskId, FindingDeltaStatus.BASELINE);
+        Finding regressed = finding(taskId, FindingDeltaStatus.REGRESSED);
+        Finding affected = finding(taskId, FindingDeltaStatus.AFFECTED);
+        Finding persisting = finding(taskId, FindingDeltaStatus.PERSISTING);
+        when(taskMapper.findById(taskId)).thenReturn(task);
+        when(findingMapper.findByTaskIdOrderByRisk(taskId))
+                .thenReturn(List.of(baseline, regressed, affected, persisting));
+        when(chunkMapper.findByTaskId(taskId)).thenReturn(List.of());
+        ReportService service = new ReportService(taskMapper, mock(ProjectMapper.class),
+                findingMapper, mock(AgentRunMapper.class), mock(AuditHypothesisMapper.class),
+                mock(AiReportSummaryMapper.class), mock(GitFileChangeMapper.class), chunkMapper);
+
+        List<FindingDeltaStatus> statuses = service.findings(taskId).stream()
+                .map(Finding::getDeltaStatus).toList();
+
+        assertThat(statuses).containsExactly(FindingDeltaStatus.NEW, FindingDeltaStatus.NEW,
+                FindingDeltaStatus.NEW, FindingDeltaStatus.PERSISTING);
+    }
 
     @Test
     void convertsLegacyWholeMethodEvidenceToMarkedLocalContext() {
@@ -57,5 +88,13 @@ class ReportServiceTest {
         assertThat(displayed.getEndLine()).isEqualTo(73);
         assertThat(displayed.getEvidence()).contains("[漏洞位置]", ">>>    73 |")
                 .doesNotContain("demo/UserService.java:70 UserService#search\npublic");
+    }
+
+    private Finding finding(UUID taskId, FindingDeltaStatus status) {
+        Finding finding = new Finding(taskId, VulnerabilityType.SQL_INJECTION,
+                Severity.HIGH, Confidence.HIGH, "测试问题", "demo/Test.java", 1, 1,
+                null, "测试描述", "[漏洞位置]", "测试修复建议");
+        finding.setDeltaStatus(status);
+        return finding;
     }
 }

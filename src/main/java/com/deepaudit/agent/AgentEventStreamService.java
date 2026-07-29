@@ -12,6 +12,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+// 负责 AgentEventStreamService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class AgentEventStreamService {

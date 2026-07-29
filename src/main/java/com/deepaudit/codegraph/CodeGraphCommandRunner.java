@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+// 封装 CodeGraphCommandRunner 相关的数据与处理逻辑。
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -31,6 +32,7 @@ class CodeGraphCommandRunner {
 
     private final CodeGraphProperties properties;
 
+    // 执行 run 对应的处理流程。
     CommandOutput run(Path workingDirectory, List<String> arguments, Map<String, String> environment) {
         Path root = requireDirectory(workingDirectory);
         long startedAt = System.nanoTime();
@@ -78,12 +80,14 @@ class CodeGraphCommandRunner {
         }
     }
 
+    // 执行 CodeGraphCommandRunner 中的 operation 处理。
     private String operation(List<String> arguments) {
         if (arguments == null || arguments.isEmpty() || arguments.get(0) == null
                 || arguments.get(0).isBlank()) return "unknown";
         return arguments.get(0).strip();
     }
 
+    // 执行 CodeGraphCommandRunner 中的 logStarted 处理。
     private void logStarted(String operation, Path root) {
         if (isLifecycleCommand(operation)) {
             log.info("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
@@ -94,6 +98,7 @@ class CodeGraphCommandRunner {
         }
     }
 
+    // 执行 CodeGraphCommandRunner 中的 logCompleted 处理。
     private void logCompleted(String operation, Path root, CommandOutput output,
                               long stdoutBytes, long stderrBytes) {
         long elapsedMs = output.duration().toMillis();
@@ -110,10 +115,12 @@ class CodeGraphCommandRunner {
         }
     }
 
+    // 判断是否满足 isLifecycleCommand 对应的条件。
     private boolean isLifecycleCommand(String operation) {
         return "version".equals(operation) || "init".equals(operation) || "status".equals(operation);
     }
 
+    // 执行 CodeGraphCommandRunner 中的 requireDirectory 处理。
     private Path requireDirectory(Path value) {
         if (value == null) throw new CodeGraphException("CodeGraph 工作目录不能为空");
         Path root = value.toAbsolutePath().normalize();
@@ -123,6 +130,7 @@ class CodeGraphCommandRunner {
         return root;
     }
 
+    // 执行 CodeGraphCommandRunner 中的 requireExecutable 处理。
     private String requireExecutable(String value) {
         if (value == null || value.isBlank() || value.indexOf('\0') >= 0
                 || value.contains("\n") || value.contains("\r")) {
@@ -131,6 +139,7 @@ class CodeGraphCommandRunner {
         return value.strip();
     }
 
+    // 执行 CodeGraphCommandRunner 中的 commandPrefix 处理。
     List<String> commandPrefix() {
         String configuredRoot = properties.getBundleRoot();
         if (configuredRoot == null || configuredRoot.isBlank()) {
@@ -152,6 +161,7 @@ class CodeGraphCommandRunner {
                 script.toString());
     }
 
+    // 规范化 sanitizeEnvironment 对应的输入。
     private void sanitizeEnvironment(Map<String, String> processEnvironment,
                                      Map<String, String> explicitEnvironment) {
         Map<String, String> inherited = new LinkedHashMap<>();
@@ -165,6 +175,7 @@ class CodeGraphCommandRunner {
         processEnvironment.putAll(explicitEnvironment);
     }
 
+    // 读取并返回 readBounded 对应的信息。
     private BoundedOutput readBounded(InputStream input, long configuredLimit) {
         long limit = Math.max(1_024, configuredLimit);
         try (input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
@@ -184,9 +195,11 @@ class CodeGraphCommandRunner {
         }
     }
 
+    // 封装 CommandOutput 使用的不可变结构化数据。
     record CommandOutput(int exitCode, String stdout, String stderr, Duration duration) {
     }
 
+    // 封装 BoundedOutput 使用的不可变结构化数据。
     private record BoundedOutput(String text, boolean overflow, long byteCount) {
     }
 }

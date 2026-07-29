@@ -27,6 +27,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
+// 封装 AuditOrchestrator 相关的数据与处理逻辑。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -66,16 +67,18 @@ public class AuditOrchestrator {
                             taskId, shortSha(targetSnapshot.commitSha()), targetSnapshot.fileCount(),
                             targetSnapshot.skippedFileCount(), targetSnapshot.totalBytes());
                     if (task.getScanMode() == ScanMode.INCREMENTAL) {
+                        String comparisonBaseSha = comparisonBase(task);
                         GitSnapshotService.SnapshotResult baseSnapshot = snapshotService.materialize(
-                                repository, task.getBaseCommitSha(), baseRoot);
-                        log.info("基线提交快照已就绪：taskId={}，commit={}，files={}，skipped={}，bytes={}",
-                                taskId, shortSha(baseSnapshot.commitSha()), baseSnapshot.fileCount(),
-                                baseSnapshot.skippedFileCount(), baseSnapshot.totalBytes());
+                                repository, comparisonBaseSha, baseRoot);
+                        log.info("分支变更基线快照已就绪：taskId={}，selectedBase={}，comparisonBase={}，files={}，skipped={}，bytes={}",
+                                taskId, shortSha(task.getBaseCommitSha()), shortSha(baseSnapshot.commitSha()),
+                                baseSnapshot.fileCount(), baseSnapshot.skippedFileCount(),
+                                baseSnapshot.totalBytes());
                         task = update(task, AuditStatus.DIFFING, 20,
-                                "正在比较 " + shortSha(task.getBaseCommitSha()) + " → "
+                                "正在比较 " + shortSha(comparisonBaseSha) + " → "
                                         + shortSha(task.getTargetCommitSha()));
                         GitDiffService.ChangeSet changeSet = diffService.compare(repository, taskId,
-                                task.getBaseCommitSha(), task.getTargetCommitSha());
+                                comparisonBaseSha, task.getTargetCommitSha());
                         log.info("增量差异读取完成：taskId={}，summary={}", taskId, changeSet.summary());
                         changes = changeSet.changes();
                         task.setChangeSummary(changeSet.summary());
@@ -128,34 +131,46 @@ public class AuditOrchestrator {
         }
     }
 
+    // 更新 update 对应的状态或数据。
     private AuditTask update(AuditTask task, AuditStatus status, int progress, String stage) {
         task.moveTo(status, progress, stage);
         persistTask(task);
         return task;
     }
 
+    // 保存 persistTask 对应的数据。
     private void persistTask(AuditTask task) {
         int updated = taskMapper.updateWithVersion(task);
         if (updated != 1) throw new IllegalStateException("扫描任务状态已被并发修改: " + task.getId());
         task.setVersion(task.getVersion() + 1);
     }
 
+    // 执行 AuditOrchestrator 中的 comparisonBase 处理。
+    private String comparisonBase(AuditTask task) {
+        return task.getMergeBaseSha() == null || task.getMergeBaseSha().isBlank()
+                ? task.getBaseCommitSha() : task.getMergeBaseSha();
+    }
+
+    // 执行 AuditOrchestrator 中的 requireTask 处理。
     private AuditTask requireTask(UUID taskId) {
         AuditTask task = taskMapper.findById(taskId);
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         return task;
     }
 
+    // 执行 AuditOrchestrator 中的 requireProject 处理。
     private Project requireProject(UUID projectId) {
         Project project = projectMapper.findById(projectId);
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + projectId);
         return project;
     }
 
+    // 执行 AuditOrchestrator 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
 
+    // 清理或删除 deleteWorkspace 对应的数据。
     private void deleteWorkspace(Path projectDirectory, Path workspace) {
         Path parent = projectDirectory.toAbsolutePath().normalize();
         Path target = workspace.toAbsolutePath().normalize();

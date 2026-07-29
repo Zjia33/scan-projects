@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+// 封装 CliCodeGraphClient 相关的数据与处理逻辑。
 @Slf4j
 @Component
 public class CliCodeGraphClient implements CodeGraphClient {
@@ -23,6 +24,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
     private final ObjectMapper objectMapper;
     private final Map<UUID, Path> roots = new ConcurrentHashMap<>();
 
+    // 创建 CliCodeGraphClient 实例并初始化所需依赖或状态。
     public CliCodeGraphClient(CodeGraphProperties properties, CodeGraphCommandRunner runner,
                               ObjectMapper objectMapper) {
         this.properties = properties;
@@ -30,6 +32,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         this.objectMapper = objectMapper;
     }
 
+    // 执行 CliCodeGraphClient 中的 prepare 处理。
     @Override
     public void prepare(UUID taskId, Path projectRoot) {
         if (!properties.enabled()) return;
@@ -45,6 +48,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         roots.put(taskId, root);
     }
 
+    // 执行 CliCodeGraphClient 中的 impact 处理。
     @Override
     public List<CodeGraphLocation> impact(UUID taskId, String symbol, int depth) {
         Path root = requirePrepared(taskId);
@@ -55,6 +59,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return parseLocations(output.stdout(), "affected");
     }
 
+    // 执行 CliCodeGraphClient 中的 related 处理。
     @Override
     public RelatedLocations related(UUID taskId, String symbol, int limit) {
         Path root = requirePrepared(taskId);
@@ -65,11 +70,13 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return new RelatedLocations(callers, callees);
     }
 
+    // 执行 CliCodeGraphClient 中的 release 处理。
     @Override
     public void release(UUID taskId) {
         roots.remove(taskId);
     }
 
+    // 执行 CliCodeGraphClient 中的 relation 处理。
     private List<CodeGraphLocation> relation(Path root, String command, String symbol, int limit) {
         CodeGraphCommandRunner.CommandOutput output = runner.run(root, List.of(
                 command, symbol, "--path", root.toString(), "--limit", String.valueOf(limit),
@@ -78,6 +85,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return parseLocations(output.stdout(), command);
     }
 
+    // 校验 verifyVersion 对应的数据或约束。
     private void verifyVersion(Path root) {
         String expected = properties.getExpectedVersion();
         if (expected == null || expected.isBlank()) return;
@@ -89,6 +97,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
     }
 
+    // 校验 validateStatus 对应的数据或约束。
     private void validateStatus(String json) {
         try {
             JsonNode root = objectMapper.readTree(requireJson(json));
@@ -110,6 +119,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
     }
 
+    // 解析输入并生成 parseLocations 对应的结构化结果。
     List<CodeGraphLocation> parseLocations(String json, String field) {
         if (json == null || json.isBlank()) return List.of();
         String trimmed = json.strip();
@@ -136,12 +146,14 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
     }
 
+    // 执行 CliCodeGraphClient 中的 requireJson 处理。
     private String requireJson(String value) {
         String json = value == null ? "" : value.strip();
         if (!json.startsWith("{")) throw new CodeGraphException("CodeGraph 没有返回预期 JSON");
         return json;
     }
 
+    // 执行 CliCodeGraphClient 中的 requireTaskWorkspace 处理。
     private Path requireTaskWorkspace(UUID taskId, Path value) {
         if (taskId == null || value == null) throw new CodeGraphException("任务 ID 和源码快照不能为空");
         Path root = value.toAbsolutePath().normalize();
@@ -163,12 +175,14 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
     }
 
+    // 执行 CliCodeGraphClient 中的 requirePrepared 处理。
     private Path requirePrepared(UUID taskId) {
         Path root = roots.get(taskId);
         if (root == null) throw new CodeGraphException("任务尚未建立 CodeGraph 索引: " + taskId);
         return root;
     }
 
+    // 执行 CliCodeGraphClient 中的 requireSymbol 处理。
     private String requireSymbol(String value) {
         if (value == null || value.isBlank() || value.length() > 1_000
                 || value.indexOf('\0') >= 0 || value.contains("\n") || value.contains("\r")) {
@@ -177,6 +191,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return value.strip();
     }
 
+    // 执行 CliCodeGraphClient 中的 environment 处理。
     private Map<String, String> environment() {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("DO_NOT_TRACK", "1");
@@ -189,6 +204,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return values;
     }
 
+    // 执行 CliCodeGraphClient 中的 requireIndexDirectory 处理。
     private String requireIndexDirectory(String value) {
         String directory = value == null ? "" : value.strip();
         if (directory.isBlank() || directory.equals(".") || directory.equals("..")
@@ -198,6 +214,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return directory;
     }
 
+    // 执行 CliCodeGraphClient 中的 requireSuccess 处理。
     private void requireSuccess(String command, CodeGraphCommandRunner.CommandOutput output) {
         if (output.exitCode() == 0) return;
         String detail = output.stderr().isBlank() ? output.stdout() : output.stderr();
@@ -205,12 +222,14 @@ public class CliCodeGraphClient implements CodeGraphClient {
                 + "）：" + summarize(detail));
     }
 
+    // 规范化 normalizePath 对应的输入。
     private String normalizePath(String value) {
         String normalized = value.replace('\\', '/');
         while (normalized.startsWith("./")) normalized = normalized.substring(2);
         return normalized;
     }
 
+    // 执行 CliCodeGraphClient 中的 summarize 处理。
     private String summarize(String value) {
         String text = value == null ? "" : value.replaceAll("\\s+", " ").strip();
         return text.substring(0, Math.min(text.length(), 500));

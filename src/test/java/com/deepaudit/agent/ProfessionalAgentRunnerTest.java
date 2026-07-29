@@ -51,7 +51,7 @@ class ProfessionalAgentRunnerTest {
                 task(1, AgentType.SQL_INJECTION, VulnerabilityType.SQL_INJECTION),
                 task(2, AgentType.AUTHORIZATION, VulnerabilityType.AUTHORIZATION),
                 task(3, AgentType.STORED_XSS, VulnerabilityType.STORED_XSS),
-                task(4, AgentType.FINANCIAL_RISK, VulnerabilityType.FINANCIAL_RISK));
+                task(4, AgentType.VALIDATION_BYPASS, VulnerabilityType.VALIDATION_BYPASS));
 
         try {
             ProfessionalAgentRunner.BatchResult result = runner.investigate(

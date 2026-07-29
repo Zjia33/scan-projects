@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.UUID;
 
+// 负责 ReportAgentService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class ReportAgentService {
@@ -69,6 +70,7 @@ public class ReportAgentService {
         return summary;
     }
 
+    // 执行 ReportAgentService 中的 safe 处理。
     private String safe(String value) {
         return value == null || value.isBlank() ? "模型未提供摘要" : value.strip();
     }

@@ -2,6 +2,7 @@ package com.deepaudit.domain;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 
+// 定义 AgentType 使用的固定状态或类型。
 public enum AgentType {
     RECON,
     ORCHESTRATOR,
@@ -9,10 +10,11 @@ public enum AgentType {
     AUTHORIZATION,
     STORED_XSS,
     VALIDATION_BYPASS,
-    FINANCIAL_RISK,
+    FINANCIAL_RISK, // 仅用于读取历史 Agent 轨迹，不再创建新任务
     CRITIC,
     REPORT;
 
+    // 执行 AgentType 中的 fromModelValue 处理。
     @JsonCreator
     public static AgentType fromModelValue(String value) {
         String normalized = ModelEnumNormalizer.normalize(value);
@@ -26,6 +28,7 @@ public enum AgentType {
         };
     }
 
+    // 执行 AgentType 中的 exactOrNull 处理。
     private static AgentType exactOrNull(String value) {
         try {
             return value.isBlank() ? null : valueOf(value);

@@ -7,6 +7,7 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
+// 表示审计领域中的 AuditHypothesis 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
@@ -24,6 +25,7 @@ public class AuditHypothesis {
     private Instant createdAt; // 假设创建时间
     private Instant updatedAt; // 假设状态最后更新时间
 
+    // 创建 AuditHypothesis 实例并初始化所需依赖或状态。
     public AuditHypothesis(UUID taskId, UUID runId, VulnerabilityType type, String claim,
                            Long primaryChunkId, String evidenceChunkIds, Confidence confidence) {
         this.id = UUID.randomUUID();

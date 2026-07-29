@@ -1,5 +1,6 @@
 package com.deepaudit.domain;
 
+// 定义 AuditStatus 使用的固定状态或类型。
 public enum AuditStatus {
     UPLOADED,
     MATERIALIZING,

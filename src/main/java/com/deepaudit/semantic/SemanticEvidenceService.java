@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+// 负责 SemanticEvidenceService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class SemanticEvidenceService {
@@ -33,6 +34,7 @@ public class SemanticEvidenceService {
         Map<Long, Set<VulnerabilityType>> types = new LinkedHashMap<>();
         Map<Long, String> descriptions = new LinkedHashMap<>();
         for (SecurityFlow flow : flowMapper.findByTaskId(taskId)) {
+            if (flow.getType() == null || !flow.getType().isDetectable()) continue;
             types.computeIfAbsent(flow.getPrimaryChunkId(), ignored -> new LinkedHashSet<>()).add(flow.getType());
             String hint = "语义分析调查线索（不是最终漏洞结论）：\n" + flow.getPathText();
             descriptions.merge(flow.getPrimaryChunkId(), hint, (left, right) -> left + "\n\n" + right);
@@ -40,6 +42,7 @@ public class SemanticEvidenceService {
         return new SemanticHints(types, descriptions);
     }
 
+    // 查询并返回 query 对应的数据。
     public EvidenceResult query(UUID taskId, Long currentChunkId, String tool, int requestedLimit) {
         return query(taskId, currentChunkId, tool, requestedLimit, null);
     }
@@ -115,6 +118,33 @@ public class SemanticEvidenceService {
         return new RelationVerification(false, "调用图和安全数据流中未确认两个代码块存在关系");
     }
 
+    // 从最终漏洞代码块沿可靠调用边反向追踪，返回每个证据调用方的真实调用表达式行号。
+    public Map<Long, Integer> callSiteLines(UUID taskId, Long primaryChunkId, Set<Long> evidenceChunkIds) {
+        if (primaryChunkId == null || evidenceChunkIds == null || evidenceChunkIds.isEmpty()) return Map.of();
+        Map<Long, List<SemanticCallEdge>> incoming = edgeMapper.findByTaskId(taskId).stream()
+                .filter(edge -> edge.getCallerChunkId() != null && edge.getCalleeChunkId() != null)
+                .filter(edge -> evidenceChunkIds.contains(edge.getCallerChunkId())
+                        && evidenceChunkIds.contains(edge.getCalleeChunkId()))
+                .filter(edge -> edge.getConfidence() != com.deepaudit.domain.Confidence.LOW)
+                .filter(edge -> !"UNRESOLVED".equals(edge.getEdgeType()))
+                .collect(Collectors.groupingBy(SemanticCallEdge::getCalleeChunkId,
+                        LinkedHashMap::new, Collectors.toList()));
+        Map<Long, Integer> callSites = new LinkedHashMap<>();
+        Set<Long> visited = new LinkedHashSet<>();
+        ArrayDeque<Long> queue = new ArrayDeque<>();
+        visited.add(primaryChunkId);
+        queue.add(primaryChunkId);
+        while (!queue.isEmpty()) {
+            Long callee = queue.removeFirst();
+            for (SemanticCallEdge edge : incoming.getOrDefault(callee, List.of())) {
+                Long caller = edge.getCallerChunkId();
+                callSites.putIfAbsent(caller, edge.getCallSiteLine());
+                if (visited.add(caller)) queue.addLast(caller);
+            }
+        }
+        return Map.copyOf(callSites);
+    }
+
     // 将当前块的已解析调用边格式化为带目标位置和参数流的证据。
     private EvidenceResult callEdges(UUID taskId, Long chunkId, int limit) {
         Map<UUID, SemanticSymbol> symbols = symbolMapper.findByTaskId(taskId).stream()
@@ -150,6 +180,7 @@ public class SemanticEvidenceService {
         return text.toString();
     }
 
+    // 解析输入并生成 parseIds 对应的结构化结果。
     private Set<Long> parseIds(String value) {
         if (value == null || value.isBlank()) return Set.of();
         Set<Long> result = new LinkedHashSet<>();
@@ -159,14 +190,18 @@ public class SemanticEvidenceService {
         return result;
     }
 
+    // 封装 SemanticHints 使用的不可变结构化数据。
     public record SemanticHints(Map<Long, Set<VulnerabilityType>> typesByChunk,
                                 Map<Long, String> descriptionsByChunk) {}
+    // 封装 EvidenceResult 使用的不可变结构化数据。
     public record EvidenceResult(String text, Set<Long> evidenceChunkIds) {
+        // 校验并规范化 EvidenceResult 的构造参数。
         public EvidenceResult {
             text = text == null || text.isBlank() ? "没有语义证据" : text;
             evidenceChunkIds = evidenceChunkIds == null ? Set.of() : Set.copyOf(evidenceChunkIds);
         }
     }
 
+    // 封装 RelationVerification 使用的不可变结构化数据。
     public record RelationVerification(boolean verified, String reason) {}
 }

@@ -26,12 +26,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
+// 负责 GitDiffService 对应的业务编排和处理。
 @Slf4j
 @Service
 public class GitDiffService {
     private static final int MAX_CONTEXT_CHARS = 12_000;
     private static final long MAX_DIFF_BLOB_BYTES = 2L * 1024L * 1024L;
 
+    // 执行 GitDiffService 中的 compare 处理。
     public ChangeSet compare(Repository repository, UUID taskId,
                              String baseCommitSha, String targetCommitSha) throws IOException {
         long startedAt = System.nanoTime();
@@ -89,12 +91,14 @@ public class GitDiffService {
         return new ChangeSet(List.copyOf(changes), summary, additions, deletions);
     }
 
+    // 执行 GitDiffService 中的 require 处理。
     private ObjectId require(Repository repository, String revision) throws IOException {
         ObjectId value = repository.resolve(revision);
         if (value == null) throw new IllegalArgumentException("提交不存在: " + revision);
         return value;
     }
 
+    // 读取并返回 readText 对应的信息。
     private String readText(Repository repository, AbbreviatedObjectId abbreviated) {
         if (abbreviated == null || abbreviated.toObjectId().equals(ObjectId.zeroId())) return "";
         try {
@@ -108,6 +112,7 @@ public class GitDiffService {
         }
     }
 
+    // 向当前结果添加 appendEditContext 对应的数据。
     private void appendEditContext(StringBuilder target, Edit edit, String oldText, String newText) {
         if (target.length() >= MAX_CONTEXT_CHARS) return;
         String[] oldLines = oldText.split("\\R", -1);
@@ -125,14 +130,17 @@ public class GitDiffService {
         }
     }
 
+    // 执行 GitDiffService 中的 range 处理。
     private String range(int zeroBasedBegin, int zeroBasedEndExclusive) {
         return (zeroBasedBegin + 1) + ":" + Math.max(zeroBasedBegin + 1, zeroBasedEndExclusive);
     }
 
+    // 执行 GitDiffService 中的 path 处理。
     private String path(String value) {
         return value == null || DiffEntry.DEV_NULL.equals(value) ? null : value.replace('\\', '/');
     }
 
+    // 判断是否满足 isConfiguration 对应的条件。
     private boolean isConfiguration(String path) {
         if (path == null) return false;
         String normalized = path.toLowerCase(Locale.ROOT);
@@ -143,18 +151,22 @@ public class GitDiffService {
                 || normalized.endsWith(".properties") || normalized.endsWith(".sql");
     }
 
+    // 执行 GitDiffService 中的 truncate 处理。
     private String truncate(String value) {
         return value.substring(0, Math.min(value.length(), MAX_CONTEXT_CHARS));
     }
 
+    // 执行 GitDiffService 中的 shortSha 处理。
     private String shortSha(String sha) {
         return sha == null ? "" : sha.substring(0, Math.min(8, sha.length()));
     }
 
+    // 执行 GitDiffService 中的 elapsedMillis 处理。
     private long elapsedMillis(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
     }
 
+    // 封装 ChangeSet 使用的不可变结构化数据。
     public record ChangeSet(List<GitFileChange> changes, String summary, int additions, int deletions) {
     }
 }

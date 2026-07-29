@@ -15,23 +15,31 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
+// 定义 LlmGateway 的协作接口和能力边界。
 public interface LlmGateway {
 
-    ReconInsight inspectProject(UUID taskId, ReconSummary summary, List<Target> representativeTargets);
+    // 分析并提取 inspectProject 对应的事实。
+    ReconInsight inspectProject(UUID taskId, ReconSummary summary);
 
+    // 执行 LlmGateway 中的 triage 处理。
     TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits);
 
+    // 执行 LlmGateway 中的 decide 处理。
     AgentDecision decide(AgentTurn turn);
 
+    // 执行 LlmGateway 中的 critique 处理。
     CriticDecision critique(CriticRequest request);
 
+    // 生成并写出 writeReport 对应的内容。
     ReportNarrative writeReport(ReportRequest request);
 
+    // 封装 Target 使用的不可变结构化数据。
     record Target(long chunkId, String filePath, String symbolName, String endpoint,
                   String chunkType, String parameters, String annotations,
                   String calledSymbols, String codeExcerpt, String changeType,
                   String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints,
                   int startLine, int endLine) {
+        // 创建 Target 实例并初始化所需依赖或状态。
         public Target(long chunkId, String filePath, String symbolName, String endpoint,
                       String chunkType, String parameters, String annotations,
                       String calledSymbols, String codeExcerpt, String changeType,
@@ -41,9 +49,11 @@ public interface LlmGateway {
         }
     }
 
+    // 封装 ReconInsight 使用的不可变结构化数据。
     record ReconInsight(String architectureSummary, List<String> attackSurfaces,
                         List<String> securityMechanisms, List<String> riskAreas,
                         TechnologyProfile technologyProfile) {
+        // 校验并规范化 ReconInsight 的构造参数。
         public ReconInsight {
             attackSurfaces = attackSurfaces == null ? List.of() : List.copyOf(attackSurfaces);
             securityMechanisms = securityMechanisms == null ? List.of() : List.copyOf(securityMechanisms);
@@ -51,15 +61,18 @@ public interface LlmGateway {
             technologyProfile = technologyProfile == null ? TechnologyProfile.empty() : technologyProfile;
         }
 
+        // 创建 ReconInsight 实例并初始化所需依赖或状态。
         public ReconInsight(String architectureSummary, List<String> attackSurfaces,
                             List<String> securityMechanisms, List<String> riskAreas) {
             this(architectureSummary, attackSurfaces, securityMechanisms, riskAreas, TechnologyProfile.empty());
         }
     }
 
+    // 封装 TriageDecision 使用的不可变结构化数据。
     record TriageDecision(String unitId, long primaryChunkId, TriageDisposition disposition,
                           List<VulnerabilityType> vulnerabilityTypes, List<String> reasonCodes,
                           List<String> requiredContext, String reason) {
+        // 校验并规范化 TriageDecision 的构造参数。
         public TriageDecision {
             vulnerabilityTypes = vulnerabilityTypes == null ? List.of() : vulnerabilityTypes.stream()
                     .filter(java.util.Objects::nonNull).distinct().toList();
@@ -70,31 +83,39 @@ public interface LlmGateway {
         }
     }
 
+    // 封装 TriagePlan 使用的不可变结构化数据。
     record TriagePlan(String summary, List<TriageDecision> decisions) {
+        // 校验并规范化 TriagePlan 的构造参数。
         public TriagePlan {
             decisions = decisions == null ? List.of() : List.copyOf(decisions);
         }
     }
 
+    // 封装 Observation 使用的不可变结构化数据。
     record Observation(String tool, Map<String, Object> arguments, String result) {
+        // 校验并规范化 Observation 的构造参数。
         public Observation {
             arguments = safeArguments(arguments);
         }
     }
 
+    // 封装 AgentTurn 使用的不可变结构化数据。
     record AgentTurn(UUID taskId, AgentType agentType, VulnerabilityType vulnerabilityType,
                      Target target, String ruleHint, String semanticEvidence, ReconInsight recon,
                      List<Observation> observations, int iteration) {
     }
 
+    // 封装 FindingProposal 使用的不可变结构化数据。
     record FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
                            String title, String description, String remediation,
                            Long primaryChunkId, List<Long> evidenceChunkIds,
                            Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
+        // 校验并规范化 FindingProposal 的构造参数。
         public FindingProposal {
             evidenceChunkIds = evidenceChunkIds == null ? List.of() : List.copyOf(evidenceChunkIds);
         }
 
+        // 创建 FindingProposal 实例并初始化所需依赖或状态。
         public FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
                                String title, String description, String remediation,
                                Long primaryChunkId, List<Long> evidenceChunkIds) {
@@ -103,34 +124,48 @@ public interface LlmGateway {
         }
     }
 
+    // 封装 AgentDecision 使用的不可变结构化数据。
     record AgentDecision(String action, String tool, Map<String, Object> arguments,
                          String summary, FindingProposal finding) {
+        // 校验并规范化 AgentDecision 的构造参数。
         public AgentDecision {
             arguments = safeArguments(arguments);
         }
     }
 
+    // 封装 CriticRequest 使用的不可变结构化数据。
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
                          String evidence, String independentSemanticEvidence, ReconInsight recon,
                          String changeType, String analysisScope, String baseCodeExcerpt) {
     }
 
+    // 封装 CriticDecision 使用的不可变结构化数据。
     record CriticDecision(boolean confirmed, Confidence confidence, String reason,
-                          FindingDeltaStatus deltaStatus) {
+                          FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                          Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
+        // 创建 CriticDecision 实例并初始化所需依赖或状态。
+        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus) {
+            this(confirmed, confidence, reason, deltaStatus, null, null, null);
+        }
     }
 
+    // 封装 ReportFinding 使用的不可变结构化数据。
     record ReportFinding(VulnerabilityType type, Severity severity, Confidence confidence,
                          String title, String location, String description) {
     }
 
+    // 封装 ReportRequest 使用的不可变结构化数据。
     record ReportRequest(UUID taskId, String projectName, ReconInsight recon,
                          List<ReportFinding> findings, int completedAgents, int rejectedHypotheses,
                          String auditContext) {
     }
 
+    // 封装 ReportNarrative 使用的不可变结构化数据。
     record ReportNarrative(String executiveSummary, String coverageSummary) {
     }
 
+    // 执行 LlmGateway 中的 safeArguments 处理。
     private static Map<String, Object> safeArguments(Map<String, Object> arguments) {
         if (arguments == null || arguments.isEmpty()) return Map.of();
         Map<String, Object> safe = new LinkedHashMap<>();

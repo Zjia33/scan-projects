@@ -24,7 +24,7 @@ public class TestLlmConfiguration {
     LlmGateway deterministicAgentLlmGateway() {
         return new LlmGateway() {
             @Override
-            public ReconInsight inspectProject(UUID taskId, ReconSummary summary, List<Target> targets) {
+            public ReconInsight inspectProject(UUID taskId, ReconSummary summary) {
                 return new ReconInsight("Spring Boot Web 项目，包含订单查询接口", List.of("HTTP API"),
                         List.of("未观察到统一权限配置"), List.of("订单资源访问", "动态 SQL"));
             }
@@ -35,7 +35,6 @@ public class TestLlmConfiguration {
                     boolean investigate = unit.reasonCodes().stream().anyMatch(code ->
                             code.equals("RULE_HINT") || code.equals("SEMANTIC_FLOW")
                                     || code.startsWith("DANGEROUS_")
-                                    || code.equals("SENSITIVE_FINANCIAL_OPERATION")
                                     || code.equals("AUTHORIZATION_BOUNDARY"));
                     boolean needContext = !investigate && unit.reasonCodes().contains("UNRESOLVED_CALL");
                     TriageDisposition disposition = investigate ? TriageDisposition.INVESTIGATE
@@ -72,9 +71,11 @@ public class TestLlmConfiguration {
                         ? com.deepaudit.domain.FindingDeltaStatus.BASELINE
                         : "ADDED".equals(request.changeType()) || introducedSqlSink
                         ? com.deepaudit.domain.FindingDeltaStatus.NEW
-                        : com.deepaudit.domain.FindingDeltaStatus.AFFECTED;
+                        : com.deepaudit.domain.FindingDeltaStatus.NEW;
                 return new CriticDecision(true, Confidence.HIGH,
-                        "未找到能够推翻候选的权限或参数化反证", delta);
+                        "未找到能够推翻候选的权限或参数化反证", delta,
+                        request.proposal().primaryChunkId(), request.proposal().vulnerabilityStartLine(),
+                        request.proposal().vulnerabilityEndLine());
             }
 
             @Override

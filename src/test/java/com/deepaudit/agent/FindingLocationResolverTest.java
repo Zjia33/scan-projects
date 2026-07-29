@@ -8,6 +8,7 @@ import com.deepaudit.domain.VulnerabilityType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -48,6 +49,41 @@ class FindingLocationResolverTest {
         assertThat(location.startLine()).isEqualTo(73);
         assertThat(FindingLocationResolver.formatContext(chunk, location, true))
                 .contains(">>>    73 |     return statement.executeQuery(sql);");
+    }
+
+    @Test
+    void marksSemanticCallSiteAsEntryInsteadOfInferringAnUnrelatedControllerLine() {
+        CodeChunk controller = new CodeChunk(UUID.randomUUID(), "LabScenarioController.java",
+                "LabScenarioController#purchase", "/payments/purchase", 79, 85, """
+                @PreAuthorize("hasAuthority('TRANSFER_CREATE')")
+                @PostMapping("/payments/purchase")
+                public TransactionResult purchase(PurchaseRequest request) {
+                    CurrentUser loginUser = securityContext.currentUser();
+                    accountService.assertAccountBelongsToUser(loginUser.userId(), request.accountNo());
+                    return labScenarioService.purchase(request);
+                }
+                """, "JAVA_METHOD", "PurchaseRequest request", "@PostMapping", "purchase");
+        controller.setId(1497L);
+        CodeChunk service = new CodeChunk(UUID.randomUUID(), "LabScenarioService.java",
+                "LabScenarioService#purchase", null, 86, 88, """
+                BigDecimal total = request.quotedUnitPrice().multiply(BigDecimal.valueOf(request.quantity()));
+                accountRepository.debit(request.accountNo(), total);
+                return completed(total);
+                """, "JAVA_METHOD", "PurchaseRequest request", "", "debit,completed");
+        service.setId(1549L);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                "客户端报价被用于扣款", "服务端直接信任 quotedUnitPrice", "服务端查询可信价格",
+                1549L, List.of(1549L, 1497L), 86, 88);
+
+        String evidence = FindingLocationResolver.formatEvidence(proposal,
+                Map.of(1497L, controller, 1549L, service), Map.of(1497L, 84));
+
+        assertThat(evidence)
+                .contains("[漏洞位置] LabScenarioService.java:86-88")
+                .contains("[调用入口] LabScenarioController.java:84")
+                .contains("return labScenarioService.purchase(request);")
+                .doesNotContain("[漏洞位置] LabScenarioController.java:82-83");
     }
 
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {

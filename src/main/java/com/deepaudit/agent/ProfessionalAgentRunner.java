@@ -15,12 +15,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 
+// 封装 ProfessionalAgentRunner 相关的数据与处理逻辑。
 @Slf4j
 @Service
 public class ProfessionalAgentRunner {
     private final AgentRuntime agentRuntime;
     private final Executor executor;
 
+    // 创建 ProfessionalAgentRunner 实例并初始化所需依赖或状态。
     public ProfessionalAgentRunner(AgentRuntime agentRuntime,
                                    @Qualifier("professionalAgentExecutor") Executor executor) {
         this.agentRuntime = agentRuntime;
@@ -69,9 +71,11 @@ public class ProfessionalAgentRunner {
         }
     }
 
+    // 封装 TaskResult 使用的不可变结构化数据。
     private record TaskResult(Optional<AgentCandidate> candidate, boolean formatFailure) {
     }
 
+    // 封装 BatchResult 使用的不可变结构化数据。
     public record BatchResult(List<AgentCandidate> candidates, int formatFailures) {
     }
 }

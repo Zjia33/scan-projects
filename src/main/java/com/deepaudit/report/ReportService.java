@@ -7,6 +7,7 @@ import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.Project;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.agent.FindingLocationResolver;
 import com.deepaudit.mapper.AuditTaskMapper;
@@ -28,6 +29,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.UUID;
 
+// 负责 ReportService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class ReportService {
@@ -55,9 +57,15 @@ public class ReportService {
     // 查询风险排序后的发现，并移除不面向用户展示的内部证据段。
     public List<Finding> findings(UUID taskId) {
         List<Finding> findings = findingMapper.findByTaskIdOrderByRisk(taskId);
+        AuditTask task = taskMapper.findById(taskId);
         Map<Long, CodeChunk> chunks = new LinkedHashMap<>();
         chunkMapper.findByTaskId(taskId).forEach(chunk -> chunks.put(chunk.getId(), chunk));
         findings.forEach(finding -> {
+            if (task != null) {
+                // 同时归一化历史记录，确保增量 API 和最终报告不再展示 BASELINE/REGRESSED/AFFECTED。
+                finding.setDeltaStatus(FindingDeltaStatus.normalizeFor(
+                        task.getScanMode(), finding.getDeltaStatus()));
+            }
             finding.setEvidence(evidenceForDisplay(finding.getEvidence()));
             localizeLegacyEvidence(finding, chunks);
         });
@@ -85,6 +93,7 @@ public class ReportService {
         finding.setEvidence(FindingLocationResolver.formatEvidence(proposal, chunks));
     }
 
+    // 执行 ReportService 中的 evidenceChunkIds 处理。
     private List<Long> evidenceChunkIds(String evidence) {
         Matcher matcher = Pattern.compile("\\[CHUNK (\\d+)]").matcher(evidence == null ? "" : evidence);
         java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
@@ -120,6 +129,9 @@ public class ReportService {
                 + "<p>范围：" + escape(report.task().getScanMode().name()) + "　Target："
                 + escape(shortSha(report.task().getTargetCommitSha()))
                 + (report.task().getBaseCommitSha() == null ? "" : "　Base：" + escape(shortSha(report.task().getBaseCommitSha())))
+                + (report.task().getMergeBaseSha() == null
+                || report.task().getMergeBaseSha().equals(report.task().getBaseCommitSha()) ? ""
+                : "　实际比较基线：" + escape(shortSha(report.task().getMergeBaseSha())))
                 + "</p>"
                 + "<p>变更摘要：" + escape(report.task().getChangeSummary()) + "</p>"
                 + "<p>任务状态：" + statusLabel(report.task().getStatus()) + "　问题数量："
@@ -143,6 +155,7 @@ public class ReportService {
         return (hiddenSection < 0 ? value : value.substring(0, hiddenSection)).stripTrailing();
     }
 
+    // 执行 ReportService 中的 sectionStart 处理。
     private int sectionStart(String value, String marker) {
         int index = value.indexOf("\n\n" + marker);
         if (index >= 0) return index;
@@ -161,6 +174,7 @@ public class ReportService {
                 + "<p class='critic-review'><b>" + marker + "</b>" + escape(review) + "</p>";
     }
 
+    // 执行 ReportService 中的 evidenceHtml 处理。
     private String evidenceHtml(String value) {
         String evidence = value == null ? "" : value;
         StringBuilder html = new StringBuilder("<pre class='finding-evidence'>");
@@ -171,6 +185,7 @@ public class ReportService {
         return html.append("</pre>").toString();
     }
 
+    // 执行 ReportService 中的 severityLabel 处理。
     private String severityLabel(com.deepaudit.domain.Severity severity) {
         return switch (severity) {
             case CRITICAL -> "严重";
@@ -180,6 +195,7 @@ public class ReportService {
         };
     }
 
+    // 执行 ReportService 中的 confidenceLabel 处理。
     private String confidenceLabel(com.deepaudit.domain.Confidence confidence) {
         return switch (confidence) {
             case HIGH -> "高";
@@ -188,6 +204,7 @@ public class ReportService {
         };
     }
 
+    // 执行 ReportService 中的 statusLabel 处理。
     private String statusLabel(com.deepaudit.domain.AuditStatus status) {
         return switch (status) {
             case COMPLETED -> "已完成";
@@ -197,6 +214,7 @@ public class ReportService {
         };
     }
 
+    // 执行 ReportService 中的 deltaLabel 处理。
     private String deltaLabel(com.deepaudit.domain.FindingDeltaStatus status) {
         if (status == null) return "全量基线";
         return switch (status) {
@@ -208,6 +226,7 @@ public class ReportService {
         };
     }
 
+    // 执行 ReportService 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
@@ -219,6 +238,7 @@ public class ReportService {
                 .replace("\"", "&quot;").replace("'", "&#39;");
     }
 
+    // 封装 AuditReport 使用的不可变结构化数据。
     public record AuditReport(Project project, AuditTask task, AiReportSummary aiSummary,
                               List<Finding> findings, List<AgentRun> agentRuns,
                               List<AuditHypothesis> hypotheses,

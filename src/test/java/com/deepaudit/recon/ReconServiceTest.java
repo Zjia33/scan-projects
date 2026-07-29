@@ -82,6 +82,98 @@ class ReconServiceTest {
     }
 
     @Test
+    void buildsCompleteStructuredProjectProfileWithoutBusinessSourceBodies() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+
+        write("pom.xml", """
+                <project><dependencies>
+                  <dependency><artifactId>spring-boot-starter-security</artifactId></dependency>
+                  <dependency><artifactId>spring-kafka</artifactId></dependency>
+                </dependencies></project>
+                """);
+        write("src/main/resources/application.yml", "spring:\n  application:\n    name: orders");
+        write("src/main/java/demo/OrderController.java", """
+                package demo;
+                @org.springframework.web.bind.annotation.RequestMapping("/orders")
+                class OrderController {
+                    @org.springframework.web.bind.annotation.GetMapping("/{id}")
+                    Object detail(Long id) { return orderService.load(id); }
+                }
+                """);
+        write("src/main/java/demo/OrderConsumer.java", """
+                package demo;
+                class OrderConsumer {
+                    @org.springframework.kafka.annotation.KafkaListener(topics = "orders")
+                    void consume(String payload) { orderService.accept(payload); }
+                }
+                """);
+        write("src/main/java/demo/OrderRepository.java", """
+                package demo;
+                class OrderRepository {
+                    Object load(Long id) { return jdbcTemplate.queryForList("select * from orders"); }
+                }
+                """);
+        write("src/main/java/demo/SecurityConfig.java", """
+                package demo;
+                @org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
+                class SecurityConfig {
+                    Object filterChain(Object http) {
+                        http.authorizeHttpRequests(auth -> auth.requestMatchers("/public/**").permitAll())
+                            .csrf(csrf -> csrf.disable());
+                        return http;
+                    }
+                }
+                """);
+
+        ReconSummary summary = new ReconService(mapper).buildIndex(UUID.randomUUID(), projectRoot);
+        ProjectStructureProfile profile = summary.projectStructure();
+
+        assertThat(profile.modules()).singleElement().satisfies(module -> {
+            assertThat(module.path()).isEqualTo(".");
+            assertThat(module.sourceFileCount()).isEqualTo(6);
+            assertThat(module.javaMethodCount()).isEqualTo(4);
+            assertThat(module.endpointCount()).isEqualTo(1);
+        });
+        assertThat(profile.entryPoints()).extracting(ProjectStructureProfile.FactGroup::kind)
+                .contains("HTTP_GET", "KAFKA_LISTENER");
+        assertThat(profile.securityMechanisms()).extracting(ProjectStructureProfile.FactGroup::kind)
+                .contains("ROUTE_AUTHORIZATION", "PUBLIC_ROUTE", "METHOD_SECURITY", "CSRF_CONFIGURATION");
+        assertThat(profile.dataAccess()).extracting(ProjectStructureProfile.FactGroup::kind).contains("JDBC");
+        assertThat(profile.externalIntegrations()).extracting(ProjectStructureProfile.FactGroup::kind)
+                .contains("KAFKA");
+        assertThat(profile.configurationFiles()).extracting(ProjectStructureProfile.FactGroup::kind)
+                .contains("BUILD_DESCRIPTOR", "APPLICATION_CONFIGURATION");
+        assertThat(profile.entryPoints()).flatExtracting(ProjectStructureProfile.FactGroup::evidence)
+                .allMatch(value -> !value.contains("return orderService"));
+    }
+
+    @Test
+    void countsAllFactsWhileBoundingOnlyLocationEvidence() {
+        List<CodeChunk> chunks = new ArrayList<>();
+        for (int index = 0; index < 20; index++) {
+            CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "src/main/java/demo/Api" + index + ".java",
+                    "Api" + index + "#load", "/items/" + index, 10, 12, "return service.load();",
+                    "JAVA_METHOD", "", "@GetMapping", "load");
+            chunk.setAnalysisScope(index < 7 ? AnalysisScope.CHANGED : AnalysisScope.IMPACTED);
+            chunks.add(chunk);
+        }
+
+        ProjectStructureProfile profile = new ProjectStructureProfiler().profile(projectRoot, chunks);
+
+        assertThat(profile.modules()).singleElement().satisfies(module -> {
+            assertThat(module.sourceFileCount()).isEqualTo(20);
+            assertThat(module.endpointCount()).isEqualTo(20);
+            assertThat(module.changedChunkCount()).isEqualTo(7);
+            assertThat(module.impactedChunkCount()).isEqualTo(13);
+        });
+        assertThat(profile.entryPoints()).singleElement().satisfies(group -> {
+            assertThat(group.kind()).isEqualTo("HTTP_GET");
+            assertThat(group.occurrenceCount()).isEqualTo(20);
+            assertThat(group.evidence()).hasSize(12);
+        });
+    }
+
+    @Test
     void excludesTestGeneratedAndDependencySourcesFromChunksAndTechnologyFacts() throws Exception {
         CodeChunkMapper mapper = mock(CodeChunkMapper.class);
 

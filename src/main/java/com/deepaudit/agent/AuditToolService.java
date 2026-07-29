@@ -16,12 +16,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+// 负责 AuditToolService 对应的业务编排和处理。
 @Service
 public class AuditToolService {
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
     private final ProfessionalToolService professionalToolService;
 
+    // 创建 AuditToolService 实例并初始化所需依赖或状态。
     @Autowired
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
                             CodeGraphIntegrationService codeGraphIntegrationService,
@@ -31,10 +33,12 @@ public class AuditToolService {
         this.professionalToolService = professionalToolService;
     }
 
+    // 创建 AuditToolService 实例并初始化所需依赖或状态。
     AuditToolService(SemanticEvidenceService semanticEvidenceService) {
         this(semanticEvidenceService, null, null);
     }
 
+    // 创建 AuditToolService 实例并初始化所需依赖或状态。
     AuditToolService(SemanticEvidenceService semanticEvidenceService,
                      CodeGraphIntegrationService codeGraphIntegrationService) {
         this(semanticEvidenceService, codeGraphIntegrationService, null);
@@ -78,6 +82,7 @@ public class AuditToolService {
         };
     }
 
+    // 执行 AuditToolService 中的 advanced 处理。
     private ToolResult advanced(ProfessionalToolService.Result result) {
         if (result == null) {
             return new ToolResult("[TOOL_UNAVAILABLE] 当前运行环境未装配高级专业工具。", Set.of(), Set.of());
@@ -85,6 +90,7 @@ public class AuditToolService {
         return new ToolResult(result.text(), result.evidenceChunkIds(), result.candidateChunkIds());
     }
 
+    // 执行 AuditToolService 中的 reference 处理。
     private String reference(ToolArguments arguments, String name) {
         Long value = arguments.longValue(name);
         return value == null ? null : String.valueOf(value);
@@ -136,6 +142,7 @@ public class AuditToolService {
         return new ToolResult(text, evidence, candidates);
     }
 
+    // 判断是否满足 hasDirectCallRelation 对应的条件。
     private boolean hasDirectCallRelation(CodeChunk chunk, Set<String> called, String currentMethod) {
         return called.contains(methodName(chunk.getSymbolName()))
                 || splitSymbols(chunk.getCalledSymbols()).contains(currentMethod);
@@ -203,6 +210,7 @@ public class AuditToolService {
         return null;
     }
 
+    // 执行 AuditToolService 中的 securityPolicyMatches 处理。
     private boolean securityPolicyMatches(String endpoint, String content) {
         if (endpoint == null || content == null) return false;
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
@@ -217,6 +225,7 @@ public class AuditToolService {
         return false;
     }
 
+    // 执行 AuditToolService 中的 endpointMatches 处理。
     private boolean endpointMatches(String endpoint, String antPattern) {
         StringBuilder regex = new StringBuilder("^");
         for (int index = 0; index < antPattern.length(); index++) {
@@ -241,6 +250,7 @@ public class AuditToolService {
         return endpoint.matches(regex.append('$').toString());
     }
 
+    // 解析输入并生成 parseChunkId 对应的结构化结果。
     private Long parseChunkId(String chunkReference) {
         if (chunkReference == null) return null;
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(chunkReference);
@@ -257,27 +267,33 @@ public class AuditToolService {
                 + "\n</UNTRUSTED_CODE>";
     }
 
+    // 执行 AuditToolService 中的 ids 处理。
     private Set<Long> ids(List<CodeChunk> chunks) {
         return chunks.stream().map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
+    // 执行 AuditToolService 中的 splitSymbols 处理。
     private Set<String> splitSymbols(String value) {
         if (value == null || value.isBlank()) return Set.of();
         return Arrays.stream(value.split(",")).map(String::strip).filter(item -> !item.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
+    // 执行 AuditToolService 中的 methodName 处理。
     private String methodName(String symbol) {
         if (symbol == null) return "";
         int hash = symbol.lastIndexOf('#');
         return hash < 0 ? symbol : symbol.substring(hash + 1);
     }
 
+    // 封装 ToolResult 使用的不可变结构化数据。
     public record ToolResult(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {
+        // 创建 ToolResult 实例并初始化所需依赖或状态。
         public ToolResult(String text, Set<Long> evidenceChunkIds) {
             this(text, evidenceChunkIds, Set.of());
         }
 
+        // 校验并规范化 ToolResult 的构造参数。
         public ToolResult {
             text = text == null || text.isBlank() ? "未检索到相关代码" : text;
             evidenceChunkIds = evidenceChunkIds == null ? Set.of() : Set.copyOf(evidenceChunkIds);

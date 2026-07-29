@@ -26,9 +26,11 @@ public final class AuditSourceFilter {
             "BeforeTest", "AfterTest", "BeforeGroups", "AfterGroups"
     );
 
+    // 创建 AuditSourceFilter 实例并初始化所需依赖或状态。
     private AuditSourceFilter() {
     }
 
+    // 判断是否满足 shouldAnalyze 对应的条件。
     public static boolean shouldAnalyze(Path root, Path candidate) {
         if (root == null || candidate == null) return false;
         try {
@@ -39,6 +41,7 @@ public final class AuditSourceFilter {
         }
     }
 
+    // 判断是否满足 shouldAnalyze 对应的条件。
     public static boolean shouldAnalyze(String repositoryPath) {
         if (repositoryPath == null) return false;
         String normalized = repositoryPath.replace('\\', '/');
@@ -54,6 +57,7 @@ public final class AuditSourceFilter {
         return !isConventionalTestFile(fileName) && !isGeneratedAsset(fileName);
     }
 
+    // 判断是否满足 isTestMethodAnnotation 对应的条件。
     public static boolean isTestMethodAnnotation(String annotationName) {
         if (annotationName == null || annotationName.isBlank()) return false;
         int separator = annotationName.lastIndexOf('.');
@@ -61,6 +65,7 @@ public final class AuditSourceFilter {
         return TEST_METHOD_ANNOTATIONS.contains(simpleName);
     }
 
+    // 判断是否满足 isConventionalTestFile 对应的条件。
     private static boolean isConventionalTestFile(String fileName) {
         if (fileName.endsWith(".java")) {
             String typeName = fileName.substring(0, fileName.length() - ".java".length());
@@ -76,6 +81,7 @@ public final class AuditSourceFilter {
                 || lower.startsWith("application-integrationtest.");
     }
 
+    // 判断是否满足 isGeneratedAsset 对应的条件。
     private static boolean isGeneratedAsset(String fileName) {
         String lower = fileName.toLowerCase(Locale.ROOT);
         return lower.endsWith(".min.js") || lower.endsWith(".bundle.js")

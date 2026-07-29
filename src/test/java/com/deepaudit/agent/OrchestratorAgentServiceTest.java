@@ -7,6 +7,9 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.VulnerabilityType;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,6 +25,37 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OrchestratorAgentServiceTest {
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void logsThreeStateAuditUnitCounts(CapturedOutput output) {
+        UUID taskId = UUID.randomUUID();
+        AuditUnit investigate = unit(1, List.of("DANGEROUS_DATA_ACCESS"));
+        AuditUnit needContext = unit(2, List.of("UNRESOLVED_CALL"));
+        AuditUnit skip = unit(3, List.of("EXTERNAL_ENTRY"));
+        AuditUnitService unitService = mock(AuditUnitService.class);
+        when(unitService.build(any(), anyList(), any(), any(), any()))
+                .thenReturn(List.of(investigate, needContext, skip));
+        when(unitService.enrich(any(), anyList(), anyList())).thenReturn(List.of(needContext));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triage(any(), any(), anyList()))
+                .thenReturn(new LlmGateway.TriagePlan("初次分流", List.of(
+                        decision(investigate, TriageDisposition.INVESTIGATE,
+                                List.of(VulnerabilityType.SQL_INJECTION)),
+                        decision(needContext, TriageDisposition.NEED_CONTEXT, List.of()),
+                        decision(skip, TriageDisposition.SKIP, List.of()))))
+                .thenReturn(new LlmGateway.TriagePlan("复判", List.of(
+                        decision(needContext, TriageDisposition.SKIP, List.of()))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), unitService);
+
+        service.plan(taskId, recon(), List.of(), ScanMode.FULL, Map.of(), Map.of());
+
+        assertThat(output).contains("审计单元三态统计（初次轻量分流）：总数=3，"
+                + "INVESTIGATE=1，NEED_CONTEXT=1，SKIP=1");
+        assertThat(output).contains("审计单元三态统计（补充上下文后复判）：总数=1，"
+                + "INVESTIGATE=0，NEED_CONTEXT=0，SKIP=1");
+    }
 
     @Test
     void doesNotTruncateSecurityRelevantUnitsAtThreeHundred() {
@@ -124,6 +158,12 @@ class OrchestratorAgentServiceTest {
                 "EXTERNAL_ENTRY", "UNCHANGED", "FULL",
                 List.of(VulnerabilityType.SQL_INJECTION), reasonCodes,
                 "String input", "@GetMapping", "execute -> database", "", "execute(input)");
+    }
+
+    private LlmGateway.TriageDecision decision(AuditUnit unit, TriageDisposition disposition,
+                                               List<VulnerabilityType> types) {
+        return new LlmGateway.TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
+                types, unit.reasonCodes(), List.of(), "测试分流决定");
     }
 
     private LlmGateway.ReconInsight recon() {

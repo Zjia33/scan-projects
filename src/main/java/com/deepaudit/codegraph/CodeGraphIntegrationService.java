@@ -16,6 +16,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+// 负责 CodeGraphIntegrationService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -25,6 +26,7 @@ public class CodeGraphIntegrationService {
     private final CodeGraphResultMapper resultMapper;
     private final Set<UUID> preparedTasks = ConcurrentHashMap.newKeySet();
 
+    // 执行 CodeGraphIntegrationService 中的 prepare 处理。
     public boolean prepare(UUID taskId, Path projectRoot) {
         if (!properties.enabled()) return false;
         log.info("任务 {} 开始准备 CodeGraph：mode={}，workspace={}",
@@ -42,6 +44,7 @@ public class CodeGraphIntegrationService {
         }
     }
 
+    // 执行 CodeGraphIntegrationService 中的 decideImpact 处理。
     public ImpactDecision decideImpact(UUID taskId, List<CodeChunk> chunks,
                                        Set<Long> changedChunkIds, Set<Long> nativeImpactedChunkIds) {
         Set<Long> nativeIds = new LinkedHashSet<>(nativeImpactedChunkIds);
@@ -90,6 +93,7 @@ public class CodeGraphIntegrationService {
                 mapping.unmappedLocations(), failedQueries, properties.getMode());
     }
 
+    // 判断是否满足 candidateContext 对应的条件。
     public CandidateContext candidateContext(UUID taskId, CodeChunk current,
                                              List<CodeChunk> chunks, int requestedLimit) {
         if (!properties.augmentsResults() || !preparedTasks.contains(taskId)
@@ -133,12 +137,14 @@ public class CodeGraphIntegrationService {
         }
     }
 
+    // 执行 CodeGraphIntegrationService 中的 release 处理。
     public void release(UUID taskId) {
         boolean prepared = preparedTasks.remove(taskId);
         safeClientRelease(taskId);
         if (prepared) log.info("任务 {} CodeGraph 任务状态已释放", taskId);
     }
 
+    // 执行 CodeGraphIntegrationService 中的 safeClientRelease 处理。
     private void safeClientRelease(UUID taskId) {
         try {
             client.release(taskId);
@@ -147,6 +153,7 @@ public class CodeGraphIntegrationService {
         }
     }
 
+    // 执行 CodeGraphIntegrationService 中的 codeGraphSymbol 处理。
     private String codeGraphSymbol(String value) {
         if (value == null) return "";
         String symbol = value.strip();
@@ -155,18 +162,22 @@ public class CodeGraphIntegrationService {
         return symbol.replace('#', '.');
     }
 
+    // 封装 ImpactDecision 使用的不可变结构化数据。
     public record ImpactDecision(Set<Long> effectiveImpactedChunkIds,
                                  Set<Long> codeGraphImpactedChunkIds,
                                  int unmappedLocations, int failedQueries,
                                  CodeGraphMode mode) {
     }
 
+    // 封装 CandidateContext 使用的不可变结构化数据。
     public record CandidateContext(String text, Set<Long> candidateChunkIds, int unmappedLocations) {
+        // 校验并规范化 CandidateContext 的构造参数。
         public CandidateContext {
             text = text == null ? "" : text;
             candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
         }
 
+        // 执行 CandidateContext 中的 empty 处理。
         public static CandidateContext empty() {
             return new CandidateContext("", Set.of(), 0);
         }

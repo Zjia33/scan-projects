@@ -10,6 +10,7 @@ public record AuditUnit(String unitId, long primaryChunkId, String filePath, Str
                         List<VulnerabilityType> candidateTypes, List<String> reasonCodes,
                         String parameters, String annotations, String callSummary,
                         String contextSummary, String codeOutline) {
+    // 校验并规范化 AuditUnit 的构造参数。
     public AuditUnit {
         candidateTypes = candidateTypes == null ? List.of() : List.copyOf(candidateTypes);
         reasonCodes = reasonCodes == null ? List.of() : List.copyOf(reasonCodes);
@@ -27,6 +28,7 @@ public record AuditUnit(String unitId, long primaryChunkId, String filePath, Str
                 callSummary, expandedContext, codeOutline);
     }
 
+    // 执行 AuditUnit 中的 safe 处理。
     private static String safe(String value) {
         return value == null ? "" : value;
     }

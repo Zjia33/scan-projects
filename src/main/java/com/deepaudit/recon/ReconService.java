@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+// 负责 ReconService 对应的业务编排和处理。
 @Slf4j
 @Service
 public class ReconService {
@@ -51,11 +52,14 @@ public class ReconService {
     private final CodeChunkMapper chunkMapper;
     private final IncrementalSemanticDiffService incrementalSemanticDiffService;
     private final ProjectTechnologyDetector technologyDetector = new ProjectTechnologyDetector();
+    private final ProjectStructureProfiler structureProfiler = new ProjectStructureProfiler();
 
+    // 创建 ReconService 实例并初始化所需依赖或状态。
     public ReconService(CodeChunkMapper chunkMapper) {
         this(chunkMapper, null);
     }
 
+    // 创建 ReconService 实例并初始化所需依赖或状态。
     @Autowired
     public ReconService(CodeChunkMapper chunkMapper,
                         IncrementalSemanticDiffService incrementalSemanticDiffService) {
@@ -96,7 +100,10 @@ public class ReconService {
         }
         // 独立识别构建工具、框架和安全组件，供 Recon Agent 理解项目背景。
         TechnologyProfile technologyProfile = technologyDetector.detect(root);
-        return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(), technologyProfile);
+        // 所有代码块都参与结构化画像；仅输出统计和位置证据，不向 Recon 模型发送业务源码正文。
+        ProjectStructureProfile projectStructure = structureProfiler.profile(root, chunks);
+        return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(),
+                technologyProfile, projectStructure);
     }
 
     // 将调用图扩展得到的代码块提升为深度分析范围。
@@ -113,6 +120,13 @@ public class ReconService {
         promoted.forEach(chunkMapper::updateIncrementalMetadata);
     }
 
+    // 增量影响范围在语义分析后才最终确定，因此在 Recon Agent 调用前刷新结构画像中的范围统计。
+    public ReconSummary refreshProjectStructure(Path root, ReconSummary summary, List<CodeChunk> chunks) {
+        return new ReconSummary(summary.sourceFileCount(), summary.javaMethodCount(), summary.endpointCount(),
+                summary.chunkCount(), summary.technologyProfile(), structureProfiler.profile(root, chunks));
+    }
+
+    // 执行 ReconService 中的 applyIncrementalMetadata 处理。
     private void applyIncrementalMetadata(List<CodeChunk> chunks, ScanMode scanMode,
                                           List<GitFileChange> changes) {
         if (scanMode == ScanMode.FULL) {
@@ -146,6 +160,7 @@ public class ReconService {
         }
     }
 
+    // 执行 ReconService 中的 overlaps 处理。
     private boolean overlaps(int chunkStart, int chunkEnd, String ranges) {
         if (ranges == null || ranges.isBlank()) return false;
         for (String value : ranges.split(",")) {
@@ -161,10 +176,12 @@ public class ReconService {
         return false;
     }
 
+    // 规范化 normalizePath 对应的输入。
     private String normalizePath(String value) {
         return value == null ? "" : value.replace('\\', '/');
     }
 
+    // 执行 ReconService 中的 truncateBase 处理。
     private String truncateBase(String value) {
         if (value == null) return "";
         return value.substring(0, Math.min(value.length(), 4_000));
@@ -255,6 +272,7 @@ public class ReconService {
                 });
     }
 
+    // 执行 ReconService 中的 ownerName 处理。
     private String ownerName(MethodDeclaration method) {
         Node current = method.getParentNode().orElse(null);
         while (current != null) {
@@ -302,16 +320,19 @@ public class ReconService {
         }
     }
 
+    // 规范化 normalizeEndpoint 对应的输入。
     private String normalizeEndpoint(String base, String method) {
         String joined = ("/" + base + "/" + method).replaceAll("/+", "/");
         return joined.length() > 1 && joined.endsWith("/") ? joined.substring(0, joined.length() - 1) : joined;
     }
 
+    // 向当前结果添加 addChunk 对应的数据。
     private void addChunk(List<CodeChunk> chunks, UUID taskId, String path, String symbol,
                           String endpoint, int start, int end, String content) {
         addChunk(chunks, taskId, path, symbol, endpoint, start, end, content, "TEXT", "", "", "");
     }
 
+    // 向当前结果添加 addChunk 对应的数据。
     private void addChunk(List<CodeChunk> chunks, UUID taskId, String path, String symbol,
                           String endpoint, int start, int end, String content, String chunkType,
                           String parameters, String annotations, String calledSymbols) {
@@ -319,21 +340,25 @@ public class ReconService {
                 chunkType, parameters, annotations, calledSymbols));
     }
 
+    // 执行 ReconService 中的 extension 处理。
     private String extension(String path) {
         int dot = path.lastIndexOf('.');
         return dot < 0 ? "text" : path.substring(dot + 1);
     }
 
+    // 判断是否满足 isSupportedTextFile 对应的条件。
     private boolean isSupportedTextFile(Path path) {
         String name = path.getFileName().toString();
         int dot = name.lastIndexOf('.');
         return dot > 0 && TEXT_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.ROOT));
     }
 
+    // 执行 ReconService 中的 truncate 处理。
     private String truncate(String value) {
         return value.length() <= 100_000 ? value : value.substring(0, 100_000);
     }
 
+    // 执行 ReconService 中的 sourceLines 处理。
     private String sourceLines(String content, int startLine, int endLine) {
         String[] lines = content.split("\\R", -1);
         int from = Math.max(0, startLine - 1);

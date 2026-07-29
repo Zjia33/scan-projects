@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
+// 负责 SemanticAnalysisService 对应的业务编排和处理。
 @Slf4j
 @Service
 public class SemanticAnalysisService {
@@ -23,6 +24,7 @@ public class SemanticAnalysisService {
     private final SecurityFlowMapper flowMapper;
     private final TransactionTemplate transactionTemplate;
 
+    // 创建 SemanticAnalysisService 实例并初始化所需依赖或状态。
     public SemanticAnalysisService(SemanticAnalysisProperties properties, LightweightSemanticAnalyzer analyzer,
                                    SemanticSymbolMapper symbolMapper, SemanticCallEdgeMapper edgeMapper,
                                    SecurityFlowMapper flowMapper, PlatformTransactionManager transactionManager) {
@@ -83,9 +85,14 @@ public class SemanticAnalysisService {
         }
     }
 
+    // 定义 BatchInserter 的协作接口和能力边界。
     @FunctionalInterface
-    private interface BatchInserter<T> { int insert(List<T> values); }
+    private interface BatchInserter<T> {
+        // 将一批分析结果写入对应存储。
+        int insert(List<T> values);
+    }
 
+    // 封装 Summary 使用的不可变结构化数据。
     public record Summary(int symbolCount, int callEdgeCount, int securityFlowCount,
                           int totalCallSites, int exactResolvedCallSites,
                           int heuristicResolvedCallSites, int frameworkResolvedCallSites,

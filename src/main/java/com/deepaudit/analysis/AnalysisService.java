@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+// 负责 AnalysisService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -81,6 +82,7 @@ public class AnalysisService {
                     incrementalScope.semanticChangeCounts());
             reconService.promoteImpactScope(taskId, incrementalScope.impactedChunkIds());
             chunks = chunkMapper.findByTaskId(taskId);
+            reconSummary = reconService.refreshProjectStructure(projectRoot, reconSummary, chunks);
             log.info("任务 {} 增量范围：{} 个直接变更块、{} 个最终影响块、{} 个 CodeGraph 候选，"
                             + "全局配置变化={}",
                     taskId, incrementalScope.changedChunkIds().size(),
@@ -97,7 +99,7 @@ public class AnalysisService {
                 semanticSummary.securityFlowCount(), semanticSummary.totalCallSites(),
                 semanticSummary.unresolvedCallSites());
         // Recon Agent 先理解项目，再由 Orchestrator 对全部安全相关审计单元做轻量三态分流。
-        LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary, chunks);
+        LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary);
         List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, chunks, task.getScanMode(),
                 hintIndex.typesByChunk(), hintIndex.descriptionsByChunk());
 
@@ -114,7 +116,7 @@ public class AnalysisService {
         Set<String> deduplication = new HashSet<>();
         for (AgentCandidate candidate : candidates) {
             try {
-                criticAgent.review(taskId, candidate, recon, chunks)
+                criticAgent.review(taskId, candidate, recon, chunks, task.getScanMode())
                         .filter(finding -> validateEvidence(projectRoot, finding))
                         .filter(finding -> deduplication.add(finding.getFingerprint()))
                         .ifPresent(confirmed::add);
@@ -127,10 +129,17 @@ public class AnalysisService {
         for (int start = 0; start < confirmed.size(); start += 200) {
             findingMapper.insertBatch(confirmed.subList(start, Math.min(start + 200, confirmed.size())));
         }
+        String comparisonBaseSha = task.getMergeBaseSha() == null || task.getMergeBaseSha().isBlank()
+                ? task.getBaseCommitSha() : task.getMergeBaseSha();
+        String selectedBaseContext = task.getScanMode() == ScanMode.INCREMENTAL
+                && task.getBaseCommitSha() != null
+                && !task.getBaseCommitSha().equals(comparisonBaseSha)
+                ? "；用户选择的基准分支提交 " + shortSha(task.getBaseCommitSha()) : "";
         String auditContext = task.getScanMode() == ScanMode.FULL
                 ? "全量扫描目标提交 " + shortSha(task.getTargetCommitSha())
-                : "增量扫描 " + shortSha(task.getBaseCommitSha()) + " → "
+                : "分支变更扫描 " + shortSha(comparisonBaseSha) + " → "
                 + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
+                + selectedBaseContext
                 + "；深度范围 " + (incrementalScope == null ? 0 : incrementalScope.totalDeepTargets()) + " 个代码块"
                 + (incrementalScope == null ? "" : "；方法变化 " + incrementalScope.semanticChangeSummary());
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
@@ -144,6 +153,7 @@ public class AnalysisService {
         Map<Long, Set<VulnerabilityType>> types = new LinkedHashMap<>();
         Map<Long, String> descriptions = new LinkedHashMap<>();
         for (VulnerabilityAnalyzer provider : hintProviders) {
+            if (provider.type() == null || !provider.type().isDetectable()) continue;
             try {
                 // 每个分析器只生成线索草稿，不能绕过专业 Agent 和 Critic 直接形成发现。
                 for (FindingDraft draft : provider.analyze(context)) {
@@ -178,6 +188,7 @@ public class AnalysisService {
                 .findFirst().or(() -> chunks.stream().filter(chunk -> chunk.getFilePath().equals(draft.filePath())).findFirst());
     }
 
+    // 执行 AnalysisService 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
@@ -195,10 +206,12 @@ public class AnalysisService {
         }
     }
 
+    // 封装 HintIndex 使用的不可变结构化数据。
     private record HintIndex(Map<Long, Set<VulnerabilityType>> typesByChunk,
                              Map<Long, String> descriptionsByChunk) {
     }
 
+    // 封装 AnalysisResult 使用的不可变结构化数据。
     public record AnalysisResult(int findingCount, int plannedAgentTasks,
                                  int supportedHypotheses, String architectureSummary) {
     }

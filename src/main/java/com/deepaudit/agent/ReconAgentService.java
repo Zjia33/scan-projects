@@ -4,38 +4,28 @@ import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentEventType;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
-import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.recon.ReconSummary;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
+// 负责 ReconAgentService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class ReconAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
 
-    // 用技术栈事实和代表性代码块生成项目架构、攻击面及安全机制概览。
-    public LlmGateway.ReconInsight inspect(UUID taskId, ReconSummary summary, List<CodeChunk> chunks) {
+    // 用完整项目产生的结构化事实生成架构、攻击面及安全机制概览，不向模型发送业务源码正文。
+    public LlmGateway.ReconInsight inspect(UUID taskId, ReconSummary summary) {
         AgentRun run = traceService.start(taskId, AgentType.RECON, null, "项目攻击面");
         try {
-            // 优先选择接口和 Java 方法，并限制样本规模以控制模型上下文。
-            List<LlmGateway.Target> representatives = chunks.stream()
-                    .sorted(java.util.Comparator
-                            .comparing((CodeChunk chunk) -> chunk.getAnalysisScope()
-                                    != com.deepaudit.domain.AnalysisScope.CHANGED)
-                            .thenComparing((CodeChunk chunk) -> chunk.getEndpoint() == null)
-                            .thenComparing(chunk -> !"JAVA_METHOD".equals(chunk.getChunkType())))
-                    .limit(50).map(chunk -> AgentPromptSupport.target(chunk, Set.of())).toList();
             run.setModelCallCount(1);
             traceService.event(taskId, run.getId(), AgentType.RECON, AgentEventType.MODEL_CALL,
-                    "正在结合技术栈事实、接口样本和配置文件分析项目攻击面");
+                    "正在结合完整项目的技术栈、模块、入口与安全配置事实分析项目攻击面");
             // 将模型判断与确定性技术栈识别结果合并，避免模型覆盖真实扫描事实。
-            LlmGateway.ReconInsight modelInsight = llmGateway.inspectProject(taskId, summary, representatives);
+            LlmGateway.ReconInsight modelInsight = llmGateway.inspectProject(taskId, summary);
             LlmGateway.ReconInsight insight = new LlmGateway.ReconInsight(modelInsight.architectureSummary(),
                     modelInsight.attackSurfaces(), modelInsight.securityMechanisms(), modelInsight.riskAreas(),
                     summary.technologyProfile());

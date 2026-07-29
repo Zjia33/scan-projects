@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
+// 保存 GitProperties 对应的配置参数。
 @Getter
 @Setter
 @Component

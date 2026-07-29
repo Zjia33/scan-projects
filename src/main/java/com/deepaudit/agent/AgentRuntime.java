@@ -23,6 +23,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+// 封装 AgentRuntime 相关的数据与处理逻辑。
 @Service
 @RequiredArgsConstructor
 public class AgentRuntime {
@@ -93,7 +94,7 @@ public class AgentRuntime {
                         traceService.update(run);
                         continue;
                     }
-                    String evidence = buildEvidence(proposal, byId);
+                    String evidence = buildEvidence(taskId, proposal, byId);
                     if (!semanticEvidence.evidenceChunkIds().isEmpty()) {
                         evidence += "\n\n[SEMANTIC_FLOW]\n" + semanticEvidence.text();
                     }
@@ -142,6 +143,14 @@ public class AgentRuntime {
         Confidence confidence = proposal.confidence() == null ? Confidence.MEDIUM : proposal.confidence();
         CodeChunk primary = chunks.get(proposal.primaryChunkId());
         if (primary == null) return null;
+        CodeChunk investigationTarget = chunks.get(task.chunkId());
+        if (investigationTarget == null) return null;
+        boolean incrementalTarget = investigationTarget.getAnalysisScope()
+                == com.deepaudit.domain.AnalysisScope.CHANGED
+                || investigationTarget.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED;
+        boolean incrementalPrimary = primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED
+                || primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED;
+        if (incrementalTarget && !incrementalPrimary) return null;
         FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
         return new LlmGateway.FindingProposal(proposal.type(), severity, confidence,
                 proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids,
@@ -168,10 +177,15 @@ public class AgentRuntime {
     }
 
     // 只从已加载的真实代码块构造带文件和行号的证据正文。
-    private String buildEvidence(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks) {
-        return FindingLocationResolver.formatEvidence(proposal, chunks);
+    private String buildEvidence(UUID taskId, LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks) {
+        Set<Long> evidenceIds = new LinkedHashSet<>(proposal.evidenceChunkIds());
+        evidenceIds.add(proposal.primaryChunkId());
+        Map<Long, Integer> callSites = semanticEvidenceService.callSiteLines(
+                taskId, proposal.primaryChunkId(), evidenceIds);
+        return FindingLocationResolver.formatEvidence(proposal, chunks, callSites);
     }
 
+    // 执行 AgentRuntime 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), 2_000));
     }

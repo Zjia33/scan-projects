@@ -17,6 +17,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+// 负责 GitSnapshotService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -85,14 +86,17 @@ public class GitSnapshotService {
         }
     }
 
+    // 执行 GitSnapshotService 中的 shortSha 处理。
     private String shortSha(String sha) {
         return sha == null ? "" : sha.substring(0, Math.min(8, sha.length()));
     }
 
+    // 执行 GitSnapshotService 中的 elapsedMillis 处理。
     private long elapsedMillis(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
     }
 
+    // 封装 SnapshotResult 使用的不可变结构化数据。
     public record SnapshotResult(String commitSha, int fileCount, int skippedFileCount, long totalBytes) {
     }
 }

@@ -12,6 +12,7 @@ public record TechnologyProfile(List<String> frameworks,
                                 List<String> securityAnnotations,
                                 List<String> evidence) {
 
+    // 校验并规范化 TechnologyProfile 的构造参数。
     public TechnologyProfile {
         frameworks = immutable(frameworks);
         securityFrameworks = immutable(securityFrameworks);
@@ -21,10 +22,12 @@ public record TechnologyProfile(List<String> frameworks,
         evidence = immutable(evidence);
     }
 
+    // 执行 TechnologyProfile 中的 empty 处理。
     public static TechnologyProfile empty() {
         return new TechnologyProfile(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
+    // 执行 TechnologyProfile 中的 immutable 处理。
     private static List<String> immutable(List<String> values) {
         return values == null ? List.of() : List.copyOf(values);
     }

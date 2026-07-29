@@ -6,6 +6,7 @@ import lombok.Setter;
 
 import java.util.UUID;
 
+// 表示审计领域中的 SemanticMethodChange 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
@@ -26,6 +27,7 @@ public class SemanticMethodChange {
     private String targetContent; // 目标方法快照内容
     private String details; // 签名或 Guard 等语义差异的可读说明
 
+    // 创建 SemanticMethodChange 实例并初始化所需依赖或状态。
     public SemanticMethodChange(UUID taskId, SemanticChangeKind changeKind, String methodName,
                                 String basePath, String targetPath, String baseSymbol,
                                 String targetSymbol, Integer baseStartLine, Integer baseEndLine,
@@ -48,6 +50,7 @@ public class SemanticMethodChange {
         this.details = safe(details);
     }
 
+    // 执行 SemanticMethodChange 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value;
     }

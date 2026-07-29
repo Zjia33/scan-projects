@@ -3,7 +3,13 @@ package com.deepaudit.ai;
 import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
+import com.deepaudit.domain.Confidence;
+import com.deepaudit.domain.FindingDeltaStatus;
+import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.recon.ProjectStructureProfile;
+import com.deepaudit.recon.ReconSummary;
+import com.deepaudit.recon.TechnologyProfile;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -18,6 +24,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RemoteLlmGatewayTest {
+
+    @Test
+    void sendsStructuredProjectFactsToReconWithoutBusinessSource() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"architectureSummary":"Spring MVC 分层服务","attackSurfaces":["HTTP API"],
+                 "securityMechanisms":["Spring Security"],"riskAreas":["公开接口"]}
+                """);
+        ProjectStructureProfile structure = new ProjectStructureProfile(
+                List.of(new ProjectStructureProfile.ModuleProfile(".", 12, 80, 6, 0, 0)),
+                List.of(new ProjectStructureProfile.LayerProfile(".", "WEB", 2, 6)),
+                List.of(new ProjectStructureProfile.FactGroup(".", "HTTP_GET", 6,
+                        List.of("OrderController.java:10 OrderController#detail [/orders/{id}]"))),
+                List.of(new ProjectStructureProfile.FactGroup(".", "ROUTE_AUTHORIZATION", 1,
+                        List.of("SecurityConfig.java"))),
+                List.of(), List.of(), List.of());
+        ReconSummary summary = new ReconSummary(12, 80, 6, 90,
+                new TechnologyProfile(List.of("Spring MVC"), List.of("Spring Security"),
+                        List.of(), List.of("Maven"), List.of(), List.of()), structure);
+
+        gateway.inspectProject(UUID.randomUUID(), summary);
+
+        assertThat(gateway.requests).hasSize(1);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("不负责审查具体业务逻辑", "occurrenceCount", "不能描述成已确认漏洞");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"projectFacts\"", "\"projectStructure\"", "\"HTTP_GET\"",
+                        "\"occurrenceCount\":6", "OrderController#detail")
+                .doesNotContain("representativeTargets", "codeExcerpt", "return orderService");
+    }
 
     @Test
     void sendsCompactAuditUnitsToTriageOrchestrator() {
@@ -47,6 +83,35 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"auditUnits\"", "\"codeOutline\"")
                 .doesNotContain("\"baseCodeExcerpt\"");
+    }
+
+    @Test
+    void requiresCriticToReturnCorrectedPrimaryEvidenceAndLines() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"confirmed":true,"confidence":"HIGH","reason":"实际危险操作位于服务层",
+                 "deltaStatus":"BASELINE","primaryChunkId":1549,
+                 "vulnerabilityStartLine":86,"vulnerabilityEndLine":88}
+                """);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                "客户端报价被用于扣款", "服务端信任客户端报价", "查询可信价格",
+                1497L, List.of(1497L, 1549L), 82, 83);
+        LlmGateway.CriticRequest request = new LlmGateway.CriticRequest(UUID.randomUUID(),
+                AgentType.FINANCIAL_RISK, proposal, "跨方法证据", "调用链证据", recon(),
+                "UNCHANGED", "FULL", "");
+
+        LlmGateway.CriticDecision decision = gateway.critique(request);
+
+        assertThat(decision.primaryChunkId()).isEqualTo(1549L);
+        assertThat(decision.vulnerabilityStartLine()).isEqualTo(86);
+        assertThat(decision.vulnerabilityEndLine()).isEqualTo(88);
+        assertThat(decision.deltaStatus()).isEqualTo(FindingDeltaStatus.BASELINE);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("负责最终漏洞定位", "Controller 入口", "最多标记连续 5 行");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
+                        "\"vulnerabilityEndLine\"");
     }
 
     @Test
