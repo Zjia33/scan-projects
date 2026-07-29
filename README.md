@@ -209,15 +209,20 @@ http://localhost:8080/
 
 专业 Agent 只能选择以下受控工具，不能执行 Shell、网络请求或仓库代码：
 
-- `get_chunk`
-- `call_context`
-- `get_call_chain`
-- `trace_data_flow`
-- `find_security_guards`
-- `security_controls`
-- `data_access`
+- `get_chunk({chunkId})`：读取指定代码块
+- `verify_relation({candidateChunkId})`：验证候选与当前目标的确定性关系
+- `call_context({})`：读取直接调用和同文件候选上下文
+- `get_call_chain({})`：读取已有语义安全流或调用出边
+- `trace_data_flow({})`：读取当前漏洞类型的 Source-to-Sink 路径
+- `find_security_guards({})`：读取路径上的权限、租户和验证控制
+- `search_symbols({symbol,kind,annotation,filePath,endpoint,text})`：确定性检索符号和代码位置
+- `explore_call_graph({direction,depth,targetChunkId,targetSymbol})`：按方向和深度探索调用路径
+- `get_change_context({selector,includeConfiguration})`：读取 Base/Target 方法和文件差异
+- `resolve_data_access({selector,depth})`：解析 Mapper、Repository、SQL 与参数绑定
+- `inspect_security_policy({endpoint})`：检查方法安全注解和匹配入口的全局规则
+- `trace_value({source,sink,variable,depth})`：定向追踪安全流和跨调用参数映射
 
-仓库源码始终作为不可信数据传递给模型。Agent 提交的主证据和关联证据必须来自当前目标或工具返回的代码块 ID，否则候选会被拒绝。增量任务还要求 Critic 验证漏洞与直接变更或语义影响链之间的因果关系。
+模型只通过结构化 `arguments` 调用工具，结果数量使用 `arguments.limit` 控制。确定性符号搜索、同文件上下文和未映射的 CodeGraph 结果只用于发现候选，必须通过 `verify_relation` 后才能作为漏洞证据。仓库源码始终作为不可信数据传递给模型。Agent 提交的主证据和关联证据必须来自当前目标或工具返回的已验证代码块 ID，否则候选会被拒绝。增量任务还要求 Critic 验证漏洞与直接变更或语义影响链之间的因果关系。
 
 ## API
 

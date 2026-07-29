@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Primary;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @TestConfiguration
@@ -50,7 +51,7 @@ public class TestLlmConfiguration {
             @Override
             public AgentDecision decide(AgentTurn turn) {
                 if (turn.observations().isEmpty()) {
-                    return new AgentDecision("TOOL", tool(turn.vulnerabilityType()), dynamicQuery(turn), 5,
+                    return new AgentDecision("TOOL", tool(turn.vulnerabilityType()), toolArguments(turn),
                             "先检索与当前接口和变量相关的跨文件证据", null);
                 }
                 VulnerabilityType type = turn.vulnerabilityType();
@@ -58,7 +59,7 @@ public class TestLlmConfiguration {
                         title(type), "测试 Agent 根据目标代码和工具返回的实际代码形成证据链。",
                         "根据漏洞类型补充服务端校验并避免信任客户端输入。", turn.target().chunkId(),
                         evidenceIds(turn));
-                return new AgentDecision("FINDING", null, null, 0, "证据足以提交 Critic", finding);
+                return new AgentDecision("FINDING", null, Map.of(), "证据足以提交 Critic", finding);
             }
 
             @Override
@@ -84,15 +85,19 @@ public class TestLlmConfiguration {
 
             private String tool(VulnerabilityType type) {
                 return switch (type) {
-                    case SQL_INJECTION -> "data_access";
-                    case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> "security_controls";
+                    case SQL_INJECTION -> "resolve_data_access";
+                    case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> "inspect_security_policy";
                     default -> "call_context";
                 };
             }
 
-            private String dynamicQuery(AgentTurn turn) {
-                return turn.target().symbolName() + " " + turn.target().endpoint() + " "
-                        + turn.target().parameters() + " " + turn.vulnerabilityType();
+            private Map<String, Object> toolArguments(AgentTurn turn) {
+                return switch (turn.vulnerabilityType()) {
+                    case SQL_INJECTION -> Map.of("selector", turn.target().symbolName(), "depth", 3, "limit", 5);
+                    case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> Map.of(
+                            "endpoint", turn.target().endpoint() == null ? "" : turn.target().endpoint(), "limit", 5);
+                    default -> Map.of("limit", 5);
+                };
             }
 
             private List<Long> evidenceIds(AgentTurn turn) {

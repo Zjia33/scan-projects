@@ -54,7 +54,7 @@ class RemoteLlmGatewayTest {
         AiProperties properties = properties(2);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties,
                 """
-                        {"action":"FINDING","tool":null,"query":null,"limit":1,"summary":"发现问题",
+                        {"action":"FINDING","tool":null,"arguments":{},"summary":"发现问题",
                          "finding":{"type":"SQL_INJECTION","severity":"HIGH","confidence":"HIGH",
                          "title":"SQL 注入","description":"攻击者可访问 "http://internal" 获取数据",
                          "remediation":"使用参数化查询","primaryChunkId":1001,"evidenceChunkIds":[1001]}}
@@ -75,7 +75,7 @@ class RemoteLlmGatewayTest {
     void asksModelToRebuildJsonWhenLocalRepairCannotRecoverIt() {
         AiProperties properties = properties(2);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, "{invalid", """
-                {"action":"REJECT","tool":null,"query":null,"limit":1,
+                {"action":"REJECT","tool":null,"arguments":{},
                  "summary":"没有足够证据支持漏洞结论","finding":null}
                 """);
 
@@ -85,6 +85,26 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests).hasSize(2);
         assertThat(gateway.requests.get(1).get(gateway.requests.get(1).size() - 1).get("content"))
                 .contains("从头重建", "禁止源码", "不超过 180 个汉字");
+    }
+
+    @Test
+    void parsesStructuredProfessionalToolArguments() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"action":"TOOL","tool":"explore_call_graph",
+                 "arguments":{"direction":"CALLERS","depth":3,"targetChunkId":2002,"limit":5},
+                 "summary":"向上追踪入口调用者","finding":null}
+                """);
+
+        LlmGateway.AgentDecision decision = gateway.decide(turn());
+
+        assertThat(decision.arguments()).containsEntry("direction", "CALLERS")
+                .containsEntry("depth", 3).containsEntry("targetChunkId", 2002).containsEntry("limit", 5);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("search_symbols", "explore_call_graph", "get_change_context",
+                        "resolve_data_access", "inspect_security_policy", "trace_value");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"arguments\"").doesNotContain("\"query\"");
     }
 
     @Test

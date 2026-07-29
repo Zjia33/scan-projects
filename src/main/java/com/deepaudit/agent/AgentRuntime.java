@@ -71,12 +71,12 @@ public class AgentRuntime {
                     run.setToolCallCount(run.getToolCallCount() + 1);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.TOOL_CALL,
                             decision.tool() + "：" + safe(decision.summary()));
-                    AuditToolService.ToolResult result = toolService.execute(decision.tool(), decision.query(),
-                            decision.limit(), target, chunks, task.vulnerabilityType());
+                    AuditToolService.ToolResult result = toolService.execute(decision.tool(), decision.arguments(),
+                            target, chunks, task.vulnerabilityType());
                     allowedEvidence.addAll(result.evidenceChunkIds());
                     candidateEvidence.addAll(result.candidateChunkIds());
                     candidateEvidence.removeAll(result.evidenceChunkIds());
-                    observations.add(new LlmGateway.Observation(decision.tool(), decision.query(), result.text()));
+                    observations.add(new LlmGateway.Observation(decision.tool(), decision.arguments(), result.text()));
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.OBSERVATION,
                             result.text());
                     continue;
@@ -87,7 +87,8 @@ public class AgentRuntime {
                             decision.finding(), task, allowedEvidence, byId);
                     if (proposal == null) {
                         String feedback = invalidEvidenceFeedback(decision.finding(), allowedEvidence, candidateEvidence);
-                        observations.add(new LlmGateway.Observation("evidence_validator", "验证漏洞证据引用", feedback));
+                        observations.add(new LlmGateway.Observation("evidence_validator",
+                                Map.of("operation", "验证漏洞证据引用"), feedback));
                         traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.OBSERVATION, feedback);
                         traceService.update(run);
                         continue;

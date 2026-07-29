@@ -11,6 +11,8 @@ import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.recon.TechnologyProfile;
 
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public interface LlmGateway {
@@ -74,7 +76,10 @@ public interface LlmGateway {
         }
     }
 
-    record Observation(String tool, String query, String result) {
+    record Observation(String tool, Map<String, Object> arguments, String result) {
+        public Observation {
+            arguments = safeArguments(arguments);
+        }
     }
 
     record AgentTurn(UUID taskId, AgentType agentType, VulnerabilityType vulnerabilityType,
@@ -98,8 +103,11 @@ public interface LlmGateway {
         }
     }
 
-    record AgentDecision(String action, String tool, String query, int limit,
+    record AgentDecision(String action, String tool, Map<String, Object> arguments,
                          String summary, FindingProposal finding) {
+        public AgentDecision {
+            arguments = safeArguments(arguments);
+        }
     }
 
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
@@ -121,5 +129,14 @@ public interface LlmGateway {
     }
 
     record ReportNarrative(String executiveSummary, String coverageSummary) {
+    }
+
+    private static Map<String, Object> safeArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) return Map.of();
+        Map<String, Object> safe = new LinkedHashMap<>();
+        arguments.forEach((key, value) -> {
+            if (key != null && value != null) safe.put(key, value);
+        });
+        return Map.copyOf(safe);
     }
 }

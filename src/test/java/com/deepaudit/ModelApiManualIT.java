@@ -108,7 +108,7 @@ class ModelApiManualIT {
             }
             observations.add(new LlmGateway.Observation(
                     decision.tool(),
-                    decision.query(),
+                    decision.arguments(),
                     "CHUNK_ID=" + TARGET_CHUNK_ID + " | UserController.java:5 | UserController#search\n"
                             + "<UNTRUSTED_CODE>\n" + VULNERABLE_CODE + "\n</UNTRUSTED_CODE>\n"
                             + "未检索到 PreparedStatement、占位符参数绑定或输入白名单。"

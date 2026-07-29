@@ -12,6 +12,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -19,39 +20,74 @@ import java.util.stream.Collectors;
 public class AuditToolService {
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
+    private final ProfessionalToolService professionalToolService;
 
     @Autowired
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
-                            CodeGraphIntegrationService codeGraphIntegrationService) {
+                            CodeGraphIntegrationService codeGraphIntegrationService,
+                            ProfessionalToolService professionalToolService) {
         this.semanticEvidenceService = semanticEvidenceService;
         this.codeGraphIntegrationService = codeGraphIntegrationService;
+        this.professionalToolService = professionalToolService;
     }
 
     AuditToolService(SemanticEvidenceService semanticEvidenceService) {
-        this(semanticEvidenceService, null);
+        this(semanticEvidenceService, null, null);
+    }
+
+    AuditToolService(SemanticEvidenceService semanticEvidenceService,
+                     CodeGraphIntegrationService codeGraphIntegrationService) {
+        this(semanticEvidenceService, codeGraphIntegrationService, null);
     }
 
     // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
-    public ToolResult execute(String tool, String query, int requestedLimit,
+    public ToolResult execute(String tool, Map<String, Object> rawArguments,
                               CodeChunk current, List<CodeChunk> chunks,
                               VulnerabilityType vulnerabilityType) {
-        int limit = Math.max(1, Math.min(requestedLimit <= 0 ? 6 : requestedLimit, 10));
+        ToolArguments arguments = ToolArguments.of(rawArguments);
+        int limit = arguments.integer("limit", 6, 1, 10);
         String normalizedTool = tool == null ? "call_context" : tool.toLowerCase(Locale.ROOT);
         return switch (normalizedTool) {
-            case "get_chunk" -> getChunk(query, current, chunks);
-            case "verify_relation" -> verifyRelation(query, current, chunks);
+            case "get_chunk" -> getChunk(reference(arguments, "chunkId"), current, chunks);
+            case "verify_relation" -> verifyRelation(reference(arguments, "candidateChunkId"),
+                    current, chunks);
             case "call_context" -> addCodeGraphCandidates(callContext(current, chunks, limit),
                     current, chunks, limit);
             case "get_call_chain" -> addCodeGraphCandidates(
                     semantic(normalizedTool, current, limit, vulnerabilityType), current, chunks, limit);
             case "trace_data_flow", "find_security_guards" ->
                     semantic(normalizedTool, current, limit, vulnerabilityType);
-            case "security_controls" -> addCodeGraphCandidates(
-                    semantic("find_security_guards", current, limit, vulnerabilityType), current, chunks, limit);
-            case "data_access" -> addCodeGraphCandidates(
-                    semantic("trace_data_flow", current, limit, vulnerabilityType), current, chunks, limit);
+            case "search_symbols" -> advanced(professionalToolService == null ? null
+                    : professionalToolService.searchSymbols(current.getTaskId(), current, chunks, arguments, limit));
+            case "explore_call_graph" -> addCodeGraphCandidates(advanced(professionalToolService == null ? null
+                    : professionalToolService.exploreCallGraph(current.getTaskId(), current, chunks,
+                    arguments, limit)), current, chunks, limit);
+            case "get_change_context" -> advanced(professionalToolService == null ? null
+                    : professionalToolService.getChangeContext(current.getTaskId(), current, chunks,
+                    arguments, limit));
+            case "resolve_data_access" -> advanced(professionalToolService == null ? null
+                    : professionalToolService.resolveDataAccess(current.getTaskId(), current, chunks,
+                    arguments, limit));
+            case "inspect_security_policy" -> advanced(professionalToolService == null ? null
+                    : professionalToolService.inspectSecurityPolicy(current.getTaskId(), current, chunks,
+                    arguments, limit));
+            case "trace_value" -> advanced(professionalToolService == null ? null
+                    : professionalToolService.traceValue(current.getTaskId(), current, chunks,
+                    arguments, limit, vulnerabilityType));
             default -> throw new IllegalArgumentException("不允许的 Agent 工具: " + tool);
         };
+    }
+
+    private ToolResult advanced(ProfessionalToolService.Result result) {
+        if (result == null) {
+            return new ToolResult("[TOOL_UNAVAILABLE] 当前运行环境未装配高级专业工具。", Set.of(), Set.of());
+        }
+        return new ToolResult(result.text(), result.evidenceChunkIds(), result.candidateChunkIds());
+    }
+
+    private String reference(ToolArguments arguments, String name) {
+        Long value = arguments.longValue(name);
+        return value == null ? null : String.valueOf(value);
     }
 
     // CodeGraph 关系只作为候选上下文返回，不能绕过 verify_relation 进入允许证据集合。
@@ -83,18 +119,35 @@ public class AuditToolService {
                 .filter(chunk -> current.getFilePath().equals(chunk.getFilePath())
                         || called.contains(methodName(chunk.getSymbolName()))
                         || splitSymbols(chunk.getCalledSymbols()).contains(currentMethod))
-                .sorted(Comparator.comparing((CodeChunk chunk) -> !current.getFilePath().equals(chunk.getFilePath()))
+                .sorted(Comparator.comparing((CodeChunk chunk) -> !hasDirectCallRelation(
+                                chunk, called, currentMethod))
+                        .thenComparing(chunk -> !current.getFilePath().equals(chunk.getFilePath()))
                         .thenComparing(CodeChunk::getStartLine))
                 .limit(limit).toList();
-        return new ToolResult(results.stream().map(chunk -> format(chunk, "调用或同文件关系", 1.0))
-                .collect(Collectors.joining("\n\n")), ids(results));
+        Set<Long> evidence = results.stream().filter(chunk -> hasDirectCallRelation(chunk, called, currentMethod))
+                .map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> candidates = results.stream().map(CodeChunk::getId).filter(id -> !evidence.contains(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        String text = results.stream().map(chunk -> {
+            boolean verified = hasDirectCallRelation(chunk, called, currentMethod);
+            return (verified ? "[VERIFIED_EVIDENCE] " : "[UNVERIFIED_CANDIDATE] ")
+                    + format(chunk, verified ? "直接调用符号关系" : "仅同文件上下文", 1.0);
+        }).collect(Collectors.joining("\n\n"));
+        return new ToolResult(text, evidence, candidates);
+    }
+
+    private boolean hasDirectCallRelation(CodeChunk chunk, Set<String> called, String currentMethod) {
+        return called.contains(methodName(chunk.getSymbolName()))
+                || splitSymbols(chunk.getCalledSymbols()).contains(currentMethod);
     }
 
     // 按 ID 读取源码块，但只有当前目标可立即进入允许证据集合。
-    private ToolResult getChunk(String query, CodeChunk current, List<CodeChunk> chunks) {
+    private ToolResult getChunk(String chunkReference, CodeChunk current, List<CodeChunk> chunks) {
         Long id = current.getId();
         try {
-            if (query != null && !query.isBlank()) id = Long.parseLong(query.replaceAll("[^0-9]", ""));
+            if (chunkReference != null && !chunkReference.isBlank()) {
+                id = Long.parseLong(chunkReference.replaceAll("[^0-9]", ""));
+            }
         } catch (Exception ignored) {
             // 无法解析时读取当前块。
         }
@@ -108,8 +161,8 @@ public class AuditToolService {
     }
 
     // 通过语义图或确定性结构关系把候选提升为已验证证据。
-    private ToolResult verifyRelation(String query, CodeChunk current, List<CodeChunk> chunks) {
-        Long candidateId = parseChunkId(query);
+    private ToolResult verifyRelation(String candidateReference, CodeChunk current, List<CodeChunk> chunks) {
+        Long candidateId = parseChunkId(candidateReference);
         if (candidateId == null) {
             return new ToolResult("verify_relation 需要提供候选 CHUNK_ID", Set.of(), Set.of());
         }
@@ -188,9 +241,9 @@ public class AuditToolService {
         return endpoint.matches(regex.append('$').toString());
     }
 
-    private Long parseChunkId(String query) {
-        if (query == null) return null;
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(query);
+    private Long parseChunkId(String chunkReference) {
+        if (chunkReference == null) return null;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(chunkReference);
         if (!matcher.find()) return null;
         try { return Long.parseLong(matcher.group()); } catch (NumberFormatException exception) { return null; }
     }

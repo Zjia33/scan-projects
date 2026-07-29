@@ -955,8 +955,12 @@ function summarizeToolCall(message) {
         get_call_chain: '追踪当前审计目标的调用链',
         trace_data_flow: '追踪输入到敏感操作的数据流',
         find_security_guards: '查找调用路径上的认证、授权与校验保护',
-        security_controls: '检索适用于当前目标的安全控制',
-        data_access: '追踪当前目标关联的数据访问'
+        search_symbols: '按符号、注解、路径或文本查找相关代码',
+        explore_call_graph: '按方向和深度探索调用路径',
+        get_change_context: '读取当前目标的 Base/Target 变更上下文',
+        resolve_data_access: '解析关联的数据访问、SQL 与参数绑定',
+        inspect_security_policy: '检查适用于当前入口的安全策略',
+        trace_value: '定向追踪变量、数据来源与危险终点'
     };
     if (summaries[tool]) return `${tool}：${summaries[tool]}`;
     if (tool && /^[a-z0-9_-]{1,48}$/.test(tool)) return `${tool}：调用只读工具补充审计证据`;

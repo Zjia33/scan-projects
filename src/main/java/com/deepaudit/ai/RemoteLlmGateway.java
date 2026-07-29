@@ -72,8 +72,9 @@ public class RemoteLlmGateway implements LlmGateway {
     public AgentDecision decide(AgentTurn turn) {
         String systemPrompt = AgentPrompts.professionalAgent(turn.vulnerabilityType());
         String userPrompt = json(Map.of("turn", turn, "outputSchema", Map.of(
-                "action", "TOOL|FINDING|REJECT", "tool", "string|null", "query", "string|null",
-                "limit", "1..10", "summary", "string", "finding",
+                "action", "TOOL|FINDING|REJECT", "tool", "string|null",
+                "arguments", "object，按工具定义提供结构化参数，limit放在此对象内",
+                "summary", "string", "finding",
                 "null|{type:输入中的漏洞枚举,severity:CRITICAL|HIGH|MEDIUM|LOW,"
                         + "confidence:HIGH|MEDIUM|LOW,title,description,remediation,"
                         + "primaryChunkId,evidenceChunkIds,vulnerabilityStartLine,vulnerabilityEndLine}")));

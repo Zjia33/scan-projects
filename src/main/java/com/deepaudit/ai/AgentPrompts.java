@@ -30,12 +30,21 @@ final class AgentPrompts {
             + "安全流、Mapper、框架安全配置或相关代码位置。不得创造输入之外的 unitId 或 primaryChunkId，"
             + "不得把线索直接描述成已确认漏洞。";
 
-    private static final String PROFESSIONAL_AGENT_TOOLS = "工具: get_call_chain(已解析跨文件调用边), "
-            + "trace_data_flow(结构化 Source-to-Sink 路径), "
-            + "find_security_guards(路径上的权限/租户/验证控制), "
-            + "call_context(调用方法与同文件上下文), security_controls(语义安全控制), "
-            + "data_access(语义数据流), get_chunk(按ID读取候选), "
-            + "verify_relation(输入候选chunkId，确定性验证候选与目标的调用/配置关系)。";
+    private static final String PROFESSIONAL_AGENT_TOOLS = "可用只读工具及 arguments："
+            + "get_chunk({chunkId})读取代码块；"
+            + "verify_relation({candidateChunkId})验证候选与目标的调用、语义流或配置关系；"
+            + "call_context({})读取直接调用和同文件上下文；"
+            + "get_call_chain({})读取已有语义安全流或调用出边；"
+            + "trace_data_flow({})读取当前漏洞类型的 Source-to-Sink 路径；"
+            + "find_security_guards({})读取路径上的权限、租户和验证控制；"
+            + "search_symbols({symbol,kind,annotation,filePath,endpoint,text})执行确定性结构搜索；"
+            + "explore_call_graph({direction:CALLERS|CALLEES|BOTH,depth:1..5,targetChunkId,targetSymbol})"
+            + "定向探索调用路径；"
+            + "get_change_context({selector,includeConfiguration})读取 Base/Target 方法与文件差异；"
+            + "resolve_data_access({selector,depth})解析 Mapper、Repository、SQL 和参数绑定；"
+            + "inspect_security_policy({endpoint})检查方法注解和匹配入口的全局安全规则；"
+            + "trace_value({source,sink,variable,depth})定向追踪安全流或跨调用参数映射。"
+            + "arguments 只提供当前工具需要的字段，可用 limit:1..10 控制结果数量，未知字段不要输出。";
 
     private static final String PROFESSIONAL_AGENT_RULES = "turn.recon 包含 Recon Agent 结论和本地确定性 technologyProfile，"
             + "必须结合框架、安全组件与注解生效条件判断，不得孤立地把注解存在或缺失直接当成漏洞。"
@@ -50,8 +59,9 @@ final class AgentPrompts {
             + "或语义影响面的关系，禁止把无关的历史漏洞报告为本次新增问题。"
             + "严格使用以下 JSON 形状之一，所有字段名必须使用双引号：";
 
-    private static final String PROFESSIONAL_AGENT_RESPONSE_RULES = "\"limit\":5,\"summary\":\"简短中文摘要\",\"finding\":null}；"
-            + "REJECT={\"action\":\"REJECT\",\"tool\":null,\"query\":null,\"limit\":1,"
+    private static final String PROFESSIONAL_AGENT_RESPONSE_RULES = "\"arguments\":{\"limit\":5},"
+            + "\"summary\":\"简短中文摘要\",\"finding\":null}；"
+            + "REJECT={\"action\":\"REJECT\",\"tool\":null,\"arguments\":{},"
             + "\"summary\":\"简短中文原因\",\"finding\":null}；FINDING 的 finding 必须是对象。";
 
     private static final String CRITIC_AGENT = "你是独立 Critic Agent。主动寻找全局安全配置、上游校验、"
@@ -81,8 +91,8 @@ final class AgentPrompts {
                 + "标记为 CODEGRAPH_CANDIDATE 或 UNVERIFIED_CANDIDATE 的结果均属于候选。"
                 + PROFESSIONAL_AGENT_RULES
                 + PROFESSIONAL_AGENT_COMMON_RULES
-                + "TOOL={\"action\":\"TOOL\",\"tool\":\"get_call_chain"
-                + "\",\"query\":\"调查目标\"," + PROFESSIONAL_AGENT_RESPONSE_RULES);
+                + "TOOL={\"action\":\"TOOL\",\"tool\":\"explore_call_graph"
+                + "\"," + PROFESSIONAL_AGENT_RESPONSE_RULES);
     }
 
     static String criticAgent() {
