@@ -32,7 +32,9 @@ class AuditToolServiceTest {
 
         assertThat(result.evidenceChunkIds()).containsExactly(2L);
         assertThat(result.candidateChunkIds()).isEmpty();
-        assertThat(result.text()).contains("VERIFIED_EVIDENCE", "调用图存在直接连接");
+        assertThat(result.text())
+                .contains("VERIFIED_EVIDENCE", "调用图存在直接连接")
+                .doesNotContain("score=");
     }
 
     @Test

@@ -137,7 +137,7 @@ public class AuditToolService {
         String text = results.stream().map(chunk -> {
             boolean verified = hasDirectCallRelation(chunk, called, currentMethod);
             return (verified ? "[VERIFIED_EVIDENCE] " : "[UNVERIFIED_CANDIDATE] ")
-                    + format(chunk, verified ? "直接调用符号关系" : "仅同文件上下文", 1.0);
+                    + format(chunk, verified ? "直接调用符号关系" : "仅同文件上下文");
         }).collect(Collectors.joining("\n\n"));
         return new ToolResult(text, evidence, candidates);
     }
@@ -161,10 +161,10 @@ public class AuditToolService {
         Long selectedId = id;
         CodeChunk result = chunks.stream().filter(chunk -> selectedId.equals(chunk.getId())).findFirst().orElse(current);
         if (result.getId().equals(current.getId())) {
-            return new ToolResult(format(result, "当前审计目标", 1.0), Set.of(result.getId()));
+            return new ToolResult(format(result, "当前审计目标"), Set.of(result.getId()));
         }
         return new ToolResult("[UNVERIFIED_CANDIDATE] 读取候选源码不等于证明关系。\n"
-                + format(result, "按ID读取候选", 1.0), Set.of(), Set.of(result.getId()));
+                + format(result, "按ID读取候选"), Set.of(), Set.of(result.getId()));
     }
 
     // 通过语义图或确定性结构关系把候选提升为已验证证据。
@@ -188,7 +188,7 @@ public class AuditToolService {
                     Set.of(), Set.of(candidateId));
         }
         return new ToolResult("[VERIFIED_EVIDENCE] " + reason + "\n"
-                + format(candidate, "确定性关系验证通过", 1.0), Set.of(candidateId), Set.of());
+                + format(candidate, "确定性关系验证通过"), Set.of(candidateId), Set.of());
     }
 
     // 检查精确调用、同一路由或安全策略匹配等无需模型判断的关系。
@@ -259,11 +259,11 @@ public class AuditToolService {
     }
 
     // 将源码包裹为不可信代码片段，避免其文本被当作 Agent 指令执行。
-    private String format(CodeChunk chunk, String reason, double score) {
+    private String format(CodeChunk chunk, String reason) {
         String code = chunk.getContent().substring(0, Math.min(chunk.getContent().length(), 4_000));
         return "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":" + chunk.getStartLine()
-                + " | " + chunk.getSymbolName() + " | reason=" + reason + " | score="
-                + String.format(Locale.ROOT, "%.3f", score) + "\n<UNTRUSTED_CODE>\n" + code
+                + " | " + chunk.getSymbolName() + " | reason=" + reason
+                + "\n<UNTRUSTED_CODE>\n" + code
                 + "\n</UNTRUSTED_CODE>";
     }
 

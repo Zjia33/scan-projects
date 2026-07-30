@@ -3,179 +3,174 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="DeepAudit Java 多 Agent 代码安全审计控制台">
-    <title>DeepAudit / 智能代码审计控制台</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2311140f'/%3E%3Cpath d='M13 14h18c13 0 20 7 20 18S44 50 31 50H13V14zm11 10v16h7c6 0 9-3 9-8s-3-8-9-8h-7z' fill='%23c9ff45'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260727-2">
+    <meta name="description" content="DeepAudit Java 智能代码安全审计控制台">
+    <meta name="theme-color" content="#101a2d">
+    <title>DeepAudit · 智能代码审计</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101a2d'/%3E%3Cpath d='M18 16h14c11 0 18 6 18 16s-7 16-18 16H18V16zm10 9v14h5c5 0 8-2 8-7s-3-7-8-7h-5z' fill='%237de2d1'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css?v=20260730-1">
 </head>
 <body>
-<div class="grain" aria-hidden="true"></div>
 <div class="app-shell">
-    <aside class="sidebar">
-        <a class="brand" href="#overview" aria-label="DeepAudit 控制台首页">
-            <span class="brand-mark">D/A</span>
-            <span><b>DEEPAUDIT</b><small>CODE FORENSICS</small></span>
+    <aside class="sidebar" id="sidebar">
+        <a class="brand" href="#/overview" aria-label="DeepAudit 首页">
+            <span class="brand-symbol" aria-hidden="true">D</span>
+            <span class="brand-copy"><strong>DeepAudit</strong><small>智能代码审计</small></span>
         </a>
 
-        <nav class="side-nav" aria-label="主菜单">
-            <a class="active" href="#overview"><span>01</span>态势总览</a>
-            <a href="#new-audit"><span>02</span>新建审计</a>
-            <a href="#audit-workspace"><span>03</span>审计任务</a>
-            <a href="#project-management"><span>04</span>项目管理</a>
+        <nav class="main-nav" aria-label="主菜单">
+            <a href="#/overview" data-route="overview">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z"/></svg>
+                <span><strong>态势总览</strong><small>风险与运行概况</small></span>
+            </a>
+            <a href="#/new-audit" data-route="new-audit">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>
+                <span><strong>发起审计</strong><small>导入仓库并扫描</small></span>
+            </a>
+            <a href="#/tasks" data-route="tasks">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>
+                <span><strong>审计任务</strong><small>调查过程与发现</small></span>
+            </a>
+            <a href="#/projects" data-route="projects">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2"/></svg>
+                <span><strong>项目管理</strong><small>仓库与扫描历史</small></span>
+            </a>
         </nav>
 
-        <div class="sidebar-foot">
-            <p>ANALYSIS NODE</p>
-            <strong><i></i> ONLINE</strong>
-            <small>AI REQUIRED / STATIC ONLY</small>
+        <div class="sidebar-status">
+            <span class="status-light"></span>
+            <div><strong>分析节点在线</strong><small>只读访问 · AI 审计</small></div>
         </div>
+        <p class="sidebar-version">DEEPAUDIT JAVA · DEV</p>
     </aside>
 
-    <div class="main-frame">
+    <div class="app-main">
         <header class="topbar">
-            <div><span>DEEPAUDIT</span><b>/</b><strong>安全审计控制台</strong></div>
-            <div id="stream-state" class="stream-state idle"><i></i><span>等待选择任务</span></div>
+            <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <div class="page-identity"><span id="page-eyebrow">SECURITY POSTURE / LIVE</span><h1 id="page-title">态势总览</h1></div>
+            <div id="stream-state" class="connection-state idle"><i></i><span>等待选择任务</span></div>
         </header>
 
-        <main>
-            <section id="overview" class="page-section overview-section">
-                <div class="section-intro">
-                    <div>
-                        <p class="kicker">SECURITY POSTURE / LIVE</p>
-                        <h1>代码风险<br><em>检测</em></h1>
+        <main class="page-stage" id="page-stage">
+            <section class="page-view" data-page="overview" aria-labelledby="overview-title">
+                <div class="overview-hero">
+                    <div class="hero-copy">
+                        <span class="section-label">SECURITY POSTURE / LIVE</span>
+                        <h2 id="overview-title">让每一次代码变更<br><em>都有证据可循。</em></h2>
+                        <p>从 Git 提交构建审计上下文，由多 Agent 沿调用链调查，并只呈现通过 Critic 复核的安全问题。</p>
+                        <div class="hero-actions">
+                            <a class="button primary" href="#/new-audit">发起新审计 <span>→</span></a>
+                            <a class="button quiet" href="#/tasks">查看任务中心</a>
+                        </div>
                     </div>
-                    <!-- <p class="intro-copy">从 Git 提交中提取代码事实，识别框架与安全组件，沿跨文件调用链展开多 Agent 调查，并只报告通过 Critic 反证复核的问题。</p> -->
+                    <div class="signal-card" aria-label="审计引擎状态">
+                        <div class="signal-orbit"><span>D/A</span><i></i><i></i><i></i></div>
+                        <div><small>ANALYSIS ENGINE</small><strong>Evidence first</strong><p>侦察、规划、专业调查、反证复核、报告</p></div>
+                    </div>
                 </div>
 
                 <div class="metric-grid" aria-label="审计统计">
-                    <article><small>审计任务</small><strong id="metric-tasks">0</strong><span>TOTAL AUDITS</span></article>
-                    <article><small>进行中</small><strong id="metric-active">0</strong><span>ACTIVE RUNS</span></article>
-                    <article class="risk"><small>确认问题</small><strong id="metric-findings">0</strong><span>CONFIRMED</span></article>
-                    <article><small>模型调用</small><strong id="metric-model-calls">0</strong><span>MODEL CALLS</span></article>
+                    <article class="metric-card accent-blue"><span class="metric-icon">01</span><div><small>累计审计</small><strong id="metric-tasks">0</strong><p>全部任务</p></div></article>
+                    <article class="metric-card accent-cyan"><span class="metric-icon">02</span><div><small>正在运行</small><strong id="metric-active">0</strong><p>实时调查</p></div></article>
+                    <article class="metric-card accent-red"><span class="metric-icon">03</span><div><small>确认问题</small><strong id="metric-findings">0</strong><p>已通过复核</p></div></article>
+                    <article class="metric-card accent-violet"><span class="metric-icon">04</span><div><small>模型调用</small><strong id="metric-model-calls">0</strong><p>Agent 推理</p></div></article>
                 </div>
 
-                <div class="overview-grid">
-                    <article class="process-panel">
-                        <div class="panel-title"><span>审计链路</span><small>EVIDENCE FIRST</small></div>
-                        <div class="process-line">
-                            <div><b>01</b><strong>RECON</strong><span>框架与攻击面</span></div>
-                            <i></i>
-                            <div><b>02</b><strong>PLAN</strong><span>智能任务规划</span></div>
-                            <i></i>
-                            <div><b>03</b><strong>INVESTIGATE</strong><span>跨文件语义调查</span></div>
-                            <i></i>
-                            <div><b>04</b><strong>CRITIC</strong><span>独立寻找反证</span></div>
-                            <i></i>
-                            <div><b>05</b><strong>REPORT</strong><span>中文报告</span></div>
-                        </div>
-                    </article>
-                    <article class="scope-panel">
-                        <div class="panel-title"><span>检测范围</span></div>
-                        <div class="scope-list">
-                            <span>越权漏洞</span><span>SQL 注入</span>
-                        <span>未授权</span><span>存储 XSS</span><span>验证绕过</span>
-                        </div>
-                    </article>
-                </div>
-            </section>
-
-            <section id="new-audit" class="page-section new-audit-section">
-                <div class="section-heading">
-                    <div><p class="kicker">NEW INVESTIGATION</p><h2>新建代码审计</h2></div>
-                    <p>只读导入 Git 仓库，选择单个提交全量扫描，或选择基准与目标分支提交执行分支变更审计。</p>
-                </div>
-                <form id="git-import-form" class="git-console">
-                    <div class="field-group">
-                        <label for="project-name">项目名称</label>
-                        <input id="project-name" name="name" maxlength="200" placeholder="例如：订单中心">
-                    </div>
-                    <div class="field-group repository-url-field">
-                        <label for="repository-url">HTTPS Git 仓库地址</label>
-                        <input id="repository-url" name="repositoryUrl" type="url"
-                               placeholder="https://github.com/owner/repository.git" required>
-                    </div>
-                    <div class="field-group">
-                        <label for="git-username">Git 用户名（可选）</label>
-                        <input id="git-username" name="username" autocomplete="username" placeholder="私有仓库可填写">
-                    </div>
-                    <div class="field-group">
-                        <label for="git-token">访问令牌（仅本次请求使用）</label>
-                        <input id="git-token" name="accessToken" type="password"
-                               autocomplete="off" placeholder="不会保存或回显">
-                    </div>
-                    <button id="import-button" type="submit"><span>读取仓库和提交</span><b>IMPORT →</b></button>
-                    <p id="git-message" class="form-message" role="status"></p>
-                </form>
-
-                <form id="audit-form" class="audit-console">
-                    <div class="field-group">
-                        <label for="repository-select">已导入仓库</label>
-                        <select id="repository-select" required><option value="">请选择仓库</option></select>
-                    </div>
-                    <div class="field-group">
-                        <label for="scan-mode">扫描模式</label>
-                        <select id="scan-mode">
-                            <option value="FULL">全量扫描 Target</option>
-                            <option value="INCREMENTAL">分支变更审计 Base → Target</option>
-                        </select>
-                    </div>
-                    <div id="base-commit-group" class="field-group hidden">
-                        <label for="base-commit">基准分支提交（Base）</label>
-                        <select id="base-commit"></select>
-                    </div>
-                    <div class="field-group">
-                        <label for="target-commit">目标分支提交（Target）</label>
-                        <select id="target-commit" required></select>
-                    </div>
-                    <button id="refresh-commits-button" class="secondary-action" type="button">刷新提交</button>
-                    <button id="submit-button" type="submit"><span>启动多 Agent 审计</span><b>RUN AUDIT →</b></button>
-                    <p id="audit-message" class="form-message" role="status"></p>
-                </form>
-            </section>
-
-            <section id="audit-workspace" class="page-section workspace-section">
-                <div class="section-heading workspace-heading">
-                    <div><p class="kicker">INVESTIGATION QUEUE</p><h2>审计任务</h2></div>
-                    <button id="refresh-button" class="refresh-button" type="button">刷新任务 ↻</button>
-                </div>
-                <div class="workbench">
-                    <div class="task-column">
-                        <div class="column-label"><span>任务队列</span><small id="task-count">0 ITEMS</small></div>
-                        <div id="task-list" class="task-list">
-                            <div class="empty-state">暂无审计任务</div>
-                        </div>
-                    </div>
-                    <section id="task-detail" class="detail-panel" aria-live="polite">
-                        <div class="detail-empty"><span>00</span><p>从左侧选择任务，查看实时 Agent 调查过程与漏洞证据。</p></div>
+                <div class="dashboard-grid">
+                    <section class="surface pipeline-panel">
+                        <div class="surface-heading"><div><span class="section-label">WORKFLOW</span><h3>证据驱动的审计链路</h3></div><span class="soft-badge">5 个阶段</span></div>
+                        <ol class="pipeline-list">
+                            <li><b>01</b><span><strong>Recon</strong><small>框架识别与攻击面侦察</small></span></li>
+                            <li><b>02</b><span><strong>Triage</strong><small>构建审计单元并完成轻量分诊</small></span></li>
+                            <li><b>03</b><span><strong>Investigate</strong><small>专业 Agent 跨文件验证</small></span></li>
+                            <li><b>04</b><span><strong>Critic</strong><small>寻找反证并确认可信度</small></span></li>
+                            <li><b>05</b><span><strong>Report</strong><small>输出可复核的中文报告</small></span></li>
+                        </ol>
+                    </section>
+                    <section class="surface recent-panel">
+                        <div class="surface-heading"><div><span class="section-label">RECENT ACTIVITY</span><h3>最近审计</h3></div><a href="#/tasks">全部任务</a></div>
+                        <div id="recent-task-list" class="recent-task-list"><div class="empty-state compact">暂无审计记录</div></div>
                     </section>
                 </div>
             </section>
 
-            <section id="project-management" class="page-section project-section">
-                <div class="section-heading project-heading">
-                    <div><p class="kicker">PROJECT REGISTRY</p><h2>扫描项目管理</h2></div>
-                    <div class="project-toolbar">
-                        <label><input id="include-archived-projects" type="checkbox"> 显示已归档</label>
-                        <button id="refresh-projects-button" class="refresh-button" type="button">刷新项目 ↻</button>
-                    </div>
+            <section class="page-view" data-page="new-audit" hidden aria-labelledby="new-audit-title">
+                <div class="page-heading">
+                    <div><span class="section-label">NEW INVESTIGATION</span><h2 id="new-audit-title">发起代码审计</h2><p>先连接 Git 仓库，再选择一次提交快照或 Base / Target 变更范围。</p></div>
+                    <div class="page-note"><b>只读安全边界</b><span>不会执行仓库代码、Hook、子模块或构建脚本</span></div>
                 </div>
-                <div class="project-workbench">
-                    <aside class="project-column">
-                        <div class="column-label"><span>项目目录</span><small id="project-count">0 ITEMS</small></div>
-                        <div id="project-list" class="project-list">
-                            <div class="empty-state">暂无扫描项目</div>
+
+                <div class="audit-setup-grid">
+                    <form id="git-import-form" class="surface form-card">
+                        <div class="form-card-head"><span class="step-number">01</span><div><h3>连接代码仓库</h3><p>只读克隆仓库并读取提交记录</p></div></div>
+                        <div class="form-grid">
+                            <label class="field"><span>项目名称 <small>可选</small></span><input id="project-name" name="name" maxlength="200" placeholder="例如：订单中心"></label>
+                            <label class="field wide"><span>HTTPS Git 仓库地址 <b>必填</b></span><input id="repository-url" name="repositoryUrl" type="url" placeholder="https://github.com/owner/repository.git" required></label>
+                            <label class="field"><span>Git 用户名 <small>私有仓库可填</small></span><input id="git-username" name="username" autocomplete="username" placeholder="用户名"></label>
+                            <label class="field"><span>访问令牌 <small>不会保存</small></span><input id="git-token" name="accessToken" type="password" autocomplete="off" placeholder="Personal access token"></label>
                         </div>
+                        <div class="form-footer"><p id="git-message" class="form-message" role="status"></p><button id="import-button" class="button primary" type="submit">连接并读取提交 <span>→</span></button></div>
+                    </form>
+
+                    <form id="audit-form" class="surface form-card">
+                        <div class="form-card-head"><span class="step-number">02</span><div><h3>配置扫描范围</h3><p>全量审计 Target，或进行分支变更审计 Base → Target</p></div></div>
+                        <div class="form-grid">
+                            <label class="field"><span>已连接仓库 <b>必填</b></span><select id="repository-select" required><option value="">请选择仓库</option></select></label>
+                            <label class="field"><span>扫描模式</span><select id="scan-mode"><option value="FULL">全量扫描 · Target</option><option value="INCREMENTAL">增量扫描 · Base → Target</option></select></label>
+                            <label id="base-commit-group" class="field wide" hidden><span>基准提交 Base <b>必填</b></span><select id="base-commit"></select></label>
+                            <label class="field wide"><span>目标提交 Target <b>必填</b></span><select id="target-commit" required></select></label>
+                        </div>
+                        <div class="form-footer split"><p id="audit-message" class="form-message" role="status"></p><div><button id="refresh-commits-button" class="button secondary" type="button">刷新提交</button><button id="submit-button" class="button primary" type="submit">启动 Agent 审计 <span>→</span></button></div></div>
+                    </form>
+                </div>
+            </section>
+
+            <section class="page-view" data-page="tasks" hidden aria-labelledby="tasks-title">
+                <div class="page-heading compact-heading">
+                    <div><span class="section-label">INVESTIGATION CENTER</span><h2 id="tasks-title">审计任务</h2><p>查看任务进度、Agent 调查链路、语义变化与确认漏洞。</p></div>
+                    <button id="refresh-button" class="button secondary" type="button">刷新任务</button>
+                </div>
+                <div class="workspace-layout">
+                    <aside class="list-panel surface">
+                        <div class="list-panel-head"><div><strong>任务队列</strong><small>按创建时间排序</small></div><span id="task-count" class="count-badge">0</span></div>
+                        <div id="task-list" class="entity-list"><div class="empty-state">暂无审计任务</div></div>
                     </aside>
-                    <section id="project-detail" class="project-detail" aria-live="polite">
-                        <div class="detail-empty"><span>PRJ</span><p>选择项目后可维护基本信息、查看扫描历史，并执行项目归档和数据清理。</p></div>
+                    <section id="task-detail" class="detail-panel surface" aria-live="polite">
+                        <div class="blank-detail"><span>⌁</span><h3>选择一项审计任务</h3><p>这里将展示实时 Agent 调查过程和可复核的漏洞证据。</p></div>
+                    </section>
+                </div>
+            </section>
+
+            <section class="page-view" data-page="projects" hidden aria-labelledby="projects-title">
+                <div class="page-heading compact-heading">
+                    <div><span class="section-label">PROJECT REGISTRY</span><h2 id="projects-title">扫描项目管理</h2><p>维护仓库信息、查看扫描历史，并管理项目生命周期。</p></div>
+                    <div class="heading-actions"><label class="toggle"><input id="include-archived-projects" type="checkbox"><span></span>显示已归档</label><button id="refresh-projects-button" class="button secondary" type="button">刷新项目</button></div>
+                </div>
+                <div class="workspace-layout project-layout">
+                    <aside class="list-panel surface">
+                        <div class="list-panel-head"><div><strong>项目目录</strong><small>已连接的 Git 仓库</small></div><span id="project-count" class="count-badge">0</span></div>
+                        <div id="project-list" class="entity-list"><div class="empty-state">暂无扫描项目</div></div>
+                    </aside>
+                    <section id="project-detail" class="detail-panel surface" aria-live="polite">
+                        <div class="blank-detail"><span>⌂</span><h3>选择一个项目</h3><p>查看仓库信息、扫描历史与项目归档操作。</p></div>
                     </section>
                 </div>
             </section>
         </main>
-
-        <footer><span>DEEPAUDIT JAVA / DEVELOPMENT BUILD</span><span>AI 结论需要人工复核</span></footer>
     </div>
 </div>
-<script src="/app.js?v=20260727-2" defer></script>
+
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+<dialog id="confirm-dialog" class="confirm-dialog">
+    <form method="dialog">
+        <span id="dialog-icon" class="dialog-icon">!</span>
+        <h2 id="dialog-title">确认操作</h2>
+        <p id="dialog-message"></p>
+        <div><button class="button secondary" value="cancel">取消</button><button id="dialog-confirm" class="button danger" value="confirm">确认</button></div>
+    </form>
+</dialog>
+
+<script src="/app.js?v=20260730-1" defer></script>
 </body>
 </html>
