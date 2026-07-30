@@ -9,29 +9,21 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * 将完整项目索引压缩为 Recon 可消费的结构化画像。所有代码块都参与统计，模型只接收元数据和位置证据。
+ * 将完整项目索引压缩为 Recon 可消费的整体结构画像。所有代码块都参与统计，模型只接收聚合计数。
  */
 @Slf4j
 final class ProjectStructureProfiler {
     private static final long MAX_INSPECTED_FILE_BYTES = 2L * 1024L * 1024L;
-    private static final int MAX_EVIDENCE_PER_GROUP = 12;
-    private static final Pattern REQUEST_MATCHERS = Pattern.compile(
-            "requestmatchers\\s*\\(([^)]{0,1200})\\)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern QUOTED_VALUE = Pattern.compile("[\\\"']([^\\\"']{1,240})[\\\"']");
     private static final Set<String> PROFILED_EXTENSIONS = Set.of(
             "java", "xml", "yml", "yaml", "properties", "gradle", "kts", "json");
 
@@ -65,19 +57,18 @@ final class ProjectStructureProfiler {
             layerStats.codeChunkCount++;
 
             String searchable = searchable(chunk);
-            String location = location(chunk);
-            inspectEntryPoints(entryPoints, module, chunk, searchable, location);
-            inspectDataAccess(dataAccess, module, path, searchable, location);
-            inspectIntegrations(integrations, module, searchable, location);
+            inspectEntryPoints(entryPoints, module, chunk, searchable);
+            inspectDataAccess(dataAccess, module, path, searchable);
+            inspectIntegrations(integrations, module, searchable);
         }
 
         for (Path file : files) {
             String relative = normalize(root.relativize(file).toString());
             String module = moduleFor(relative, moduleRoots);
             if (isConfigurationFile(file)) {
-                configurations.add(module, configurationKind(file), relative);
+                configurations.add(module, configurationKind(file));
             }
-            inspectFileFacts(file, relative, module, entryPoints, security, integrations);
+            inspectFileFacts(file, module, entryPoints, security, integrations);
         }
 
         return new ProjectStructureProfile(
@@ -138,48 +129,47 @@ final class ProjectStructureProfiler {
 
     // 分析并提取 inspectEntryPoints 对应的事实。
     private void inspectEntryPoints(FactIndex facts, String module, CodeChunk chunk,
-                                    String searchable, String location) {
+                                    String searchable) {
         if (notBlank(chunk.getEndpoint())) {
-            facts.add(module, httpKind(chunk.getAnnotations()), location + " [" + chunk.getEndpoint() + "]");
+            facts.add(module, httpKind(chunk.getAnnotations()));
         }
-        addIfContains(facts, module, "KAFKA_LISTENER", searchable, location, "kafkalistener");
-        addIfContains(facts, module, "RABBIT_LISTENER", searchable, location, "rabbitlistener");
-        addIfContains(facts, module, "JMS_LISTENER", searchable, location, "jmslistener");
-        addIfContains(facts, module, "SCHEDULED_JOB", searchable, location, "scheduled");
-        addIfContains(facts, module, "WEBSOCKET_MESSAGE", searchable, location, "messagemapping");
+        addIfContains(facts, module, "KAFKA_LISTENER", searchable, "kafkalistener");
+        addIfContains(facts, module, "RABBIT_LISTENER", searchable, "rabbitlistener");
+        addIfContains(facts, module, "JMS_LISTENER", searchable, "jmslistener");
+        addIfContains(facts, module, "SCHEDULED_JOB", searchable, "scheduled");
+        addIfContains(facts, module, "WEBSOCKET_MESSAGE", searchable, "messagemapping");
     }
 
     // 分析并提取 inspectDataAccess 对应的事实。
-    private void inspectDataAccess(FactIndex facts, String module, String path,
-                                   String searchable, String location) {
-        addIfContainsAny(facts, module, "JDBC", searchable, location,
+    private void inspectDataAccess(FactIndex facts, String module, String path, String searchable) {
+        addIfContainsAny(facts, module, "JDBC", searchable,
                 "jdbctemplate", "namedparameterjdbctemplate", "preparestatement", "createstatement");
-        addIfContainsAny(facts, module, "MYBATIS", searchable, location,
+        addIfContainsAny(facts, module, "MYBATIS", searchable,
                 "sqlsession", "selectone", "selectlist", "@select", "@insert", "@update", "@delete");
-        addIfContainsAny(facts, module, "JPA_HIBERNATE", searchable, location,
+        addIfContainsAny(facts, module, "JPA_HIBERNATE", searchable,
                 "entitymanager", "createquery", "createnativequery", "@query");
-        addIfContainsAny(facts, module, "REPOSITORY", searchable, location,
+        addIfContainsAny(facts, module, "REPOSITORY", searchable,
                 "repository.", ".save(", ".findby", ".deleteby");
-        if (path.endsWith("mapper.xml")) facts.add(module, "MYBATIS_XML", location);
-        addIfContainsAny(facts, module, "REDIS", searchable, location,
+        if (path.endsWith("mapper.xml")) facts.add(module, "MYBATIS_XML");
+        addIfContainsAny(facts, module, "REDIS", searchable,
                 "redistemplate", "stringredistemplate", "redisrepository");
     }
 
     // 分析并提取 inspectIntegrations 对应的事实。
-    private void inspectIntegrations(FactIndex facts, String module, String searchable, String location) {
-        addIfContainsAny(facts, module, "KAFKA", searchable, location, "kafkatemplate", "kafkalistener");
-        addIfContainsAny(facts, module, "RABBITMQ", searchable, location, "rabbittemplate", "rabbitlistener");
-        addIfContainsAny(facts, module, "JMS", searchable, location, "jmstemplate", "jmslistener");
-        addIfContainsAny(facts, module, "OUTBOUND_HTTP", searchable, location,
+    private void inspectIntegrations(FactIndex facts, String module, String searchable) {
+        addIfContainsAny(facts, module, "KAFKA", searchable, "kafkatemplate", "kafkalistener");
+        addIfContainsAny(facts, module, "RABBITMQ", searchable, "rabbittemplate", "rabbitlistener");
+        addIfContainsAny(facts, module, "JMS", searchable, "jmstemplate", "jmslistener");
+        addIfContainsAny(facts, module, "OUTBOUND_HTTP", searchable,
                 "resttemplate", "webclient", "httpclient", "okhttp", "retrofit");
-        addIfContainsAny(facts, module, "OBJECT_STORAGE", searchable, location,
+        addIfContainsAny(facts, module, "OBJECT_STORAGE", searchable,
                 "s3client", "minio", "blobclient", "ossclient");
-        addIfContainsAny(facts, module, "EMAIL", searchable, location,
+        addIfContainsAny(facts, module, "EMAIL", searchable,
                 "javamailsender", "mailsender", "sendemail");
     }
 
     // 分析并提取 inspectFileFacts 对应的事实。
-    private void inspectFileFacts(Path file, String relative, String module, FactIndex entryPoints,
+    private void inspectFileFacts(Path file, String module, FactIndex entryPoints,
                                   FactIndex security, FactIndex integrations) {
         String content;
         try {
@@ -188,41 +178,30 @@ final class ProjectStructureProfiler {
             log.debug("跳过无法生成项目结构事实的文件: {}", file, exception);
             return;
         }
-        addIfContainsAny(entryPoints, module, "SERVLET_FILTER", content, relative,
+        addIfContainsAny(entryPoints, module, "SERVLET_FILTER", content,
                 "extends onceperrequestfilter", "implements filter", "filterregistrationbean");
-        addIfContains(integrations, module, "FEIGN_CLIENT", content, relative, "@feignclient");
+        addIfContains(integrations, module, "FEIGN_CLIENT", content, "@feignclient");
 
-        addIfContainsAny(security, module, "SECURITY_FILTER_CHAIN", content, relative,
+        addIfContainsAny(security, module, "SECURITY_FILTER_CHAIN", content,
                 "securityfilterchain", "websecurityconfigureradapter");
-        addIfContainsAny(security, module, "ROUTE_AUTHORIZATION", content, relative,
+        addIfContainsAny(security, module, "ROUTE_AUTHORIZATION", content,
                 "authorizehttprequests", "authorizerequests", "requestmatchers", "antmatchers");
-        addIfContains(security, module, "PUBLIC_ROUTE", content, publicRouteEvidence(relative, content), "permitall");
-        addIfContainsAny(security, module, "METHOD_SECURITY", content, relative,
+        addIfContains(security, module, "PUBLIC_ROUTE", content, "permitall");
+        addIfContainsAny(security, module, "METHOD_SECURITY", content,
                 "enablemethodsecurity", "enableglobalmethodsecurity", "preauthorize", "postauthorize",
                 "@secured", "rolesallowed", "requirespermissions", "sacheckpermission");
-        addIfContainsAny(security, module, "CSRF_CONFIGURATION", content, relative,
+        addIfContainsAny(security, module, "CSRF_CONFIGURATION", content,
                 ".csrf(", "csrf::", "csrfdisable", "csrf.enabled");
-        addIfContainsAny(security, module, "CORS_CONFIGURATION", content, relative,
+        addIfContainsAny(security, module, "CORS_CONFIGURATION", content,
                 ".cors(", "corsconfiguration", "allowedorigins", "allowedoriginpatterns");
-        addIfContainsAny(security, module, "SESSION_MANAGEMENT", content, relative,
+        addIfContainsAny(security, module, "SESSION_MANAGEMENT", content,
                 "sessionmanagement", "sessioncreationpolicy", "maximumsessions");
-        addIfContainsAny(security, module, "JWT", content, relative,
+        addIfContainsAny(security, module, "JWT", content,
                 "jwtdecoder", "jwtencoder", "jsonwebtoken", "jjwt", "oauth2resourceserver");
-        addIfContainsAny(security, module, "OAUTH2_OIDC", content, relative,
+        addIfContainsAny(security, module, "OAUTH2_OIDC", content,
                 "oauth2login", "oauth2client", "openid", "oidc", "keycloak");
-        addIfContainsAny(security, module, "CUSTOM_SECURITY_FILTER", content, relative,
+        addIfContainsAny(security, module, "CUSTOM_SECURITY_FILTER", content,
                 "addfilterbefore", "addfilterafter", "addfilterat");
-    }
-
-    // 执行 ProjectStructureProfiler 中的 publicRouteEvidence 处理。
-    private String publicRouteEvidence(String relative, String content) {
-        Set<String> routes = new LinkedHashSet<>();
-        Matcher matcher = REQUEST_MATCHERS.matcher(content);
-        while (matcher.find() && routes.size() < 8) {
-            Matcher values = QUOTED_VALUE.matcher(matcher.group(1));
-            while (values.find() && routes.size() < 8) routes.add(values.group(1));
-        }
-        return routes.isEmpty() ? relative : relative + " [routes=" + String.join(",", routes) + "]";
     }
 
     // 执行 ProjectStructureProfiler 中的 layer 处理。
@@ -259,21 +238,15 @@ final class ProjectStructureProfiler {
                 + safe(chunk.getContent())).toLowerCase(Locale.ROOT);
     }
 
-    // 执行 ProjectStructureProfiler 中的 location 处理。
-    private String location(CodeChunk chunk) {
-        return normalize(chunk.getFilePath()) + ":" + chunk.getStartLine() + " " + safe(chunk.getSymbolName());
-    }
-
     // 向当前结果添加 addIfContains 对应的数据。
-    private void addIfContains(FactIndex facts, String module, String kind, String searchable,
-                               String evidence, String marker) {
-        if (searchable.contains(marker)) facts.add(module, kind, evidence);
+    private void addIfContains(FactIndex facts, String module, String kind, String searchable, String marker) {
+        if (searchable.contains(marker)) facts.add(module, kind);
     }
 
     // 向当前结果添加 addIfContainsAny 对应的数据。
     private void addIfContainsAny(FactIndex facts, String module, String kind, String searchable,
-                                  String evidence, String... markers) {
-        if (containsAny(searchable, markers)) facts.add(module, kind, evidence);
+                                  String... markers) {
+        if (containsAny(searchable, markers)) facts.add(module, kind);
     }
 
     // 判断是否满足 containsAny 对应的条件。
@@ -369,9 +342,9 @@ final class ProjectStructureProfiler {
         private final Map<String, FactAccumulator> values = new TreeMap<>();
 
         // 向当前结果添加 add 对应的数据。
-        private void add(String module, String kind, String evidence) {
+        private void add(String module, String kind) {
             values.computeIfAbsent(module + "\u0000" + kind, ignored -> new FactAccumulator(module, kind))
-                    .add(evidence);
+                    .increment();
         }
 
         // 执行 FactIndex 中的 freeze 处理。
@@ -384,7 +357,6 @@ final class ProjectStructureProfiler {
     private static final class FactAccumulator {
         private final String module;
         private final String kind;
-        private final Set<String> evidence = new LinkedHashSet<>();
         private int occurrenceCount;
 
         // 创建 FactAccumulator 实例并初始化所需依赖或状态。
@@ -394,15 +366,13 @@ final class ProjectStructureProfiler {
         }
 
         // 向当前结果添加 add 对应的数据。
-        private void add(String value) {
+        private void increment() {
             occurrenceCount++;
-            if (evidence.size() < MAX_EVIDENCE_PER_GROUP && value != null && !value.isBlank()) evidence.add(value);
         }
 
         // 执行 FactAccumulator 中的 freeze 处理。
         private ProjectStructureProfile.FactGroup freeze() {
-            return new ProjectStructureProfile.FactGroup(module, kind, occurrenceCount,
-                    new ArrayList<>(evidence));
+            return new ProjectStructureProfile.FactGroup(module, kind, occurrenceCount);
         }
     }
 }

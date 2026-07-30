@@ -49,14 +49,28 @@ public class CriticAgentService {
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.MODEL_CALL,
                     "正在结合 Recon 技术栈、独立语义证据和全局安全控制寻找反证");
             // Critic 直接读取持久化语义证据，避免只复述专业 Agent 的论证。
-            String semanticEvidence = semanticEvidenceService.independentCriticEvidence(taskId,
-                    candidate.proposal().primaryChunkId(), candidate.proposal().type());
+            SemanticEvidenceService.EvidenceResult independentEvidence =
+                    semanticEvidenceService.independentCriticEvidenceResult(taskId,
+                            candidate.proposal().primaryChunkId(), candidate.proposal().type());
+            if (independentEvidence == null) {
+                independentEvidence = new SemanticEvidenceService.EvidenceResult(
+                        semanticEvidenceService.independentCriticEvidence(taskId,
+                                candidate.proposal().primaryChunkId(), candidate.proposal().type()), Set.of());
+            }
             CodeChunk originalPrimary = Optional.ofNullable(chunksById.get(candidate.proposal().primaryChunkId()))
                     .orElseThrow(() -> new IllegalStateException("Critic 引用的主证据不存在"));
+            Set<Long> allowedLocationChunks = allowedLocationChunks(
+                    candidate.proposal(), independentEvidence.evidenceChunkIds(), chunksById);
+            List<LlmGateway.LocationCandidate> locationCandidates =
+                    FindingLocationResolver.locationCandidates(chunksById, allowedLocationChunks);
+            // Critic 只接收确定性技术栈，不携带 Recon 模型生成的架构意见。
+            LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("", List.of(), List.of(), List.of(),
+                    recon == null ? null : recon.technologyProfile());
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
                     taskId, candidate.sourceAgent(), candidate.proposal(), candidate.evidence(),
-                    semanticEvidence, recon, originalPrimary.getChangeType().name(),
-                    originalPrimary.getAnalysisScope().name(), originalPrimary.getBaseContent()));
+                    independentEvidence.text(), criticRecon, originalPrimary.getChangeType().name(),
+                    originalPrimary.getAnalysisScope().name(), originalPrimary.getBaseContent(),
+                    locationCandidates));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
                     safe(decision.reason()));
             candidate.hypothesis().setCriticReason(decision.reason());
@@ -71,14 +85,20 @@ public class CriticAgentService {
                 traceService.update(run);
                 return Optional.empty();
             }
-            Optional<LlmGateway.FindingProposal> corrected = correctedProposal(
-                    candidate.proposal(), decision, chunksById, scanMode);
-            if (corrected.isEmpty()) {
-                String invalidLocation = "Critic 虽确认候选，但未返回合法的最终漏洞代码块和精确行号";
-                candidate.hypothesis().setStatus(HypothesisStatus.REJECTED);
+            Correction corrected = correctedProposal(candidate.proposal(), decision, chunksById,
+                    allowedLocationChunks, locationCandidates, scanMode);
+            if (corrected.proposal().isEmpty() && !locationCandidates.isEmpty()) {
+                corrected = repairLocation(taskId, candidate.proposal(), decision, chunksById,
+                        allowedLocationChunks, locationCandidates, scanMode, corrected.reason(), run);
+            }
+            if (corrected.proposal().isEmpty()) {
+                String invalidLocation = "Critic 已确认漏洞，但精确位置仍待复核：" + corrected.reason();
+                candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED_UNLOCATED);
+                candidate.hypothesis().setConfidence(decision.confidence() == null
+                        ? fallbackConfidence(candidate.proposal().confidence()) : decision.confidence());
                 candidate.hypothesis().setCriticReason(safe(decision.reason()) + "；" + invalidLocation);
                 hypothesisMapper.update(candidate.hypothesis());
-                traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REJECTED,
+                traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.LOCATION_UNRESOLVED,
                         invalidLocation);
                 run.complete(invalidLocation);
                 traceService.update(run);
@@ -87,7 +107,7 @@ public class CriticAgentService {
             // Critic 对整条证据链重新选择实际漏洞点，最终报告不复用专业 Agent 的旧位置文本。
             Confidence confidence = decision.confidence() == null
                     ? fallbackConfidence(candidate.proposal().confidence()) : decision.confidence();
-            LlmGateway.FindingProposal proposal = corrected.get();
+            LlmGateway.FindingProposal proposal = corrected.proposal().orElseThrow();
             CodeChunk primary = chunksById.get(proposal.primaryChunkId());
             candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED);
             candidate.hypothesis().setConfidence(confidence);
@@ -145,29 +165,81 @@ public class CriticAgentService {
     }
 
     // 执行 CriticAgentService 中的 correctedProposal 处理。
-    private Optional<LlmGateway.FindingProposal> correctedProposal(
+    private Correction correctedProposal(
             LlmGateway.FindingProposal original, LlmGateway.CriticDecision decision,
-            Map<Long, CodeChunk> chunks, ScanMode scanMode) {
-        Long primaryChunkId = decision.primaryChunkId();
-        Set<Long> allowed = new LinkedHashSet<>(original.evidenceChunkIds());
-        allowed.add(original.primaryChunkId());
-        if (primaryChunkId == null || !allowed.contains(primaryChunkId)) return Optional.empty();
-        CodeChunk primary = chunks.get(primaryChunkId);
-        if (primary == null) return Optional.empty();
-        if (scanMode == ScanMode.INCREMENTAL
-                && primary.getAnalysisScope() != com.deepaudit.domain.AnalysisScope.CHANGED
-                && primary.getAnalysisScope() != com.deepaudit.domain.AnalysisScope.IMPACTED) {
-            return Optional.empty();
+            Map<Long, CodeChunk> chunks, Set<Long> allowed,
+            List<LlmGateway.LocationCandidate> candidates, ScanMode scanMode) {
+        if (scanMode == ScanMode.INCREMENTAL && !hasIncrementalAnchor(allowed, chunks)) {
+            return Correction.unresolved("证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
         }
-        Optional<FindingLocationResolver.Location> location = FindingLocationResolver.validateExplicit(
-                decision.vulnerabilityStartLine(), decision.vulnerabilityEndLine(), primary);
-        if (location.isEmpty()) return Optional.empty();
+        FindingLocationResolver.LocationResolution resolution =
+                FindingLocationResolver.resolveCriticLocation(original, decision, chunks, allowed, candidates);
+        if (resolution.resolved().isEmpty()) return Correction.unresolved(resolution.reason());
+        Long primaryChunkId = resolution.resolved().orElseThrow().chunkId();
+        CodeChunk primary = chunks.get(primaryChunkId);
+        FindingLocationResolver.Location location = resolution.resolved().orElseThrow().location();
         List<Long> evidenceIds = new ArrayList<>(allowed);
         evidenceIds.remove(primaryChunkId);
         evidenceIds.add(0, primaryChunkId);
-        return Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
+        return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
                 original.confidence(), original.title(), original.description(), original.remediation(),
-                primaryChunkId, evidenceIds, location.get().startLine(), location.get().endLine()));
+                primaryChunkId, evidenceIds, location.startLine(), location.endLine())), resolution.reason());
+    }
+
+    private Correction repairLocation(UUID taskId, LlmGateway.FindingProposal original,
+                                      LlmGateway.CriticDecision decision, Map<Long, CodeChunk> chunks,
+                                      Set<Long> allowed, List<LlmGateway.LocationCandidate> candidates,
+                                      ScanMode scanMode, String failureReason, AgentRun run) {
+        try {
+            run.setModelCallCount(run.getModelCallCount() + 1);
+            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.MODEL_CALL,
+                    "漏洞结论已经确认，正在从真实源码候选中修复最终位置");
+            String previous = String.valueOf(decision.primaryChunkId()) + ":"
+                    + decision.vulnerabilityStartLine() + "-" + decision.vulnerabilityEndLine();
+            LlmGateway.LocationDecision repaired = llmGateway.repairLocation(
+                    new LlmGateway.LocationRepairRequest(taskId, original.type(), original.title(),
+                            original.description(), decision.reason(), decision.rootCauseKind(), previous,
+                            failureReason, candidates));
+            Optional<FindingLocationResolver.ResolvedPrimary> resolved = FindingLocationResolver.resolveCandidate(
+                    repaired == null ? null : repaired.locationCandidateId(), candidates);
+            if (resolved.isEmpty()) return Correction.unresolved(
+                    failureReason + "；定位修复未选择合法候选 ID");
+            if (scanMode == ScanMode.INCREMENTAL && !hasIncrementalAnchor(allowed, chunks)) {
+                return Correction.unresolved("定位已修复，但证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
+            }
+            Long primaryChunkId = resolved.orElseThrow().chunkId();
+            FindingLocationResolver.Location location = resolved.orElseThrow().location();
+            List<Long> evidenceIds = new ArrayList<>(allowed);
+            evidenceIds.remove(primaryChunkId);
+            evidenceIds.add(0, primaryChunkId);
+            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
+                    "定位修复完成：" + safe(repaired.reason()));
+            return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
+                    original.confidence(), original.title(), original.description(), original.remediation(),
+                    primaryChunkId, evidenceIds, location.startLine(), location.endLine())),
+                    "已通过受约束候选完成位置修复");
+        } catch (RuntimeException exception) {
+            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
+                    "定位修复调用失败，保留已确认但待定位状态：" + safe(exception.getMessage()));
+            return Correction.unresolved(failureReason + "；定位修复调用失败");
+        }
+    }
+
+    private Set<Long> allowedLocationChunks(LlmGateway.FindingProposal proposal,
+                                            Set<Long> independentEvidenceIds,
+                                            Map<Long, CodeChunk> chunks) {
+        LinkedHashSet<Long> allowed = new LinkedHashSet<>();
+        allowed.add(proposal.primaryChunkId());
+        allowed.addAll(proposal.evidenceChunkIds());
+        allowed.addAll(independentEvidenceIds);
+        allowed.removeIf(id -> id == null || !chunks.containsKey(id));
+        return allowed;
+    }
+
+    private boolean hasIncrementalAnchor(Set<Long> allowed, Map<Long, CodeChunk> chunks) {
+        return allowed.stream().map(chunks::get).filter(java.util.Objects::nonNull).anyMatch(chunk ->
+                chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED
+                        || chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED);
     }
 
     // 执行 CriticAgentService 中的 affectedEndpoint 处理。
@@ -187,6 +259,12 @@ public class CriticAgentService {
             return java.util.HexFormat.of().formatHex(digest);
         } catch (Exception exception) {
             throw new IllegalStateException("无法生成漏洞稳定指纹", exception);
+        }
+    }
+
+    private record Correction(Optional<LlmGateway.FindingProposal> proposal, String reason) {
+        private static Correction unresolved(String reason) {
+            return new Correction(Optional.empty(), reason == null ? "未知定位错误" : reason);
         }
     }
 }

@@ -142,8 +142,19 @@ public class AnalysisService {
                 + selectedBaseContext
                 + "；深度范围 " + (incrementalScope == null ? 0 : incrementalScope.totalDeepTargets()) + " 个代码块"
                 + (incrementalScope == null ? "" : "；方法变化 " + incrementalScope.semanticChangeSummary());
+        long confirmedUnlocated = candidates.stream()
+                .filter(candidate -> candidate.hypothesis().getStatus()
+                        == com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED)
+                .count();
+        if (confirmedUnlocated > 0) {
+            auditContext += "；另有 " + confirmedUnlocated + " 个漏洞已由 Critic 确认但精确位置待复核";
+        }
+        int rejectedHypotheses = (int) candidates.stream()
+                .filter(candidate -> candidate.hypothesis().getStatus()
+                        == com.deepaudit.domain.HypothesisStatus.REJECTED)
+                .count();
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
-                candidates.size() - confirmed.size(), auditContext);
+                rejectedHypotheses, auditContext);
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
     }
 

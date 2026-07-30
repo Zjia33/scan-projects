@@ -1,6 +1,7 @@
 package com.deepaudit.ai;
 
 import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.Confidence;
@@ -24,11 +25,18 @@ public interface LlmGateway {
     // 执行 LlmGateway 中的 triage 处理。
     TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits);
 
+    // 基于真实 Base/Target 和客观影响事实分流全部增量审查位置。
+    TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
+                                 List<IncrementalReviewUnit> reviewUnits);
+
     // 执行 LlmGateway 中的 decide 处理。
     AgentDecision decide(AgentTurn turn);
 
     // 执行 LlmGateway 中的 critique 处理。
     CriticDecision critique(CriticRequest request);
+
+    // Critic 已确认漏洞但首次定位不合法时，只修复位置选择，不重新判断漏洞是否成立。
+    LocationDecision repairLocation(LocationRepairRequest request);
 
     // 生成并写出 writeReport 对应的内容。
     ReportNarrative writeReport(ReportRequest request);
@@ -136,18 +144,69 @@ public interface LlmGateway {
     // 封装 CriticRequest 使用的不可变结构化数据。
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
                          String evidence, String independentSemanticEvidence, ReconInsight recon,
-                         String changeType, String analysisScope, String baseCodeExcerpt) {
+                         String changeType, String analysisScope, String baseCodeExcerpt,
+                         List<LocationCandidate> locationCandidates) {
+        public CriticRequest {
+            locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
+        }
+
+        public CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
+                             String evidence, String independentSemanticEvidence, ReconInsight recon,
+                             String changeType, String analysisScope, String baseCodeExcerpt) {
+            this(taskId, sourceAgent, proposal, evidence, independentSemanticEvidence, recon,
+                    changeType, analysisScope, baseCodeExcerpt, List.of());
+        }
     }
 
     // 封装 CriticDecision 使用的不可变结构化数据。
     record CriticDecision(boolean confirmed, Confidence confidence, String reason,
                           FindingDeltaStatus deltaStatus, Long primaryChunkId,
-                          Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
+                          Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                          String rootCauseKind, String locationRole, String locationCandidateId) {
+        // 兼容不关心结构化定位语义的本地模型替身；生产模型必须返回根因和位置角色。
+        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, null, null, null);
+        }
+
+        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                              String rootCauseKind, String locationRole) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole, null);
+        }
+
         // 创建 CriticDecision 实例并初始化所需依赖或状态。
         public CriticDecision(boolean confirmed, Confidence confidence, String reason,
                               FindingDeltaStatus deltaStatus) {
-            this(confirmed, confidence, reason, deltaStatus, null, null, null);
+            this(confirmed, confidence, reason, deltaStatus, null, null, null, null, null, null);
         }
+    }
+
+    // 由后端从真实证据源码生成的可选位置；模型只能选择 candidateId，不能创造行号。
+    record LocationCandidate(String candidateId, long chunkId, String filePath, String symbolName,
+                             int startLine, int endLine, String source, List<String> roles,
+                             String analysisScope) {
+        public LocationCandidate {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+        }
+    }
+
+    // 位置修复只接收已经确认的漏洞事实和合法候选，不允许重新否决漏洞。
+    record LocationRepairRequest(UUID taskId, VulnerabilityType vulnerabilityType, String title,
+                                 String description, String criticReason, String rootCauseKind,
+                                 String previousLocation, String failureReason,
+                                 List<LocationCandidate> locationCandidates) {
+        public LocationRepairRequest {
+            locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
+        }
+    }
+
+    // 专用定位调用只返回后端生成的候选 ID。
+    record LocationDecision(String locationCandidateId, String reason) {
     }
 
     // 封装 ReportFinding 使用的不可变结构化数据。

@@ -1,6 +1,7 @@
 package com.deepaudit.ai;
 
 import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.recon.ReconSummary;
 import com.fasterxml.jackson.core.JsonLocation;
 import com.fasterxml.jackson.core.JsonParser;
@@ -52,9 +53,13 @@ public class RemoteLlmGateway implements LlmGateway {
     @Override
     public ReconInsight inspectProject(UUID taskId, ReconSummary summary) {
         String systemPrompt = AgentPrompts.reconAgent();
-        String userPrompt = json(Map.of("taskId", taskId, "projectFacts", summary,
-                "outputSchema", Map.of("architectureSummary", "string", "attackSurfaces", "string[]",
-                        "securityMechanisms", "string[]", "riskAreas", "string[]")));
+        ReconSummary aggregateFacts = new ReconSummary(summary.sourceFileCount(), summary.javaMethodCount(),
+                summary.endpointCount(), summary.chunkCount(), summary.technologyProfile().withoutEvidence(),
+                summary.projectStructure());
+        String userPrompt = json(Map.of("taskId", taskId, "projectFacts", aggregateFacts,
+                "outputSchema", Map.of("architectureSummary", "仅包含整体技术架构、模块和分层事实的 string",
+                        "attackSurfaces", "必须为空的 string[]", "securityMechanisms", "必须为空的 string[]",
+                        "riskAreas", "必须为空的 string[]")));
         return call(systemPrompt, userPrompt, ReconInsight.class);
     }
 
@@ -63,6 +68,19 @@ public class RemoteLlmGateway implements LlmGateway {
     public TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits) {
         String systemPrompt = AgentPrompts.triageOrchestrator();
         String userPrompt = json(Map.of("taskId", taskId, "recon", recon, "auditUnits", auditUnits,
+                "outputSchema", Map.of("summary", "string", "decisions",
+                        "[{unitId,primaryChunkId,disposition:INVESTIGATE|NEED_CONTEXT|SKIP,"
+                                + "vulnerabilityTypes:[],reasonCodes:[],requiredContext:[],reason}]")));
+        return call(systemPrompt, userPrompt, TriagePlan.class);
+    }
+
+    // 增量分流读取真实 Base/Target 摘录，不使用 Recon 模型摘要或预猜测的候选漏洞类型。
+    @Override
+    public TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
+                                        List<IncrementalReviewUnit> reviewUnits) {
+        String systemPrompt = AgentPrompts.incrementalTriage();
+        String userPrompt = json(Map.of("taskId", taskId,
+                "projectTechnology", recon.technologyProfile(), "reviewUnits", reviewUnits,
                 "outputSchema", Map.of("summary", "string", "decisions",
                         "[{unitId,primaryChunkId,disposition:INVESTIGATE|NEED_CONTEXT|SKIP,"
                                 + "vulnerabilityTypes:[],reasonCodes:[],requiredContext:[],reason}]")));
@@ -90,10 +108,24 @@ public class RemoteLlmGateway implements LlmGateway {
         String userPrompt = json(Map.of("candidate", request, "outputSchema",
                 Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string",
                         "deltaStatus", "BASELINE|NEW|PERSISTING",
-                        "primaryChunkId", "confirmed=true 时必填，且必须来自候选 evidenceChunkIds",
-                        "vulnerabilityStartLine", "confirmed=true 时必填的实际漏洞起始行",
-                        "vulnerabilityEndLine", "confirmed=true 时必填，最多覆盖连续 5 行")));
+                        "rootCauseKind", "INEFFECTIVE_SECURITY_CONTROL|MISSING_AUTHORIZATION_CHECK|"
+                                + "UNSAFE_DATA_EXPOSURE|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT|UNSAFE_OPERATION",
+                        "locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|QUERY|VALIDATION|"
+                                + "DATA_ACCESS|DATA_OUTPUT|DANGEROUS_OPERATION|BUSINESS_OPERATION",
+                        "locationCandidateId", "confirmed=true 时优先填写，且必须来自 locationCandidates",
+                        "primaryChunkId", "confirmed=true 时复制所选 locationCandidate.chunkId",
+                        "vulnerabilityStartLine", "confirmed=true 时复制所选 locationCandidate.startLine",
+                        "vulnerabilityEndLine", "confirmed=true 时复制所选 locationCandidate.endLine")));
         return call(systemPrompt, userPrompt, CriticDecision.class);
+    }
+
+    // 对已确认漏洞执行一次受约束的位置修复，模型只能选择服务器生成的候选 ID。
+    @Override
+    public LocationDecision repairLocation(LocationRepairRequest request) {
+        String userPrompt = json(Map.of("confirmedVulnerability", request, "outputSchema",
+                Map.of("locationCandidateId", "必须原样取自 locationCandidates.candidateId",
+                        "reason", "简短中文定位理由")));
+        return call(AgentPrompts.locationRepair(), userPrompt, LocationDecision.class);
     }
 
     // 请求 Report Agent 只改写已确认事实，不允许在报告阶段新增漏洞。

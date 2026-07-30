@@ -444,13 +444,13 @@ function renderTaskList() {
         title.append(el('strong', '', task.projectName), statusTag(task.status));
         copy.append(title,
             el('small', '', `${scanModeText(task.scanMode)} · ${task.currentStage || '等待启动'}`));
-        if (!TERMINAL_STATUSES.has(task.status)) {
+        if (task.status === 'RUNNING') {
             const progress = el('span', 'entity-progress');
             const fill = el('i');
             fill.style.width = `${clampProgress(task.progress)}%`;
             progress.append(fill);
             copy.append(progress);
-        } else {
+        } else if (TERMINAL_STATUSES.has(task.status)) {
             copy.append(el('small', '', `${task.findingCount || 0} 个确认问题 · ${formatTime(task.createdAt)}`));
         }
         button.append(el('span', 'entity-index', String(index + 1).padStart(2, '0')), copy);
@@ -641,19 +641,71 @@ function appendFindingDescription(container, value) {
     const description = String(value || '').trim();
     const marker = 'Critic Agent 复核：';
     const index = description.indexOf(marker);
-    if (index < 0) {
-        if (description) container.append(el('p', 'finding-description', description));
-        return;
-    }
-    const main = description.slice(0, index).trim();
-    if (main) container.append(el('p', 'finding-description', main));
-    container.append(el('p', 'critic-review', description.slice(index).trim()));
+    const main = (index < 0 ? description : description.slice(0, index)).trim();
+    const review = index < 0 ? '' : description.slice(index + marker.length).trim();
+    const content = main || review;
+    if (!content) return;
+    const section = el('section', 'finding-copy-section');
+    section.append(el('h5', '', '漏洞说明'), el('p', 'finding-description', content));
+    container.append(section);
 }
 
 function buildFindingEvidence(value) {
-    const code = el('pre', 'finding-evidence');
-    const lines = String(value || '暂无代码证据').split(/\r?\n/);
-    lines.forEach(line => code.append(el('span', line.startsWith('>>> ') ? 'vulnerable-line' : '', line)));
+    const section = el('section', 'finding-copy-section');
+    section.append(el('h5', '', '代码证据'));
+    const list = el('div', 'finding-evidence-list');
+    splitFindingEvidence(value).forEach((chunk, index) => {
+        const card = el('article', 'finding-evidence-chunk');
+        const header = el('header');
+        header.append(el('b', '', chunk.id ? `CHUNK ${chunk.id}` : `证据 ${index + 1}`),
+            el('span', '', chunk.location || '代码上下文'));
+        const code = buildEvidenceCode(chunk.code || '暂无代码证据');
+        card.append(header, code);
+        list.append(card);
+    });
+    section.append(list);
+    return section;
+}
+
+function splitFindingEvidence(value) {
+    const lines = String(value || '').split(/\r?\n/);
+    const chunks = [];
+    let current = null;
+    lines.forEach(line => {
+        const match = line.match(/^\[CHUNK\s+(\d+)]\s*(.*)$/);
+        if (match) {
+            if (current) chunks.push(current);
+            current = {id: match[1], location: match[2].trim(), lines: []};
+            return;
+        }
+        if (!current) current = {id: '', location: '', lines: []};
+        current.lines.push(line);
+    });
+    if (current) chunks.push(current);
+    const normalized = chunks.map(chunk => ({
+        id: chunk.id,
+        location: chunk.location,
+        code: chunk.lines.join('\n').trim()
+    })).filter(chunk => chunk.id || chunk.location || chunk.code);
+    return normalized.length ? normalized : [{id: '', location: '', code: '暂无代码证据'}];
+}
+
+function buildEvidenceCode(value) {
+    const code = el('div', 'evidence-code');
+    String(value || '').split(/\r?\n/).forEach(line => {
+        const match = line.match(/^(>>> |\s{4})(\s*\d+)\s*\|\s?(.*)$/);
+        const row = el('div', `evidence-code-line${line.startsWith('>>> ') ? ' vulnerable' : ''}`);
+        if (match) {
+            row.append(el('span', 'evidence-line-number', match[2].trim()),
+                el('code', '', match[3] || ' '));
+        } else if (line.trim() === '…') {
+            row.classList.add('ellipsis');
+            row.append(el('span', 'evidence-line-number', '…'), el('code', '', ' '));
+        } else {
+            row.append(el('span', 'evidence-line-number', ''), el('code', '', line || ' '));
+        }
+        code.append(row);
+    });
     return code;
 }
 
@@ -822,7 +874,7 @@ function appendAgentEvent(taskId, event) {
         if (nearBottom) feed.scrollTop = feed.scrollHeight;
     }
     setText('#task-event-count', events.length);
-    if (['STARTED', 'COMPLETED', 'ERROR', 'FINDING', 'REJECTED'].includes(event.eventType)) {
+    if (['STARTED', 'COMPLETED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED', 'REJECTED'].includes(event.eventType)) {
         scheduleAgentRefresh(taskId);
     }
 }
@@ -1213,7 +1265,7 @@ function eventTypeText(type) {
     return ({
         STARTED: '启动', MODEL_CALL: '模型调用', REASONING: '推理摘要', PLAN: '审计计划',
         TOOL_CALL: '工具调用', OBSERVATION: '工具观察', HYPOTHESIS: '漏洞假设',
-        FINDING: '确认问题', REJECTED: '否决', COMPLETED: '完成', ERROR: '错误'
+        FINDING: '确认问题', LOCATION_UNRESOLVED: '定位待复核', REJECTED: '否决', COMPLETED: '完成', ERROR: '错误'
     })[type] || type || '事件';
 }
 

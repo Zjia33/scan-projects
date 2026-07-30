@@ -3,6 +3,7 @@ package com.deepaudit.agent;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
+import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
@@ -25,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CriticAgentServiceTest {
@@ -76,6 +78,175 @@ class CriticAgentServiceTest {
         assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(vulnerableService.getId());
     }
 
+    @Test
+    void relocatesIneffectiveMethodSecurityFindingFromDataReadToSecurityBoundary() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk controller = noticeController(taskId);
+        CodeChunk dataRead = noticeService(taskId);
+        controller.setAnalysisScope(AnalysisScope.IMPACTED);
+        dataRead.setAnalysisScope(AnalysisScope.CHANGED);
+        LlmGateway.FindingProposal proposedAtDataRead = new LlmGateway.FindingProposal(
+                VulnerabilityType.UNAUTHORIZED_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                "方法级权限注解未生效", "项目未启用 @EnableGlobalMethodSecurity，@PreAuthorize 不生效",
+                "启用方法级安全", dataRead.getId(), List.of(dataRead.getId(), controller.getId()), 60, 60);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                VulnerabilityType.UNAUTHORIZED_DISCLOSURE, "未授权用户可以读取公告", dataRead.getId(),
+                dataRead.getId() + "," + controller.getId(), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.AUTHORIZATION, proposedAtDataRead, "候选证据", hypothesis);
+
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(dataRead.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, dataRead.getId(), "renderNoticeBoard"));
+        when(semanticEvidenceService.independentCriticEvidence(
+                taskId, dataRead.getId(), VulnerabilityType.UNAUTHORIZED_DISCLOSURE))
+                .thenReturn("全局方法级安全配置缺失");
+        when(semanticEvidenceService.callSiteLines(eq(taskId), eq(controller.getId()), anySet()))
+                .thenReturn(Map.of());
+        // 即使模型仍错误地选择数据读取行，服务端也必须按根因重定位到失效的权限注解。
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                true, Confidence.HIGH,
+                "全局未启用 @EnableGlobalMethodSecurity，导致 @PreAuthorize 注解不生效",
+                FindingDeltaStatus.PERSISTING, dataRead.getId(), 60, 60,
+                "INEFFECTIVE_SECURITY_CONTROL", "DATA_ACCESS"));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(),
+                List.of(controller, dataRead), ScanMode.INCREMENTAL);
+
+        assertThat(result).isPresent();
+        Finding finding = result.orElseThrow();
+        assertThat(finding.getFilePath()).isEqualTo("LabScenarioController.java");
+        assertThat(finding.getStartLine()).isEqualTo(58);
+        assertThat(finding.getEndLine()).isEqualTo(58);
+        assertThat(finding.getEndpoint()).isEqualTo("/api/lab/notices/board");
+        assertThat(finding.getDeltaStatus()).isEqualTo(FindingDeltaStatus.PERSISTING);
+        assertThat(finding.getEvidence())
+                .contains("[漏洞位置] LabScenarioController.java:58")
+                .contains(">>>    58 | @PreAuthorize")
+                .contains("[关联证据] LabScenarioService.java:60")
+                .doesNotContain(">>>    60 |     return noticeRepository.findAll().stream()");
+        assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(controller.getId());
+    }
+
+    @Test
+    void repairsConfirmedCustomOperationBySelectingServerGeneratedCandidate() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk operation = customOperation(taskId);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                "未验证指令被提交", "外部指令直接交给账本端口执行", "提交前验证金额与归属",
+                operation.getId(), List.of(operation.getId()), 40, 40);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                VulnerabilityType.FINANCIAL_RISK, "未验证指令可改变账本", operation.getId(),
+                String.valueOf(operation.getId()), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.BASELINE,
+                operation.getId(), 40, 40, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+        when(gateway.repairLocation(any())).thenAnswer(invocation -> {
+            LlmGateway.LocationRepairRequest request = invocation.getArgument(0);
+            LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
+                    .filter(value -> value.source().contains("ledgerPort.apply"))
+                    .findFirst().orElseThrow();
+            return new LlmGateway.LocationDecision(selected.candidateId(), "选择真实账本调用");
+        });
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation), ScanMode.FULL);
+
+        assertThat(result).get().satisfies(finding -> {
+            assertThat(finding.getStartLine()).isEqualTo(41);
+            assertThat(finding.getEndLine()).isEqualTo(41);
+        });
+        assertThat(hypothesis.getStatus()).isEqualTo(com.deepaudit.domain.HypothesisStatus.CONFIRMED);
+        verify(gateway).repairLocation(any());
+    }
+
+    @Test
+    void preservesConfirmedVerdictWhenLocationRepairStillCannotResolve() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk operation = customOperation(taskId);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                "未验证指令被提交", "外部指令直接交给账本端口执行", "提交前验证金额与归属",
+                operation.getId(), List.of(operation.getId()), 40, 40);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                VulnerabilityType.FINANCIAL_RISK, "未验证指令可改变账本", operation.getId(),
+                String.valueOf(operation.getId()), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.BASELINE,
+                operation.getId(), 40, 40, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+        when(gateway.repairLocation(any())).thenReturn(
+                new LlmGateway.LocationDecision("invented:1-1", "错误候选"));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation), ScanMode.FULL);
+
+        assertThat(result).isEmpty();
+        assertThat(hypothesis.getStatus())
+                .isEqualTo(com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED);
+        assertThat(hypothesis.getCriticReason()).contains("已确认漏洞", "定位修复未选择合法候选 ID");
+        verify(hypothesisMapper).update(hypothesis);
+    }
+
+    @Test
+    void allowsActualContextLocationWhenIncrementalEvidenceContainsChangedCausalAnchor() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk changedEntry = controller(taskId);
+        CodeChunk contextOperation = vulnerableService(taskId);
+        changedEntry.setAnalysisScope(AnalysisScope.CHANGED);
+        contextOperation.setAnalysisScope(AnalysisScope.CONTEXT);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                "客户端报价被用于扣款", "变更入口调用原有的不安全扣款操作", "服务端查询可信价格",
+                changedEntry.getId(), List.of(changedEntry.getId(), contextOperation.getId()), 84, 84);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                VulnerabilityType.FINANCIAL_RISK, "变更入口暴露原有危险扣款操作", changedEntry.getId(),
+                changedEntry.getId() + "," + contextOperation.getId(), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "调用链证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(changedEntry.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, changedEntry.getId(), "purchase"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "变更入口能够到达原有危险扣款逻辑", FindingDeltaStatus.NEW,
+                contextOperation.getId(), 86, 88, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(),
+                List.of(changedEntry, contextOperation), ScanMode.INCREMENTAL);
+
+        assertThat(result).get().satisfies(finding -> {
+            assertThat(finding.getFilePath()).isEqualTo("LabScenarioService.java");
+            assertThat(finding.getStartLine()).isEqualTo(86);
+            assertThat(finding.getDeltaStatus()).isEqualTo(FindingDeltaStatus.NEW);
+        });
+        assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(contextOperation.getId());
+    }
+
     private CodeChunk controller(UUID taskId) {
         CodeChunk chunk = new CodeChunk(taskId, "LabScenarioController.java",
                 "LabScenarioController#purchase", "/payments/purchase", 79, 85, """
@@ -99,6 +270,43 @@ class CriticAgentServiceTest {
                 return completed(total);
                 """, "JAVA_METHOD", "PurchaseRequest request", "", "debit,completed");
         chunk.setId(1549L);
+        return chunk;
+    }
+
+    private CodeChunk noticeController(UUID taskId) {
+        CodeChunk chunk = new CodeChunk(taskId, "LabScenarioController.java",
+                "LabScenarioController#viewNoticeBoard", "/api/lab/notices/board", 58, 62, """
+                @PreAuthorize("hasAuthority('NOTICE_READ')")
+                @GetMapping(value = "/notices/board", produces = MediaType.TEXT_HTML_VALUE)
+                public String viewNoticeBoard() {
+                    return labScenarioService.renderNoticeBoard();
+                }
+                """, "JAVA_METHOD", "", "@PreAuthorize,@GetMapping", "renderNoticeBoard");
+        chunk.setId(1822L);
+        return chunk;
+    }
+
+    private CodeChunk noticeService(UUID taskId) {
+        CodeChunk chunk = new CodeChunk(taskId, "LabScenarioService.java",
+                "LabScenarioService#renderNoticeBoard", null, 59, 64, """
+                public String renderNoticeBoard() {
+                    return noticeRepository.findAll().stream()
+                            .map(notice -> notice.title() + notice.content())
+                            .collect(Collectors.joining());
+                }
+                """, "JAVA_METHOD", "", "", "findAll,stream,map,collect");
+        chunk.setId(1875L);
+        return chunk;
+    }
+
+    private CodeChunk customOperation(UUID taskId) {
+        CodeChunk chunk = new CodeChunk(taskId, "LedgerService.java", "LedgerService#apply", null,
+                40, 42, """
+                public void apply(Command command) {
+                    ledgerPort.apply(command);
+                }
+                """, "JAVA_METHOD", "Command command", "", "apply");
+        chunk.setId(2100L);
         return chunk;
     }
 

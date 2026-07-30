@@ -131,10 +131,6 @@ public class AuditUnitService {
                     && chunk.getAnalysisScope() == AnalysisScope.IMPACTED) {
                 reasonCodes.add("IMPACTED_BY_CHANGE");
             }
-            if (candidateTypes.isEmpty() && scanMode == ScanMode.INCREMENTAL
-                    && (reasonCodes.contains("DIRECT_CHANGE") || reasonCodes.contains("IMPACTED_BY_CHANGE"))) {
-                candidateTypes.addAll(VulnerabilityType.detectableValues());
-            }
             if (reasonCodes.isEmpty() || candidateTypes.isEmpty()) continue;
 
             String context = joinNonBlank(hintDescriptions.get(chunk.getId()), flowSummary(flows),

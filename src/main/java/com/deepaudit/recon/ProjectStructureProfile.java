@@ -3,7 +3,7 @@ package com.deepaudit.recon;
 import java.util.List;
 
 /**
- * 由完整目标快照确定性生成的项目结构画像。画像只包含聚合统计和代码位置，不包含业务源码正文。
+ * 由完整目标快照确定性生成的项目结构画像。画像只包含整体模块、分层和事实计数。
  */
 public record ProjectStructureProfile(List<ModuleProfile> modules,
                                       List<LayerProfile> layers,
@@ -44,13 +44,7 @@ public record ProjectStructureProfile(List<ModuleProfile> modules,
     public record LayerProfile(String module, String layer, int sourceFileCount, int codeChunkCount) {
     }
 
-    /**
-     * occurrenceCount 统计完整项目中的全部命中；evidence 只保留有限个位置示例以约束模型上下文。
-     */
-    public record FactGroup(String module, String kind, int occurrenceCount, List<String> evidence) {
-        // 校验并规范化 FactGroup 的构造参数。
-        public FactGroup {
-            evidence = immutable(evidence);
-        }
+    // 按模块和事实类别保存完整项目中的命中数量，不携带文件、方法或代码位置。
+    public record FactGroup(String module, String kind, int occurrenceCount) {
     }
 }

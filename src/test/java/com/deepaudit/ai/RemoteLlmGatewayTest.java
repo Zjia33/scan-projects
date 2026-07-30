@@ -1,6 +1,7 @@
 package com.deepaudit.ai;
 
 import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.Confidence;
@@ -26,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RemoteLlmGatewayTest {
 
     @Test
-    void sendsStructuredProjectFactsToReconWithoutBusinessSource() {
+    void sendsAggregateProjectFactsToReconWithoutLocationsOrBusinessSource() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"architectureSummary":"Spring MVC 分层服务","attackSurfaces":["HTTP API"],
@@ -35,24 +36,27 @@ class RemoteLlmGatewayTest {
         ProjectStructureProfile structure = new ProjectStructureProfile(
                 List.of(new ProjectStructureProfile.ModuleProfile(".", 12, 80, 6, 0, 0)),
                 List.of(new ProjectStructureProfile.LayerProfile(".", "WEB", 2, 6)),
-                List.of(new ProjectStructureProfile.FactGroup(".", "HTTP_GET", 6,
-                        List.of("OrderController.java:10 OrderController#detail [/orders/{id}]"))),
-                List.of(new ProjectStructureProfile.FactGroup(".", "ROUTE_AUTHORIZATION", 1,
-                        List.of("SecurityConfig.java"))),
+                List.of(new ProjectStructureProfile.FactGroup(".", "HTTP_GET", 6)),
+                List.of(new ProjectStructureProfile.FactGroup(".", "ROUTE_AUTHORIZATION", 1)),
                 List.of(), List.of(), List.of());
         ReconSummary summary = new ReconSummary(12, 80, 6, 90,
                 new TechnologyProfile(List.of("Spring MVC"), List.of("Spring Security"),
-                        List.of(), List.of("Maven"), List.of(), List.of()), structure);
+                        List.of(), List.of("Maven"), List.of(),
+                        List.of("Spring MVC <- pom.xml [spring-boot-starter-web]")), structure);
 
         gateway.inspectProject(UUID.randomUUID(), summary);
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("不负责审查具体业务逻辑", "occurrenceCount", "不能描述成已确认漏洞");
+                .contains("整体技术框架", "只包含模块、分层和事实命中数量", "不负责审查具体业务逻辑、评估风险或确认漏洞")
+                .contains("不得输出或推测具体文件、类、方法、接口路径、代码位置")
+                .contains("attackSurfaces、securityMechanisms 和 riskAreas 必须返回空数组");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"projectFacts\"", "\"projectStructure\"", "\"HTTP_GET\"",
-                        "\"occurrenceCount\":6", "OrderController#detail")
-                .doesNotContain("representativeTargets", "codeExcerpt", "return orderService");
+                        "\"occurrenceCount\":6", "\"Spring MVC\"", "\"evidence\":[]")
+                .contains("必须为空的 string[]")
+                .doesNotContain("\"occurrenceCount\":6,\"evidence\"", "pom.xml", "OrderController", "/orders/{id}",
+                        "representativeTargets", "codeExcerpt", "return orderService");
     }
 
     @Test
@@ -86,12 +90,39 @@ class RemoteLlmGatewayTest {
     }
 
     @Test
+    void sendsRealBaseTargetAndObjectiveFactsToIncrementalTriageWithoutReconOpinion() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"summary":"已检查真实差异","decisions":[{"unitId":"change-7","primaryChunkId":7,
+                 "disposition":"SKIP","vulnerabilityTypes":[],"reasonCodes":["DIRECT_CHANGE"],
+                 "requiredContext":[],"reason":"差异仅修改格式"}]}
+                """);
+        IncrementalReviewUnit unit = new IncrementalReviewUnit(
+                "change-7", 7L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
+                "MODIFIED", "CHANGED", VulnerabilityType.detectableValues().stream().toList(), List.of(),
+                List.of("DIRECT_CHANGE"), "String value", "", "strip",
+                "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", "");
+
+        gateway.triageIncremental(UUID.randomUUID(), recon(), List.of(unit));
+
+        assertThat(gateway.requests).hasSize(1);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("真实 targetCodeExcerpt", "逐个比较 Base/Target", "不得仅凭文件名");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"reviewUnits\"", "\"baseCodeExcerpt\":\"return value.trim();\"",
+                        "\"targetCodeExcerpt\":\"return value.strip();\"", "\"DIRECT_CHANGE\"",
+                        "\"projectTechnology\"")
+                .doesNotContain("\"architectureSummary\"", "\"candidateTypes\"");
+    }
+
+    @Test
     void requiresCriticToReturnCorrectedPrimaryEvidenceAndLines() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"confirmed":true,"confidence":"HIGH","reason":"实际危险操作位于服务层",
                  "deltaStatus":"BASELINE","primaryChunkId":1549,
-                 "vulnerabilityStartLine":86,"vulnerabilityEndLine":88}
+                 "vulnerabilityStartLine":86,"vulnerabilityEndLine":88,
+                 "rootCauseKind":"UNSAFE_OPERATION","locationRole":"BUSINESS_OPERATION"}
                 """);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
                 VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
@@ -107,11 +138,37 @@ class RemoteLlmGatewayTest {
         assertThat(decision.vulnerabilityStartLine()).isEqualTo(86);
         assertThat(decision.vulnerabilityEndLine()).isEqualTo(88);
         assertThat(decision.deltaStatus()).isEqualTo(FindingDeltaStatus.BASELINE);
+        assertThat(decision.rootCauseKind()).isEqualTo("UNSAFE_OPERATION");
+        assertThat(decision.locationRole()).isEqualTo("BUSINESS_OPERATION");
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("负责最终漏洞定位", "Controller 入口", "最多标记连续 5 行");
+                .contains("负责最终漏洞定位", "Controller 入口", "最多标记连续 5 行",
+                        "INEFFECTIVE_SECURITY_CONTROL", "安全边界");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
-                        "\"vulnerabilityEndLine\"");
+                        "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"");
+    }
+
+    @Test
+    void repairsLocationBySelectingOnlyServerGeneratedCandidateId() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"locationCandidateId":"1549:87-87","reason":"危险扣款调用位于该候选"}
+                """);
+        LlmGateway.LocationCandidate candidate = new LlmGateway.LocationCandidate(
+                "1549:87-87", 1549L, "LabScenarioService.java", "LabScenarioService#purchase",
+                87, 87, "accountRepository.debit(accountNo, total);",
+                List.of("DATA_ACCESS", "DANGEROUS_OPERATION"), "CHANGED");
+
+        LlmGateway.LocationDecision decision = gateway.repairLocation(new LlmGateway.LocationRepairRequest(
+                UUID.randomUUID(), VulnerabilityType.FINANCIAL_RISK, "客户端报价被用于扣款",
+                "服务端直接信任客户端价格", "漏洞已经确认", "UNSAFE_OPERATION",
+                "1497:82-83", "原始位置不是危险操作", List.of(candidate)));
+
+        assertThat(decision.locationCandidateId()).isEqualTo("1549:87-87");
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("漏洞已经由 Critic 确认", "只能从 locationCandidates 中选择", "禁止重新判断");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"candidateId\":\"1549:87-87\"", "\"failureReason\"");
     }
 
     @Test

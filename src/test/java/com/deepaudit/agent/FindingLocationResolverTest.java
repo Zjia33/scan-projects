@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -84,6 +85,28 @@ class FindingLocationResolverTest {
                 .contains("[调用入口] LabScenarioController.java:84")
                 .contains("return labScenarioService.purchase(request);")
                 .doesNotContain("[漏洞位置] LabScenarioController.java:82-83");
+    }
+
+    @Test
+    void relocatesCriticLineThatDoesNotMatchStructuredRootCauseAndRole() {
+        CodeChunk chunk = chunk(70, 74, """
+                public List<User> search(String name) {
+                    audit(name);
+                    String sql = "select * from users where name='" + name + "'";
+                    return statement.executeQuery(sql);
+                }
+                """);
+        LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 71, 71);
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "外部参数进入动态查询", com.deepaudit.domain.FindingDeltaStatus.BASELINE,
+                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY");
+
+        assertThat(FindingLocationResolver.resolveCriticPrimary(
+                proposal, decision, Map.of(chunk.getId(), chunk), Set.of(chunk.getId())))
+                .get().satisfies(location -> {
+                    assertThat(location.chunkId()).isEqualTo(chunk.getId());
+                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(73, 73));
+                });
     }
 
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {

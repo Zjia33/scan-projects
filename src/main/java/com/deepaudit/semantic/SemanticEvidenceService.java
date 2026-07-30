@@ -66,10 +66,19 @@ public class SemanticEvidenceService {
 
     // 为 Critic 提供独立于专业 Agent 工具观察的原始语义证据。
     public String independentCriticEvidence(UUID taskId, Long chunkId, VulnerabilityType type) {
-        return flowMapper.findByTaskAndChunk(taskId, chunkId).stream()
-                .filter(flow -> flow.getType() == type)
+        return independentCriticEvidenceResult(taskId, chunkId, type).text();
+    }
+
+    // 同时返回独立语义证据涉及的真实代码块 ID，供 Critic 扩展合法定位候选范围。
+    public EvidenceResult independentCriticEvidenceResult(UUID taskId, Long chunkId, VulnerabilityType type) {
+        List<SecurityFlow> flows = flowMapper.findByTaskAndChunk(taskId, chunkId).stream()
+                .filter(flow -> flow.getType() == type).toList();
+        Set<Long> evidence = flows.stream().flatMap(flow -> parseIds(flow.getEvidenceChunkIds()).stream())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        String text = flows.stream()
                 .map(flow -> "[独立语义证据 " + flow.getId() + "]\n" + flow.getPathText())
                 .collect(Collectors.joining("\n\n"));
+        return new EvidenceResult(text.isBlank() ? "没有独立语义证据" : text, evidence);
     }
 
     // 在安全流或高/中可信调用图中验证两个代码块是否确有关系。

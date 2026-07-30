@@ -52,7 +52,7 @@ class AuditUnitServiceTest {
     }
 
     @Test
-    void includesChangedCodeWithoutForcingAProjectWideFixedLimit() {
+    void doesNotGuessEveryVulnerabilityTypeForUnclassifiedChangedCode() {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
@@ -68,12 +68,7 @@ class AuditUnitServiceTest {
         List<AuditUnit> units = service.build(taskId, List.of(changed), ScanMode.INCREMENTAL,
                 Map.of(), Map.of());
 
-        assertThat(units).singleElement().satisfies(unit -> {
-            assertThat(unit.reasonCodes()).contains("DIRECT_CHANGE");
-            assertThat(unit.candidateTypes()).containsExactlyInAnyOrderElementsOf(
-                    VulnerabilityType.detectableValues());
-            assertThat(unit.candidateTypes()).doesNotContain(VulnerabilityType.FINANCIAL_RISK);
-        });
+        assertThat(units).isEmpty();
     }
 
     @Test

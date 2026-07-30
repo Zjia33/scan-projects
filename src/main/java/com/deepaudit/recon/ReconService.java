@@ -100,7 +100,7 @@ public class ReconService {
         }
         // 独立识别构建工具、框架和安全组件，供 Recon Agent 理解项目背景。
         TechnologyProfile technologyProfile = technologyDetector.detect(root);
-        // 所有代码块都参与结构化画像；仅输出统计和位置证据，不向 Recon 模型发送业务源码正文。
+        // 所有代码块都参与结构化画像；仅输出模块、分层和事实计数，不携带具体位置或业务源码。
         ProjectStructureProfile projectStructure = structureProfiler.profile(root, chunks);
         return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(),
                 technologyProfile, projectStructure);

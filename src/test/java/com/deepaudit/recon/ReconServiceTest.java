@@ -143,12 +143,10 @@ class ReconServiceTest {
                 .contains("KAFKA");
         assertThat(profile.configurationFiles()).extracting(ProjectStructureProfile.FactGroup::kind)
                 .contains("BUILD_DESCRIPTOR", "APPLICATION_CONFIGURATION");
-        assertThat(profile.entryPoints()).flatExtracting(ProjectStructureProfile.FactGroup::evidence)
-                .allMatch(value -> !value.contains("return orderService"));
     }
 
     @Test
-    void countsAllFactsWhileBoundingOnlyLocationEvidence() {
+    void countsAllFactsWithoutRetainingLocationEvidence() {
         List<CodeChunk> chunks = new ArrayList<>();
         for (int index = 0; index < 20; index++) {
             CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "src/main/java/demo/Api" + index + ".java",
@@ -169,7 +167,6 @@ class ReconServiceTest {
         assertThat(profile.entryPoints()).singleElement().satisfies(group -> {
             assertThat(group.kind()).isEqualTo("HTTP_GET");
             assertThat(group.occurrenceCount()).isEqualTo(20);
-            assertThat(group.evidence()).hasSize(12);
         });
     }
 

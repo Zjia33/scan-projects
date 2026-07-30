@@ -18,9 +18,11 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -47,7 +49,8 @@ class OrchestratorAgentServiceTest {
                 .thenReturn(new LlmGateway.TriagePlan("复判", List.of(
                         decision(needContext, TriageDisposition.SKIP, List.of()))));
         OrchestratorAgentService service = new OrchestratorAgentService(
-                gateway, new AiProperties(), traceService(taskId), unitService);
+                gateway, new AiProperties(), traceService(taskId), unitService,
+                mock(IncrementalReviewService.class));
 
         service.plan(taskId, recon(), List.of(), ScanMode.FULL, Map.of(), Map.of());
 
@@ -79,7 +82,8 @@ class OrchestratorAgentServiceTest {
             return new LlmGateway.TriagePlan("已完成批次分流", decisions);
         });
         OrchestratorAgentService service = new OrchestratorAgentService(
-                gateway, properties, traceService, unitService);
+                gateway, properties, traceService, unitService,
+                mock(IncrementalReviewService.class));
 
         List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.FULL,
                 Map.of(), Map.of());
@@ -108,7 +112,8 @@ class OrchestratorAgentServiceTest {
                                 List.of(VulnerabilityType.SQL_INJECTION), enriched.reasonCodes(),
                                 List.of(), "补充调用链后确认需要调查"))));
         OrchestratorAgentService service = new OrchestratorAgentService(
-                gateway, new AiProperties(), traceService, unitService);
+                gateway, new AiProperties(), traceService, unitService,
+                mock(IncrementalReviewService.class));
 
         List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.FULL,
                 Map.of(), Map.of());
@@ -123,20 +128,14 @@ class OrchestratorAgentServiceTest {
     @Test
     void guardRemovalCannotBeSkippedByTriage() {
         UUID taskId = UUID.randomUUID();
-        AuditUnit unit = new AuditUnit("chunk-20", 20L, "OrderService.java", "OrderService#load",
-                "/orders/{id}", "CHANGED_CODE", "MODIFIED", "CHANGED",
-                List.of(VulnerabilityType.AUTHORIZATION, VulnerabilityType.VALIDATION_BYPASS),
-                List.of("DIRECT_CHANGE", "SEMANTIC_CHANGE", "GUARD_REMOVED"),
-                "Long id", "", "findById -> repository", "删除安全 Guard：checkOwner(id)",
-                "return repository.findById(id);");
         AuditUnitService unitService = mock(AuditUnitService.class);
-        when(unitService.build(any(), anyList(), any(), any(), any())).thenReturn(List.of(unit));
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit unit = incrementalUnit(20L, "CHANGED",
+                List.of(VulnerabilityType.AUTHORIZATION, VulnerabilityType.VALIDATION_BYPASS));
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(unit));
         LlmGateway gateway = mock(LlmGateway.class);
-        when(gateway.triage(any(), any(), anyList())).thenReturn(new LlmGateway.TriagePlan("模型尝试跳过",
-                List.of(new LlmGateway.TriageDecision(unit.unitId(), unit.primaryChunkId(),
-                        TriageDisposition.SKIP, List.of(), unit.reasonCodes(), List.of(), "无需调查"))));
         OrchestratorAgentService service = new OrchestratorAgentService(
-                gateway, new AiProperties(), traceService(taskId), unitService);
+                gateway, new AiProperties(), traceService(taskId), unitService, reviewService);
 
         List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
                 Map.of(), Map.of());
@@ -144,6 +143,81 @@ class OrchestratorAgentServiceTest {
         assertThat(tasks).extracting(AgentTask::vulnerabilityType)
                 .containsExactlyInAnyOrder(VulnerabilityType.AUTHORIZATION,
                         VulnerabilityType.VALIDATION_BYPASS);
+        verify(gateway, never()).triageIncremental(any(), any(), anyList());
+        verify(unitService, never()).build(any(), anyList(), any(), any(), any());
+    }
+
+    @Test
+    void incrementalReviewCoversChangedAndImpactedWithoutAuditUnitCandidateTypes() {
+        UUID taskId = UUID.randomUUID();
+        AuditUnitService auditUnitService = mock(AuditUnitService.class);
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit changed = incrementalUnit(31L, "CHANGED", List.of());
+        IncrementalReviewUnit impacted = incrementalUnit(32L, "IMPACTED", List.of());
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(changed, impacted));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList())).thenReturn(new LlmGateway.TriagePlan(
+                "已比较全部真实差异", List.of(
+                incrementalDecision(changed, TriageDisposition.INVESTIGATE,
+                        List.of(VulnerabilityType.SQL_INJECTION)),
+                incrementalDecision(impacted, TriageDisposition.SKIP, List.of()))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), auditUnitService, reviewService);
+
+        List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(tasks).singleElement().satisfies(task -> {
+            assertThat(task.chunkId()).isEqualTo(31L);
+            assertThat(task.vulnerabilityType()).isEqualTo(VulnerabilityType.SQL_INJECTION);
+        });
+        verify(gateway).triageIncremental(any(), any(), anyList());
+        verify(auditUnitService, never()).build(any(), anyList(), any(), any(), any());
+    }
+
+    @Test
+    void incrementalReviewEnrichesContextExactlyOnceBeforeClassification() {
+        UUID taskId = UUID.randomUUID();
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit original = incrementalUnit(41L, "IMPACTED", List.of());
+        IncrementalReviewUnit enriched = original.withRelatedContext("CHUNK 42 Repository#query");
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(original));
+        when(reviewService.enrich(any(), anyList(), anyList())).thenReturn(List.of(enriched));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList()))
+                .thenReturn(new LlmGateway.TriagePlan("需要调用上下文", List.of(
+                        incrementalDecision(original, TriageDisposition.NEED_CONTEXT, List.of()))))
+                .thenReturn(new LlmGateway.TriagePlan("已确认调查类型", List.of(
+                        incrementalDecision(enriched, TriageDisposition.INVESTIGATE,
+                                List.of(VulnerabilityType.AUTHORIZATION)))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
+
+        List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(tasks).singleElement().extracting(AgentTask::vulnerabilityType)
+                .isEqualTo(VulnerabilityType.AUTHORIZATION);
+        verify(reviewService).enrich(any(), anyList(), anyList());
+    }
+
+    @Test
+    void incrementalReviewFailsInsteadOfSilentlyDroppingUnclassifiedLocation() {
+        UUID taskId = UUID.randomUUID();
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit unit = incrementalUnit(51L, "CHANGED", List.of());
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(unit));
+        when(reviewService.enrich(any(), anyList(), anyList())).thenReturn(List.of(unit));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList()))
+                .thenReturn(new LlmGateway.TriagePlan("遗漏决定", List.of()));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
+
+        assertThatThrownBy(() -> service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of()))
+                .isInstanceOf(com.deepaudit.ai.AiResponseFormatException.class)
+                .hasMessageContaining("change-51");
     }
 
     private AgentTraceService traceService(UUID taskId) {
@@ -164,6 +238,21 @@ class OrchestratorAgentServiceTest {
                                                List<VulnerabilityType> types) {
         return new LlmGateway.TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
                 types, unit.reasonCodes(), List.of(), "测试分流决定");
+    }
+
+    private IncrementalReviewUnit incrementalUnit(long id, String scope,
+                                                   List<VulnerabilityType> mandatoryTypes) {
+        return new IncrementalReviewUnit("change-" + id, id, "Demo.java", "Demo#change", "/demo",
+                "JAVA_METHOD", "MODIFIED", scope, VulnerabilityType.detectableValues().stream().toList(),
+                mandatoryTypes, List.of(scope.equals("CHANGED") ? "DIRECT_CHANGE" : "IMPACTED_BY_CHANGE"),
+                "String input", "", "repository.query", "return oldValue;", "return newValue;",
+                "METHOD_MODIFIED", "", "");
+    }
+
+    private LlmGateway.TriageDecision incrementalDecision(
+            IncrementalReviewUnit unit, TriageDisposition disposition, List<VulnerabilityType> types) {
+        return new LlmGateway.TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
+                types, unit.facts(), List.of(), "测试增量分流决定");
     }
 
     private LlmGateway.ReconInsight recon() {

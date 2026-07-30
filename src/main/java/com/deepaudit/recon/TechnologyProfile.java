@@ -27,6 +27,12 @@ public record TechnologyProfile(List<String> frameworks,
         return new TechnologyProfile(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
+    // 仅保留整体技术类别，去除文件级探测依据，供 Recon 及后续 Agent 作为紧凑项目背景。
+    public TechnologyProfile withoutEvidence() {
+        return new TechnologyProfile(frameworks, securityFrameworks, persistenceFrameworks,
+                buildTools, securityAnnotations, List.of());
+    }
+
     // 执行 TechnologyProfile 中的 immutable 处理。
     private static List<String> immutable(List<String> values) {
         return values == null ? List.of() : List.copyOf(values);

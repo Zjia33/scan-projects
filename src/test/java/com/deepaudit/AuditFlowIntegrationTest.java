@@ -99,11 +99,11 @@ class AuditFlowIntegrationTest {
         String report = mockMvc.perform(get("/api/tasks/{taskId}/report.html", taskId))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        assertThat(report).contains("DeepAudit Java 安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
-        assertThat(report).contains("class='finding-description'", "class='critic-review'",
-                        "class='vulnerability-location'", "class='vulnerable-line'", "实际漏洞位置",
-                        "&gt;&gt;&gt;")
-                .doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
+        assertThat(report).contains("代码安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
+        assertThat(report).contains("class='finding-description'", "class='vulnerability-location'",
+                        "class='evidence-chunk'", "实际漏洞位置")
+                .doesNotContain("class='critic-review'", "class='vulnerable-line'", "&gt;&gt;&gt;",
+                        "[SEMANTIC_FLOW]", "[CRITIC]");
 
         String events = mockMvc.perform(get("/api/tasks/{taskId}/events", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()
