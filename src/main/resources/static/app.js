@@ -1,5 +1,6 @@
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 const ROUTES = new Set(['overview', 'new-audit', 'tasks', 'projects']);
+const COMMITS_PER_BRANCH_LIMIT = 50;
 
 const state = {
     route: 'overview',
@@ -26,9 +27,6 @@ const ui = {
     menuToggle: document.querySelector('#menu-toggle'),
     navLinks: [...document.querySelectorAll('[data-route]')],
     pages: [...document.querySelectorAll('[data-page]')],
-    pageEyebrow: document.querySelector('#page-eyebrow'),
-    pageTitle: document.querySelector('#page-title'),
-    streamState: document.querySelector('#stream-state'),
     importForm: document.querySelector('#git-import-form'),
     projectName: document.querySelector('#project-name'),
     repositoryUrl: document.querySelector('#repository-url'),
@@ -39,9 +37,14 @@ const ui = {
     auditForm: document.querySelector('#audit-form'),
     repositorySelect: document.querySelector('#repository-select'),
     scanMode: document.querySelector('#scan-mode'),
+    baseBranchGroup: document.querySelector('#base-branch-group'),
     baseCommitGroup: document.querySelector('#base-commit-group'),
+    baseBranch: document.querySelector('#base-branch'),
     baseCommit: document.querySelector('#base-commit'),
+    baseCommitHint: document.querySelector('#base-commit-hint'),
+    targetBranch: document.querySelector('#target-branch'),
     targetCommit: document.querySelector('#target-commit'),
+    targetCommitHint: document.querySelector('#target-commit-hint'),
     refreshCommits: document.querySelector('#refresh-commits-button'),
     submitAudit: document.querySelector('#submit-button'),
     auditMessage: document.querySelector('#audit-message'),
@@ -66,11 +69,11 @@ const ui = {
     dialogConfirm: document.querySelector('#dialog-confirm')
 };
 
-const PAGE_META = {
-    overview: ['SECURITY POSTURE / LIVE', '态势总览'],
-    'new-audit': ['NEW INVESTIGATION', '发起审计'],
-    tasks: ['INVESTIGATION CENTER', '审计任务'],
-    projects: ['PROJECT REGISTRY', '项目管理']
+const PAGE_TITLES = {
+    overview: '态势总览',
+    'new-audit': '发起审计',
+    tasks: '审计任务',
+    projects: '项目管理'
 };
 
 function bootstrap() {
@@ -100,6 +103,8 @@ function bindForms() {
     ui.auditForm.addEventListener('submit', submitAudit);
     ui.repositorySelect.addEventListener('change', loadCommits);
     ui.scanMode.addEventListener('change', updateScanMode);
+    ui.baseBranch.addEventListener('change', () => populateBranchCommits('base'));
+    ui.targetBranch.addEventListener('change', () => populateBranchCommits('target'));
     ui.refreshCommits.addEventListener('click', refreshCommits);
     ui.refreshTasks.addEventListener('click', () => loadTasks({ forceDetail: true, notify: true }));
     ui.refreshProjects.addEventListener('click', () => loadProjects(state.selectedProjectId, true));
@@ -121,10 +126,7 @@ function routeFromHash() {
         link.classList.toggle('active', active);
         if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
-    const [eyebrow, title] = PAGE_META[route];
-    ui.pageEyebrow.textContent = eyebrow;
-    ui.pageTitle.textContent = title;
-    document.title = `${title} · DeepAudit`;
+    document.title = `${PAGE_TITLES[route]} · DeepAudit`;
     window.scrollTo({ top: 0, behavior: 'auto' });
     closeMobileMenu();
 
@@ -136,7 +138,6 @@ function routeFromHash() {
         }
     } else {
         closeEventStream();
-        setConnection('idle', '等待选择任务');
     }
     if (route === 'projects' && state.selectedProjectId && !ui.projectDetail.dataset.projectId) {
         renderProjectDetail();
@@ -277,27 +278,87 @@ async function refreshCommits() {
 }
 
 function populateCommits(commits) {
-    state.commits = Array.isArray(commits) ? commits : [];
-    ui.baseCommit.replaceChildren();
-    ui.targetCommit.replaceChildren();
-    if (!state.commits.length) {
-        ui.baseCommit.add(new Option('暂无可用提交', ''));
-        ui.targetCommit.add(new Option('暂无可用提交', ''));
-    } else {
-        state.commits.forEach(commit => {
-            const branches = commit.branches?.length ? commit.branches.join(', ') : '无活动分支';
-            const label = `${commit.shortSha || commit.sha?.slice(0, 8)} · ${commit.message || '无提交说明'} · ${branches} · ${formatTime(commit.committedAt)}`;
-            ui.baseCommit.add(new Option(label, commit.sha));
-            ui.targetCommit.add(new Option(label, commit.sha));
-        });
-        if (state.commits.length > 1) ui.baseCommit.selectedIndex = 1;
-    }
+    const previous = {
+        baseBranch: ui.baseBranch.value,
+        baseCommit: ui.baseCommit.value,
+        targetBranch: ui.targetBranch.value,
+        targetCommit: ui.targetCommit.value
+    };
+    state.commits = (Array.isArray(commits) ? commits : [])
+        .slice()
+        .sort((left, right) => commitTimestamp(right) - commitTimestamp(left));
+    const branches = [...new Set(state.commits.flatMap(commit => commit.branches || []))];
+    const repository = state.repositories.find(item => item.projectId === ui.repositorySelect.value);
+    const defaultBranch = repository?.defaultBranch || '';
+    branches.sort((left, right) => {
+        if (left === defaultBranch) return -1;
+        if (right === defaultBranch) return 1;
+        return left.localeCompare(right, 'zh-CN');
+    });
+    populateBranchSelect(ui.baseBranch, branches, previous.baseBranch, defaultBranch);
+    populateBranchSelect(ui.targetBranch, branches, previous.targetBranch, defaultBranch);
+    populateBranchCommits('target', previous.targetCommit);
+    populateBranchCommits('base', previous.baseCommit);
     updateScanMode();
+}
+
+function populateBranchSelect(select, branches, previousBranch, defaultBranch) {
+    select.replaceChildren();
+    if (!branches.length) {
+        select.add(new Option('暂无可用分支', ''));
+        select.disabled = true;
+        return;
+    }
+    branches.forEach(branch => select.add(new Option(branch, branch)));
+    const selected = branches.includes(previousBranch) ? previousBranch
+        : branches.includes(defaultBranch) ? defaultBranch : branches[0];
+    select.value = selected;
+    select.disabled = false;
+}
+
+function populateBranchCommits(side, preferredCommit = null) {
+    const branchSelect = side === 'base' ? ui.baseBranch : ui.targetBranch;
+    const commitSelect = side === 'base' ? ui.baseCommit : ui.targetCommit;
+    const hint = side === 'base' ? ui.baseCommitHint : ui.targetCommitHint;
+    const previousCommit = preferredCommit || commitSelect.value;
+    const branch = branchSelect.value;
+    const matching = state.commits.filter(commit => (commit.branches || []).includes(branch));
+    const visible = matching.slice(0, COMMITS_PER_BRANCH_LIMIT);
+    commitSelect.replaceChildren();
+    if (!visible.length) {
+        commitSelect.add(new Option('该分支暂无可用提交', ''));
+        commitSelect.disabled = true;
+        hint.textContent = '无可用提交';
+        return;
+    }
+    visible.forEach(commit => {
+        const label = `${commit.shortSha || commit.sha?.slice(0, 8)} · ${commit.message || '无提交说明'} · ${formatTime(commit.committedAt)}`;
+        commitSelect.add(new Option(label, commit.sha));
+    });
+    commitSelect.disabled = false;
+    const preferredAvailable = visible.some(commit => commit.sha === previousCommit);
+    if (preferredAvailable) {
+        commitSelect.value = previousCommit;
+    } else if (side === 'base' && branch === ui.targetBranch.value && visible.length > 1) {
+        commitSelect.selectedIndex = 1;
+    } else {
+        commitSelect.selectedIndex = 0;
+    }
+    hint.textContent = matching.length > COMMITS_PER_BRANCH_LIMIT
+        ? `当前可用 ${matching.length} 条，仅显示最新 ${COMMITS_PER_BRANCH_LIMIT} 条`
+        : `当前可用 ${matching.length} 条 · 按时间从新到旧`;
+}
+
+function commitTimestamp(commit) {
+    const timestamp = new Date(commit.committedAt || 0).getTime();
+    return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function updateScanMode() {
     const incremental = ui.scanMode.value === 'INCREMENTAL';
+    ui.baseBranchGroup.hidden = !incremental;
     ui.baseCommitGroup.hidden = !incremental;
+    ui.baseBranch.required = incremental;
     ui.baseCommit.required = incremental;
 }
 
@@ -441,7 +502,6 @@ async function renderTaskDetail(task) {
     } catch (error) {
         if (state.selectedTaskId !== taskId) return;
         ui.taskDetail.replaceChildren(emptyState(`无法读取任务详情：${error.message}`));
-        setConnection('error', '任务详情加载失败');
     }
 }
 
@@ -552,7 +612,7 @@ function renderFindingList(container, findings, status) {
     if (!findings.length) {
         container.append(emptyState(status === 'COMPLETED'
             ? '本轮审计没有产生通过 Critic 证据门槛的问题。'
-            : '专业 Agent 正在调查，确认结果将在此出现。', true));
+            : '当前正在调查，确认结果将在此出现。', true));
         return;
     }
     findings.forEach(finding => container.append(buildFindingCard(finding)));
@@ -726,19 +786,14 @@ function seedEvents(taskId, events) {
 function connectEventStream(taskId) {
     if (state.eventSource?.datasetTaskId === taskId) return;
     closeEventStream();
-    setConnection('connecting', '正在连接实时事件');
     const source = new EventSource(`/api/tasks/${taskId}/events/stream`);
     source.datasetTaskId = taskId;
     state.eventSource = source;
-    source.addEventListener('connected', () => setConnection('live', 'Agent 事件实时连接'));
     source.addEventListener('agent-event', event => {
         try {
             appendAgentEvent(taskId, JSON.parse(event.data));
-        } catch (_) {
-            setConnection('error', '事件解析失败');
-        }
+        } catch (_) { /* Ignore malformed events and wait for the next SSE message. */ }
     });
-    source.onerror = () => setConnection('error', '实时连接重试中');
 }
 
 function closeEventStream() {
@@ -834,7 +889,6 @@ function renderAgentList(container, agents) {
 function renderEmptyTaskDetail() {
     state.renderedTaskId = null;
     closeEventStream();
-    setConnection('idle', '等待选择任务');
     const blank = el('div', 'blank-detail');
     blank.append(el('span', '', '⌁'), el('h3', '', '暂无可展示的审计任务'), el('p', '', '连接仓库并发起一次审计后，调查过程会在这里实时出现。'));
     ui.taskDetail.replaceChildren(blank);
@@ -1096,11 +1150,6 @@ async function fetchJson(url, options) {
 function setFormMessage(element, message, error = false) {
     element.textContent = message || '';
     element.classList.toggle('error', error);
-}
-
-function setConnection(status, message) {
-    ui.streamState.className = `connection-state ${status}`;
-    ui.streamState.querySelector('span').textContent = message;
 }
 
 function toast(message, error = false) {

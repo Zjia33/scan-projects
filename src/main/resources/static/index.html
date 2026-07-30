@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#101a2d">
     <title>DeepAudit · 智能代码审计</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101a2d'/%3E%3Cpath d='M18 16h14c11 0 18 6 18 16s-7 16-18 16H18V16zm10 9v14h5c5 0 8-2 8-7s-3-7-8-7h-5z' fill='%237de2d1'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260730-1">
+    <link rel="stylesheet" href="/styles.css?v=20260730-3">
 </head>
 <body>
 <div class="app-shell">
@@ -44,13 +44,9 @@
     </aside>
 
     <div class="app-main">
-        <header class="topbar">
-            <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
-                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-            </button>
-            <div class="page-identity"><span id="page-eyebrow">SECURITY POSTURE / LIVE</span><h1 id="page-title">态势总览</h1></div>
-            <div id="stream-state" class="connection-state idle"><i></i><span>等待选择任务</span></div>
-        </header>
+        <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
 
         <main class="page-stage" id="page-stage">
             <section class="page-view" data-page="overview" aria-labelledby="overview-title">
@@ -118,8 +114,10 @@
                         <div class="form-grid">
                             <label class="field"><span>已连接仓库 <b>必填</b></span><select id="repository-select" required><option value="">请选择仓库</option></select></label>
                             <label class="field"><span>扫描模式</span><select id="scan-mode"><option value="FULL">全量扫描 · Target</option><option value="INCREMENTAL">增量扫描 · Base → Target</option></select></label>
-                            <label id="base-commit-group" class="field wide" hidden><span>基准提交 Base <b>必填</b></span><select id="base-commit"></select></label>
-                            <label class="field wide"><span>目标提交 Target <b>必填</b></span><select id="target-commit" required></select></label>
+                            <label id="base-branch-group" class="field" hidden><span>基准分支 Base <b>必填</b></span><select id="base-branch"></select></label>
+                            <label id="base-commit-group" class="field" hidden><span>基准提交 <b>必填</b><small id="base-commit-hint">按时间从新到旧</small></span><select id="base-commit"></select></label>
+                            <label class="field"><span>目标分支 Target <b>必填</b></span><select id="target-branch" required></select></label>
+                            <label class="field"><span>目标提交 <b>必填</b><small id="target-commit-hint">按时间从新到旧</small></span><select id="target-commit" required></select></label>
                         </div>
                         <div class="form-footer split"><p id="audit-message" class="form-message" role="status"></p><div><button id="refresh-commits-button" class="button secondary" type="button">刷新提交</button><button id="submit-button" class="button primary" type="submit">启动 Agent 审计 <span>→</span></button></div></div>
                     </form>
@@ -171,6 +169,6 @@
     </form>
 </dialog>
 
-<script src="/app.js?v=20260730-1" defer></script>
+<script src="/app.js?v=20260730-3" defer></script>
 </body>
 </html>
