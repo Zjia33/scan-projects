@@ -144,7 +144,8 @@ public class ReportService {
                 + "<meta name='viewport' content='width=device-width,initial-scale=1'><style>" + reportStyles()
                 + "</style></head><body><main class='report-shell'>"
                 + "<header class='report-hero'><p class='eyebrow'>DEEPAUDIT · SECURITY REVIEW</p>"
-                + "<h1>代码安全审计报告</h1><p class='hero-copy'>基于代码事实、语义关系和多 Agent 复核生成的安全审计结果。</p>"
+                + "<h1>代码安全审计报告</h1>"
+                // "<p class='hero-copy'>基于代码事实、语义关系和多 Agent 复核生成的安全审计结果。</p>"
                 + "<div class='report-meta'><article><small>项目</small><strong>" + escape(report.project().getName()) + "</strong></article>"
                 + "<article><small>扫描范围</small><strong>" + escape(report.task().getScanMode().name()) + "</strong></article>"
                 + "<article><small>目标提交</small><strong>" + escape(shortSha(report.task().getTargetCommitSha())) + "</strong></article>"

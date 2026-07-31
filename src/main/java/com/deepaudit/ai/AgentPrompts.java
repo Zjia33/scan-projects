@@ -45,6 +45,14 @@ final class AgentPrompts {
             + "不足时选择 NEED_CONTEXT；能够根据真实差异排除安全影响时选择 SKIP。不得创造 unitId、primaryChunkId、事实、"
             + "代码或漏洞类型，不得把变更相关性描述成已确认漏洞。";
 
+    private static final String INCREMENTAL_TRIAGE_FINAL = "你是增量代码安全审查分流 Agent，正在对一个此前未能"
+            + "明确分类的位置进行唯一一次补充上下文复判。输入只包含一个 reviewUnit，并已完成受控上下文补充。"
+            + "必须原样返回该 reviewUnit 的 unitId 和 primaryChunkId，且恰好返回一个决定。"
+            + "disposition 只能是 INVESTIGATE 或 SKIP，不得再次返回 NEED_CONTEXT。"
+            + "只有真实 Base/Target 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
+            + "并从 allowedTypes 中返回至少一个具体漏洞类型；否则必须选择 SKIP 且 vulnerabilityTypes 返回空数组。"
+            + "不得为了避免 SKIP 而猜测漏洞，不得创造代码、位置、事实、类型或调用关系。";
+
     private static final String PROFESSIONAL_AGENT_TOOLS = "可用只读工具及 arguments："
             + "get_chunk({chunkId})读取代码块；"
             + "verify_relation({candidateChunkId})验证候选与目标的调用、语义流或配置关系；"
@@ -131,6 +139,11 @@ final class AgentPrompts {
     // 生成只依据真实增量差异和客观事实的分流提示词。
     static String incrementalTriage() {
         return complete(INCREMENTAL_TRIAGE);
+    }
+
+    // 为补充上下文后的单个位置生成必须二选一的明确复判提示词。
+    static String incrementalTriageFinal() {
+        return complete(INCREMENTAL_TRIAGE_FINAL);
     }
 
     // 执行 AgentPrompts 中的 professionalAgent 处理。

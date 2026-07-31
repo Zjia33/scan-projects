@@ -116,6 +116,31 @@ class RemoteLlmGatewayTest {
     }
 
     @Test
+    void sendsSingleUnitFinalTriageWithConclusiveDispositionOnly() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
+                {"summary":"终审完成","decisions":[{"unitId":"change-8","primaryChunkId":8,
+                 "disposition":"SKIP","vulnerabilityTypes":[],"reasonCodes":["DIRECT_CHANGE"],
+                 "requiredContext":[],"reason":"现有证据不支持具体安全假设"}]}
+                """);
+        IncrementalReviewUnit unit = new IncrementalReviewUnit(
+                "change-8", 8L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
+                "MODIFIED", "CHANGED", VulnerabilityType.detectableValues().stream().toList(), List.of(),
+                List.of("DIRECT_CHANGE"), "String value", "", "strip",
+                "return value.trim();", "return value.strip();", "METHOD_MODIFIED",
+                "已补充调用上下文", "");
+
+        gateway.triageIncrementalFinal(UUID.randomUUID(), recon(), unit);
+
+        assertThat(gateway.requests).hasSize(1);
+        assertThat(gateway.requests.get(0).get(0).get("content"))
+                .contains("唯一一次补充上下文复判", "只能是 INVESTIGATE 或 SKIP", "不得再次返回 NEED_CONTEXT");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"reviewUnit\"", "disposition:INVESTIGATE|SKIP")
+                .doesNotContain("\"reviewUnits\"");
+    }
+
+    @Test
     void requiresCriticToReturnCorrectedPrimaryEvidenceAndLines() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """

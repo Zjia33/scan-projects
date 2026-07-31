@@ -85,10 +85,12 @@ class CriticAgentServiceTest {
                 gateway, traceService, hypothesisMapper, semanticEvidenceService);
         CodeChunk controller = controller(taskId);
         CodeChunk vulnerableService = vulnerableService(taskId);
+        CodeChunk debitRepository = debitRepository(taskId);
         LlmGateway.FindingProposal proposedAtController = new LlmGateway.FindingProposal(
                 VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "服务端直接信任 quotedUnitPrice", "服务端查询可信价格",
-                controller.getId(), List.of(controller.getId(), vulnerableService.getId()), 82, 83);
+                controller.getId(), List.of(controller.getId(), vulnerableService.getId(),
+                        debitRepository.getId()), 82, 83);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
                 VulnerabilityType.FINANCIAL_RISK, "报价可以被客户端控制", controller.getId(),
                 controller.getId() + "," + vulnerableService.getId(), Confidence.HIGH);
@@ -106,7 +108,7 @@ class CriticAgentServiceTest {
                 vulnerableService.getId(), 86, 88));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
-                List.of(controller, vulnerableService), ScanMode.FULL);
+                List.of(controller, vulnerableService, debitRepository), ScanMode.FULL);
 
         assertThat(result).isPresent();
         Finding finding = result.orElseThrow();
@@ -118,7 +120,14 @@ class CriticAgentServiceTest {
                 .contains("[漏洞位置] LabScenarioService.java:86-88")
                 .contains("[调用入口] LabScenarioController.java:84")
                 .doesNotContain("旧的候选证据文本");
+        assertThat(finding.getEvidence()).doesNotContain("AccountRepository.java");
+        ArgumentCaptor<LlmGateway.CriticRequest> request =
+                ArgumentCaptor.forClass(LlmGateway.CriticRequest.class);
+        verify(gateway).critique(request.capture());
+        assertThat(request.getValue().evidence()).contains("CHUNK_ID=" + debitRepository.getId());
         assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(vulnerableService.getId());
+        assertThat(hypothesis.getEvidenceChunkIds())
+                .doesNotContain(String.valueOf(debitRepository.getId()));
     }
 
     @Test
@@ -313,6 +322,22 @@ class CriticAgentServiceTest {
                 return completed(total);
                 """, "JAVA_METHOD", "PurchaseRequest request", "", "debit,completed");
         chunk.setId(1549L);
+        return chunk;
+    }
+
+    private CodeChunk debitRepository(UUID taskId) {
+        CodeChunk chunk = new CodeChunk(taskId, "AccountRepository.java",
+                "AccountRepository#debit", null, 40, 47, """
+                public synchronized void debit(String accountNo, BigDecimal amount) {
+                    requirePositiveAmount(amount);
+                    AccountDto account = requireAccount(accountNo);
+                    if (account.balance().compareTo(amount) < 0) {
+                        throw new IllegalArgumentException("Insufficient balance");
+                    }
+                    accountsByNo.put(accountNo, withBalance(account, account.balance().subtract(amount)));
+                }
+                """, "JAVA_METHOD", "String accountNo, BigDecimal amount", "", "requireAccount,put");
+        chunk.setId(1601L);
         return chunk;
     }
 

@@ -155,14 +155,19 @@ public class OrchestratorAgentService {
         }
 
         List<String> summaries = new ArrayList<>();
+        Map<String, List<String>> decisionDiagnostics = new LinkedHashMap<>();
         Map<String, LlmGateway.TriageDecision> firstPass = triageIncrementalBatches(
-                taskId, run, recon, modelReview, summaries, "初次增量变更审查");
+                taskId, run, recon, modelReview, summaries, decisionDiagnostics, "初次增量变更审查");
         List<IncrementalReviewUnit> needContext = new ArrayList<>();
         int skipped = 0;
         for (IncrementalReviewUnit unit : modelReview) {
             LlmGateway.TriageDecision decision = firstPass.get(unit.unitId());
             if (decision == null || decision.disposition() == TriageDisposition.NEED_CONTEXT) {
                 needContext.add(unit);
+                if (decision != null) {
+                    addDiagnostic(decisionDiagnostics, unit.unitId(),
+                            "初次增量变更审查明确返回 NEED_CONTEXT");
+                }
             } else if (decision.disposition() == TriageDisposition.INVESTIGATE) {
                 addDecisionTasks(tasks, unit, decision);
             } else {
@@ -170,12 +175,32 @@ public class OrchestratorAgentService {
             }
         }
 
-        // 每个未直达专业 Agent 的变更位置必须得到明确模型决定；缺失决定只允许补充一次上下文。
-        List<String> unresolved = new ArrayList<>();
+        // 缺失、无效或 NEED_CONTEXT 的决定补充一次受控上下文，并逐单元执行唯一一次明确复判。
+        List<IncrementalReviewUnit> unresolved = new ArrayList<>();
         if (!needContext.isEmpty()) {
-            List<IncrementalReviewUnit> enriched = incrementalReviewService.enrich(taskId, needContext, chunks);
-            Map<String, LlmGateway.TriageDecision> secondPass = triageIncrementalBatches(
-                    taskId, run, recon, enriched, summaries, "补充上下文后增量复判");
+            List<IncrementalReviewUnit> enrichedResult =
+                    incrementalReviewService.enrich(taskId, needContext, chunks);
+            if (enrichedResult == null) enrichedResult = List.of();
+            Map<String, IncrementalReviewUnit> enrichedById = enrichedResult.stream()
+                    .collect(Collectors.toMap(IncrementalReviewUnit::unitId, Function.identity(),
+                            (first, ignored) -> first, LinkedHashMap::new));
+            List<IncrementalReviewUnit> enriched = new ArrayList<>();
+            for (IncrementalReviewUnit original : needContext) {
+                IncrementalReviewUnit candidate = enrichedById.get(original.unitId());
+                if (candidate == null || candidate.primaryChunkId() != original.primaryChunkId()) {
+                    String reason = candidate == null
+                            ? "上下文补充结果缺少该单元，改用原始单元复判"
+                            : "上下文补充结果篡改 primaryChunkId，改用原始单元复判";
+                    addDiagnostic(decisionDiagnostics, original.unitId(), reason);
+                    log.warn("任务 {} 的增量上下文补充异常：unitId={}，{}",
+                            taskId, original.unitId(), reason);
+                    enriched.add(original);
+                } else {
+                    enriched.add(candidate);
+                }
+            }
+            Map<String, LlmGateway.TriageDecision> secondPass = triageIncrementalFinal(
+                    taskId, run, recon, enriched, summaries, decisionDiagnostics);
             for (IncrementalReviewUnit unit : enriched) {
                 LlmGateway.TriageDecision decision = secondPass.get(unit.unitId());
                 if (decision != null && decision.disposition() == TriageDisposition.INVESTIGATE) {
@@ -183,20 +208,27 @@ public class OrchestratorAgentService {
                 } else if (decision != null && decision.disposition() == TriageDisposition.SKIP) {
                     skipped++;
                 } else {
-                    unresolved.add(unit.unitId());
+                    unresolved.add(unit);
+                    if (decision != null) {
+                        rejectDecision(taskId, run, decisionDiagnostics, unit.unitId(),
+                                "补充上下文后单位置明确复判",
+                                "非法返回 NEED_CONTEXT");
+                    }
                 }
             }
         }
         if (!unresolved.isEmpty()) {
-            throw new AiResponseFormatException("增量分流未对全部 CHANGED/IMPACTED 位置给出明确决定: "
-                    + String.join(",", unresolved), null);
+            throw new AiResponseFormatException(truncate(
+                    "增量分流复判失败，未对全部 CHANGED/IMPACTED 位置给出明确决定: "
+                            + unresolvedDescription(unresolved, decisionDiagnostics), 1_900), null);
         }
 
         String modelSummary = truncate(String.join("；", summaries), 2_000);
         long investigatedUnits = tasks.values().stream().map(AgentTask::chunkId).distinct().count();
         String summary = "增量变更审查覆盖 " + units.size() + " 个 CHANGED/IMPACTED 位置，其中 "
                 + (units.size() - modelReview.size()) + " 个确定性直达、" + needContext.size()
-                + " 个补充上下文、" + skipped + " 个明确跳过、" + investigatedUnits
+                + " 个补充上下文并逐个明确复判、"
+                + skipped + " 个明确跳过、" + investigatedUnits
                 + " 个进入调查，规划 " + tasks.size() + " 个专业 Agent 任务"
                 + (modelSummary.isBlank() ? "" : "；" + modelSummary);
         traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.PLAN, summary);
@@ -205,10 +237,11 @@ public class OrchestratorAgentService {
         return List.copyOf(tasks.values());
     }
 
-    // 按批次让模型读取真实 Base/Target 差异，返回的漏洞类型只校验为当前系统支持的枚举。
+    // 按批次读取真实 Base/Target 差异，并严格校验单元 ID、主代码块、决定和漏洞类型。
     private Map<String, LlmGateway.TriageDecision> triageIncrementalBatches(
             UUID taskId, AgentRun run, LlmGateway.ReconInsight recon,
-            List<IncrementalReviewUnit> units, List<String> summaries, String phase) {
+            List<IncrementalReviewUnit> units, List<String> summaries,
+            Map<String, List<String>> diagnostics, String phase) {
         Map<String, LlmGateway.TriageDecision> accepted = new LinkedHashMap<>();
         int batchSize = Math.max(1, properties.getTriageBatchSize());
         int batchNumber = 0;
@@ -225,30 +258,165 @@ public class OrchestratorAgentService {
             batchNumber++;
             traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
                     phase + "第 " + batchNumber + " 批，共 " + batch.size() + " 个变更位置");
-            LlmGateway.TriagePlan plan = llmGateway.triageIncremental(taskId, recon, batch);
-            run.setModelCallCount(run.getModelCallCount() + 1);
-            if (plan.summary() != null && !plan.summary().isBlank()) summaries.add(plan.summary());
-            Map<String, IncrementalReviewUnit> batchById = batch.stream()
-                    .collect(Collectors.toMap(IncrementalReviewUnit::unitId, Function.identity()));
-            for (LlmGateway.TriageDecision decision : plan.decisions()) {
-                if (decision == null || decision.disposition() == null) continue;
-                IncrementalReviewUnit unit = batchById.get(decision.unitId());
-                if (unit == null || unit.primaryChunkId() != decision.primaryChunkId()) continue;
-                List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
-                        .filter(java.util.Objects::nonNull).filter(VulnerabilityType::isDetectable)
-                        .filter(unit.allowedTypes()::contains).distinct().toList();
-                if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) continue;
-                if (decision.disposition() != TriageDisposition.INVESTIGATE) safeTypes = List.of();
-                accepted.put(unit.unitId(), new LlmGateway.TriageDecision(
-                        decision.unitId(), decision.primaryChunkId(), decision.disposition(), safeTypes,
-                        intersect(decision.reasonCodes(), unit.facts()), decision.requiredContext(), decision.reason()));
+            LlmGateway.TriagePlan plan;
+            try {
+                plan = llmGateway.triageIncremental(taskId, recon, batch);
+            } catch (AiResponseFormatException exception) {
+                run.setModelCallCount(run.getModelCallCount() + 1);
+                for (IncrementalReviewUnit unit : batch) {
+                    rejectDecision(taskId, run, diagnostics, unit.unitId(), phase,
+                            "模型响应无法解析：" + truncate(safeIdentifier(exception.getMessage()), 300));
+                }
+                start = end;
+                continue;
             }
+            run.setModelCallCount(run.getModelCallCount() + 1);
+            acceptIncrementalPlan(taskId, run, batch, plan, summaries, diagnostics, phase, accepted);
             start = end;
         }
         TriageCounts counts = incrementalTriageCounts(units, accepted);
         log.info("任务 {} 增量变更三态统计（{}）：总数={}，INVESTIGATE={}，NEED_CONTEXT={}，SKIP={}",
                 taskId, phase, counts.total(), counts.investigate(), counts.needContext(), counts.skip());
         return accepted;
+    }
+
+    private Map<String, LlmGateway.TriageDecision> triageIncrementalFinal(
+            UUID taskId, AgentRun run, LlmGateway.ReconInsight recon,
+            List<IncrementalReviewUnit> units, List<String> summaries,
+            Map<String, List<String>> diagnostics) {
+        Map<String, LlmGateway.TriageDecision> accepted = new LinkedHashMap<>();
+        for (IncrementalReviewUnit unit : units) {
+            String phase = "补充上下文后单位置明确复判 " + unit.unitId();
+            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
+                    phase + "，必须明确返回 INVESTIGATE 或 SKIP");
+            LlmGateway.TriagePlan plan;
+            try {
+                plan = llmGateway.triageIncrementalFinal(taskId, recon, unit);
+            } catch (AiResponseFormatException exception) {
+                run.setModelCallCount(run.getModelCallCount() + 1);
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase,
+                        "模型响应无法解析：" + truncate(safeIdentifier(exception.getMessage()), 300));
+                continue;
+            }
+            run.setModelCallCount(run.getModelCallCount() + 1);
+            acceptIncrementalPlan(taskId, run, List.of(unit), plan, summaries,
+                    diagnostics, phase, accepted);
+        }
+        return accepted;
+    }
+
+    private void acceptIncrementalPlan(
+            UUID taskId, AgentRun run, List<IncrementalReviewUnit> batch,
+            LlmGateway.TriagePlan plan, List<String> summaries,
+            Map<String, List<String>> diagnostics, String phase,
+            Map<String, LlmGateway.TriageDecision> accepted) {
+        if (plan == null) {
+            for (IncrementalReviewUnit unit : batch) {
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase, "模型返回空计划");
+            }
+            return;
+        }
+        if (plan.summary() != null && !plan.summary().isBlank()) summaries.add(plan.summary());
+        Map<String, IncrementalReviewUnit> batchById = batch.stream()
+                .collect(Collectors.toMap(IncrementalReviewUnit::unitId, Function.identity()));
+        Set<String> seen = new LinkedHashSet<>();
+        Set<String> duplicated = new LinkedHashSet<>();
+        for (LlmGateway.TriageDecision decision : plan.decisions()) {
+            if (decision == null) {
+                traceInvalidDecision(taskId, run, phase, "模型返回了 null 决定");
+                continue;
+            }
+            IncrementalReviewUnit unit = batchById.get(decision.unitId());
+            if (unit == null) {
+                IncrementalReviewUnit matchingChunk = batch.stream()
+                        .filter(candidate -> candidate.primaryChunkId() == decision.primaryChunkId())
+                        .findFirst().orElse(null);
+                if (matchingChunk != null) {
+                    seen.add(matchingChunk.unitId());
+                    rejectDecision(taskId, run, diagnostics, matchingChunk.unitId(), phase,
+                            "unitId 不匹配，期望 " + matchingChunk.unitId()
+                                    + "，实际 " + safeIdentifier(decision.unitId()));
+                } else {
+                    traceInvalidDecision(taskId, run, phase,
+                            "返回批次外 unitId=" + safeIdentifier(decision.unitId())
+                                    + "，primaryChunkId=" + decision.primaryChunkId());
+                }
+                continue;
+            }
+            if (!seen.add(unit.unitId())) {
+                duplicated.add(unit.unitId());
+                accepted.remove(unit.unitId());
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase, "同一单元返回了多个决定");
+                continue;
+            }
+            if (decision.disposition() == null) {
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase, "disposition 为空");
+                continue;
+            }
+            if (unit.primaryChunkId() != decision.primaryChunkId()) {
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase,
+                        "primaryChunkId 不匹配，期望 " + unit.primaryChunkId()
+                                + "，实际 " + decision.primaryChunkId());
+                continue;
+            }
+            List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .filter(VulnerabilityType::isDetectable)
+                    .filter(unit.allowedTypes()::contains).distinct().toList();
+            if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) {
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase,
+                        "INVESTIGATE 未提供允许范围内的漏洞类型");
+                continue;
+            }
+            if (decision.disposition() != TriageDisposition.INVESTIGATE) safeTypes = List.of();
+            accepted.put(unit.unitId(), new LlmGateway.TriageDecision(
+                    decision.unitId(), decision.primaryChunkId(), decision.disposition(), safeTypes,
+                    intersect(decision.reasonCodes(), unit.facts()), decision.requiredContext(), decision.reason()));
+        }
+        for (IncrementalReviewUnit unit : batch) {
+            if (!seen.contains(unit.unitId())) {
+                rejectDecision(taskId, run, diagnostics, unit.unitId(), phase, "模型响应缺少决定");
+            } else if (duplicated.contains(unit.unitId())) {
+                accepted.remove(unit.unitId());
+            }
+        }
+    }
+
+    private void rejectDecision(UUID taskId, AgentRun run, Map<String, List<String>> diagnostics,
+                                String unitId, String phase, String reason) {
+        addDiagnostic(diagnostics, unitId, phase + ": " + reason);
+        log.warn("任务 {} 的 {} 拒绝增量分流决定：unitId={}，原因={}",
+                taskId, phase, unitId, reason);
+        traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR,
+                AgentEventType.REASONING, phase + " 拒绝 " + unitId + "：" + reason);
+    }
+
+    private void traceInvalidDecision(UUID taskId, AgentRun run, String phase, String reason) {
+        log.warn("任务 {} 的 {} 收到无法关联的增量分流决定：{}", taskId, phase, reason);
+        traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR,
+                AgentEventType.REASONING, phase + " 忽略无效决定：" + reason);
+    }
+
+    private void addDiagnostic(Map<String, List<String>> diagnostics, String unitId, String reason) {
+        diagnostics.computeIfAbsent(unitId, ignored -> new ArrayList<>());
+        List<String> reasons = diagnostics.get(unitId);
+        if (!reasons.contains(reason)) reasons.add(reason);
+    }
+
+    private String unresolvedDescription(List<IncrementalReviewUnit> units,
+                                         Map<String, List<String>> diagnostics) {
+        return units.stream().map(unit -> {
+            String location = safeIdentifier(unit.filePath()) + " "
+                    + safeIdentifier(unit.symbolName());
+            List<String> reasons = diagnostics.getOrDefault(unit.unitId(), List.of("无诊断信息"));
+            return unit.unitId() + "[" + location.strip() + "；"
+                    + String.join("；", reasons) + "]";
+        }).collect(Collectors.joining(","));
+    }
+
+    private String safeIdentifier(String value) {
+        if (value == null) return "";
+        return value.replace('\n', ' ').replace('\r', ' ').strip();
     }
 
     private int estimatedSize(IncrementalReviewUnit unit) {

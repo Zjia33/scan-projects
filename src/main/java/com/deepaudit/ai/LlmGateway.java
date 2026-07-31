@@ -29,6 +29,12 @@ public interface LlmGateway {
     TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                  List<IncrementalReviewUnit> reviewUnits);
 
+    // 对补充上下文后的单个增量位置执行唯一一次明确复判；必须返回 INVESTIGATE 或 SKIP。
+    default TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                              IncrementalReviewUnit reviewUnit) {
+        return triageIncremental(taskId, recon, List.of(reviewUnit));
+    }
+
     // 执行 LlmGateway 中的 decide 处理。
     AgentDecision decide(AgentTurn turn);
 

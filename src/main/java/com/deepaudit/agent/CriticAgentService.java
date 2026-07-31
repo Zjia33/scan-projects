@@ -17,7 +17,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -111,7 +110,12 @@ public class CriticAgentService {
             // Critic 对整条证据链重新选择实际漏洞点，最终报告不复用专业 Agent 的旧位置文本。
             Confidence confidence = decision.confidence() == null
                     ? fallbackConfidence(candidate.proposal().confidence()) : decision.confidence();
-            LlmGateway.FindingProposal proposal = corrected.proposal().orElseThrow();
+            LlmGateway.FindingProposal correctedProposal = corrected.proposal().orElseThrow();
+            Set<Long> correctedEvidenceIds = new LinkedHashSet<>(correctedProposal.evidenceChunkIds());
+            Map<Long, Integer> callSites = Optional.ofNullable(semanticEvidenceService.callSiteLines(
+                    taskId, correctedProposal.primaryChunkId(), correctedEvidenceIds)).orElse(Map.of());
+            LlmGateway.FindingProposal proposal = reportProposal(
+                    candidate.proposal(), correctedProposal, decision, chunksById, callSites);
             CodeChunk primary = chunksById.get(proposal.primaryChunkId());
             candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED);
             candidate.hypothesis().setConfidence(confidence);
@@ -120,9 +124,6 @@ public class CriticAgentService {
                     .map(String::valueOf).collect(Collectors.joining(",")));
             hypothesisMapper.update(candidate.hypothesis());
             FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
-            Set<Long> evidenceIds = new LinkedHashSet<>(proposal.evidenceChunkIds());
-            Map<Long, Integer> callSites = semanticEvidenceService.callSiteLines(
-                    taskId, proposal.primaryChunkId(), evidenceIds);
             String endpoint = affectedEndpoint(proposal, chunksById);
             Finding finding = new Finding(taskId, proposal.type(),
                     proposal.severity() == null ? Severity.HIGH : proposal.severity(), confidence,
@@ -180,11 +181,8 @@ public class CriticAgentService {
                 FindingLocationResolver.resolveCriticLocation(original, decision, chunks, allowed, candidates);
         if (resolution.resolved().isEmpty()) return Correction.unresolved(resolution.reason());
         Long primaryChunkId = resolution.resolved().orElseThrow().chunkId();
-        CodeChunk primary = chunks.get(primaryChunkId);
         FindingLocationResolver.Location location = resolution.resolved().orElseThrow().location();
-        List<Long> evidenceIds = new ArrayList<>(allowed);
-        evidenceIds.remove(primaryChunkId);
-        evidenceIds.add(0, primaryChunkId);
+        List<Long> evidenceIds = correctedEvidenceIds(original, primaryChunkId, allowed);
         return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
                 original.confidence(), original.title(), original.description(), original.remediation(),
                 primaryChunkId, evidenceIds, location.startLine(), location.endLine())), resolution.reason());
@@ -213,9 +211,7 @@ public class CriticAgentService {
             }
             Long primaryChunkId = resolved.orElseThrow().chunkId();
             FindingLocationResolver.Location location = resolved.orElseThrow().location();
-            List<Long> evidenceIds = new ArrayList<>(allowed);
-            evidenceIds.remove(primaryChunkId);
-            evidenceIds.add(0, primaryChunkId);
+            List<Long> evidenceIds = correctedEvidenceIds(original, primaryChunkId, allowed);
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
                     "定位修复完成：" + safe(repaired.reason()));
             return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
@@ -227,6 +223,55 @@ public class CriticAgentService {
                     "定位修复调用失败，保留已确认但待定位状态：" + safe(exception.getMessage()));
             return Correction.unresolved(failureReason + "；定位修复调用失败");
         }
+    }
+
+    /**
+     * Location candidates are intentionally wider than report evidence. A chunk being safe and
+     * useful for Critic review does not make it evidence that should be displayed to users.
+     */
+    private List<Long> correctedEvidenceIds(LlmGateway.FindingProposal original,
+                                            Long primaryChunkId, Set<Long> allowed) {
+        LinkedHashSet<Long> evidenceIds = new LinkedHashSet<>();
+        evidenceIds.add(primaryChunkId);
+        original.evidenceChunkIds().stream()
+                .filter(allowed::contains)
+                .forEach(evidenceIds::add);
+        return List.copyOf(evidenceIds);
+    }
+
+    /**
+     * Builds the narrow, server-verified evidence set used by the persisted finding.
+     * The primary location and verified incoming call path are always retained. Context without a
+     * verified call relation is retained only for security-control findings, where the protected
+     * operation is necessary to explain the impact of the ineffective boundary/configuration.
+     */
+    private LlmGateway.FindingProposal reportProposal(
+            LlmGateway.FindingProposal original, LlmGateway.FindingProposal corrected,
+            LlmGateway.CriticDecision decision, Map<Long, CodeChunk> chunks,
+            Map<Long, Integer> callSites) {
+        LinkedHashSet<Long> reportEvidenceIds = new LinkedHashSet<>();
+        reportEvidenceIds.add(corrected.primaryChunkId());
+        corrected.evidenceChunkIds().stream()
+                .filter(id -> !id.equals(corrected.primaryChunkId()))
+                .filter(callSites::containsKey)
+                .forEach(reportEvidenceIds::add);
+        if (requiresImpactContext(decision)) {
+            original.evidenceChunkIds().stream()
+                    .filter(chunks::containsKey)
+                    .forEach(reportEvidenceIds::add);
+        }
+        return new LlmGateway.FindingProposal(corrected.type(), corrected.severity(),
+                corrected.confidence(), corrected.title(), corrected.description(),
+                corrected.remediation(), corrected.primaryChunkId(), List.copyOf(reportEvidenceIds),
+                corrected.vulnerabilityStartLine(), corrected.vulnerabilityEndLine());
+    }
+
+    private boolean requiresImpactContext(LlmGateway.CriticDecision decision) {
+        if (decision == null) return false;
+        return "INEFFECTIVE_SECURITY_CONTROL".equals(decision.rootCauseKind())
+                || "MISSING_AUTHORIZATION_CHECK".equals(decision.rootCauseKind())
+                || "SECURITY_BOUNDARY".equals(decision.locationRole())
+                || "SECURITY_CONFIGURATION".equals(decision.locationRole());
     }
 
     private Set<Long> allowedLocationChunks(LlmGateway.FindingProposal proposal,

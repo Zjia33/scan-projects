@@ -45,6 +45,37 @@ class FindingConsolidatorTest {
     }
 
     @Test
+    void deduplicatesStructuredEvidenceBlocksWhenRelocatedFindingsMerge() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk chunk = noticeChunk(taskId);
+        Finding first = finding(taskId, VulnerabilityType.STORED_XSS,
+                Severity.HIGH, Confidence.HIGH, 61, 62, "/notices/board", """
+                [CHUNK 2039] [漏洞位置] LabScenarioService.java:61-62
+                service evidence
+
+                [CHUNK 1986] [调用入口] LabScenarioController.java:61
+                controller evidence
+                """, FindingDeltaStatus.NEW);
+        Finding duplicate = finding(taskId, VulnerabilityType.STORED_XSS,
+                Severity.HIGH, Confidence.HIGH, 61, 62, "/notices/board", """
+                [CHUNK 2039] [关联证据] LabScenarioService.java:61-62
+                repeated service evidence
+
+                [CHUNK 1986] [调用入口] LabScenarioController.java:61
+                repeated controller evidence
+                """, FindingDeltaStatus.NEW);
+
+        Finding merged = FindingConsolidator.consolidate(
+                List.of(first, duplicate), List.of(chunk)).get(0);
+
+        assertThat(occurrences(merged.getEvidence(), "[CHUNK 2039]")).isEqualTo(1);
+        assertThat(occurrences(merged.getEvidence(), "[CHUNK 1986]")).isEqualTo(1);
+        assertThat(merged.getEvidence())
+                .contains("[CHUNK 2039] [漏洞位置]")
+                .doesNotContain("\n\n---\n\n");
+    }
+
+    @Test
     void mergesOverlappingCriticRangesAndRebuildsFingerprintFromTheirUnion() {
         UUID taskId = UUID.randomUUID();
         CodeChunk chunk = noticeChunk(taskId);
@@ -124,5 +155,9 @@ class FindingConsolidatorTest {
                 """, "JAVA_METHOD", "", "", "execute");
         chunk.setId(3001L);
         return chunk;
+    }
+
+    private int occurrences(String value, String token) {
+        return (value.length() - value.replace(token, "").length()) / token.length();
     }
 }

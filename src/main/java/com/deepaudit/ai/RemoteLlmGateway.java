@@ -87,6 +87,18 @@ public class RemoteLlmGateway implements LlmGateway {
         return call(systemPrompt, userPrompt, TriagePlan.class);
     }
 
+    @Override
+    public TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                             IncrementalReviewUnit reviewUnit) {
+        String systemPrompt = AgentPrompts.incrementalTriageFinal();
+        String userPrompt = json(Map.of("taskId", taskId,
+                "projectTechnology", recon.technologyProfile(), "reviewUnit", reviewUnit,
+                "outputSchema", Map.of("summary", "string", "decisions",
+                        "[{unitId,primaryChunkId,disposition:INVESTIGATE|SKIP,"
+                                + "vulnerabilityTypes:[],reasonCodes:[],requiredContext:[],reason}]")));
+        return call(systemPrompt, userPrompt, TriagePlan.class);
+    }
+
     // 请求专业 Agent 在 TOOL、FINDING 和 REJECT 三类受控动作中选择下一步。
     @Override
     public AgentDecision decide(AgentTurn turn) {

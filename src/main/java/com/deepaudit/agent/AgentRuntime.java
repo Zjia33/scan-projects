@@ -58,9 +58,12 @@ public class AgentRuntime {
                 LlmGateway.AgentTurn turn = new LlmGateway.AgentTurn(taskId, task.agentType(),
                         task.vulnerabilityType(), AgentPromptSupport.target(target, Set.of(task.vulnerabilityType())),
                         task.ruleHint(), semanticEvidence.text(), recon, List.copyOf(observations), iteration);
+                String observationContext = observations.isEmpty()
+                        ? "结合 Recon 技术栈和语义调用链进行安全判断"
+                        : "结合 Recon 技术栈、语义调用链和 " + observations.size()
+                        + " 条工具观察进行安全判断";
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
-                        "第 " + iteration + " 轮：结合 Recon 技术栈、语义调用链和 "
-                                + observations.size() + " 条工具观察进行安全判断");
+                        "第 " + iteration + " 轮：" + observationContext);
                 LlmGateway.AgentDecision decision = llmGateway.decide(turn);
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REASONING,
                         safe(decision.summary()));

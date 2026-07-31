@@ -892,7 +892,8 @@ function buildEventRow(event, animate) {
     const observation = event.eventType === 'OBSERVATION';
     const message = toolCall ? summarizeToolCall(event.message)
         : observation ? summarizeObservation(event.message)
-            : String(event.message || '');
+            : event.eventType === 'MODEL_CALL' ? summarizeModelCall(event.message)
+                : String(event.message || '');
     const copy = el('p', 'event-message', message.length > 1000 ? `${message.slice(0, 1000)}…` : message);
     row.append(meta, copy);
     if (!toolCall && !observation && message.length > 1000) {
@@ -907,6 +908,13 @@ function buildEventRow(event, animate) {
         row.append(expand);
     }
     return row;
+}
+
+function summarizeModelCall(value) {
+    return String(value || '').replace(
+        /结合 Recon 技术栈、语义调用链和 0 条工具观察进行安全判断/g,
+        '结合 Recon 技术栈和语义调用链进行安全判断'
+    );
 }
 
 function scheduleAgentRefresh(taskId) {

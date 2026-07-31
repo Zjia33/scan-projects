@@ -186,7 +186,8 @@ class OrchestratorAgentServiceTest {
         LlmGateway gateway = mock(LlmGateway.class);
         when(gateway.triageIncremental(any(), any(), anyList()))
                 .thenReturn(new LlmGateway.TriagePlan("需要调用上下文", List.of(
-                        incrementalDecision(original, TriageDisposition.NEED_CONTEXT, List.of()))))
+                        incrementalDecision(original, TriageDisposition.NEED_CONTEXT, List.of()))));
+        when(gateway.triageIncrementalFinal(any(), any(), any()))
                 .thenReturn(new LlmGateway.TriagePlan("已确认调查类型", List.of(
                         incrementalDecision(enriched, TriageDisposition.INVESTIGATE,
                                 List.of(VulnerabilityType.AUTHORIZATION)))));
@@ -211,13 +212,99 @@ class OrchestratorAgentServiceTest {
         LlmGateway gateway = mock(LlmGateway.class);
         when(gateway.triageIncremental(any(), any(), anyList()))
                 .thenReturn(new LlmGateway.TriagePlan("遗漏决定", List.of()));
+        when(gateway.triageIncrementalFinal(any(), any(), any()))
+                .thenReturn(new LlmGateway.TriagePlan("终审仍未决定", List.of()));
         OrchestratorAgentService service = new OrchestratorAgentService(
                 gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
 
         assertThatThrownBy(() -> service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
                 Map.of(), Map.of()))
                 .isInstanceOf(com.deepaudit.ai.AiResponseFormatException.class)
-                .hasMessageContaining("change-51");
+                .hasMessageContaining("change-51")
+                .hasMessageContaining("模型响应缺少决定")
+                .hasMessageContaining("单位置明确复判");
+        verify(gateway).triageIncrementalFinal(any(), any(), any());
+    }
+
+    @Test
+    void incrementalReviewRetriesOnlyTheUnresolvedUnitAndRecovers() {
+        UUID taskId = UUID.randomUUID();
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit resolved = incrementalUnit(61L, "CHANGED", List.of());
+        IncrementalReviewUnit omitted = incrementalUnit(62L, "IMPACTED", List.of());
+        IncrementalReviewUnit enriched = omitted.withRelatedContext("CHUNK 63 Repository#query");
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(resolved, omitted));
+        when(reviewService.enrich(any(), anyList(), anyList())).thenReturn(List.of(enriched));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList()))
+                .thenReturn(new LlmGateway.TriagePlan("初次遗漏一个位置", List.of(
+                        incrementalDecision(resolved, TriageDisposition.SKIP, List.of()))));
+        when(gateway.triageIncrementalFinal(any(), any(), any()))
+                .thenReturn(new LlmGateway.TriagePlan("单位置终审完成", List.of(
+                        incrementalDecision(enriched, TriageDisposition.INVESTIGATE,
+                                List.of(VulnerabilityType.SQL_INJECTION)))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
+
+        List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(tasks).singleElement().satisfies(task -> {
+            assertThat(task.chunkId()).isEqualTo(62L);
+            assertThat(task.vulnerabilityType()).isEqualTo(VulnerabilityType.SQL_INJECTION);
+        });
+        verify(gateway).triageIncrementalFinal(any(), any(), any());
+    }
+
+    @Test
+    void incrementalReviewTreatsUnparseableBatchAsUnresolvedAndRetriesWithContext() {
+        UUID taskId = UUID.randomUUID();
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit unit = incrementalUnit(66L, "CHANGED", List.of());
+        IncrementalReviewUnit enriched = unit.withRelatedContext("CHUNK 67 Caller#invoke");
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(unit));
+        when(reviewService.enrich(any(), anyList(), anyList())).thenReturn(List.of(enriched));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList()))
+                .thenThrow(new com.deepaudit.ai.AiResponseFormatException("非法 JSON", null));
+        when(gateway.triageIncrementalFinal(any(), any(), any()))
+                .thenReturn(new LlmGateway.TriagePlan("复判完成", List.of(
+                        incrementalDecision(enriched, TriageDisposition.SKIP, List.of()))));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
+
+        List<AgentTask> tasks = service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of());
+
+        assertThat(tasks).isEmpty();
+        verify(reviewService).enrich(any(), anyList(), anyList());
+        verify(gateway).triageIncrementalFinal(any(), any(), any());
+    }
+
+    @Test
+    void incrementalReviewReportsWhyEveryDecisionWasRejected() {
+        UUID taskId = UUID.randomUUID();
+        IncrementalReviewService reviewService = mock(IncrementalReviewService.class);
+        IncrementalReviewUnit unit = incrementalUnit(71L, "CHANGED", List.of());
+        when(reviewService.build(any(), anyList(), any(), any())).thenReturn(List.of(unit));
+        when(reviewService.enrich(any(), anyList(), anyList())).thenReturn(List.of(unit));
+        LlmGateway gateway = mock(LlmGateway.class);
+        when(gateway.triageIncremental(any(), any(), anyList()))
+                .thenReturn(new LlmGateway.TriagePlan("初次遗漏", List.of()));
+        LlmGateway.TriageDecision wrongChunk = new LlmGateway.TriageDecision(
+                unit.unitId(), 999L, TriageDisposition.SKIP,
+                List.of(), unit.facts(), List.of(), "错误复制主代码块 ID");
+        when(gateway.triageIncrementalFinal(any(), any(), any()))
+                .thenReturn(new LlmGateway.TriagePlan("主代码块错误", List.of(wrongChunk)));
+        OrchestratorAgentService service = new OrchestratorAgentService(
+                gateway, new AiProperties(), traceService(taskId), mock(AuditUnitService.class), reviewService);
+
+        assertThatThrownBy(() -> service.plan(taskId, recon(), List.of(), ScanMode.INCREMENTAL,
+                Map.of(), Map.of()))
+                .isInstanceOf(com.deepaudit.ai.AiResponseFormatException.class)
+                .hasMessageContaining("change-71")
+                .hasMessageContaining("模型响应缺少决定")
+                .hasMessageContaining("primaryChunkId 不匹配");
     }
 
     private AgentTraceService traceService(UUID taskId) {
