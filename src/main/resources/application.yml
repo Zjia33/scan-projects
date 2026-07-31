@@ -3,7 +3,7 @@ server:
 
 spring:
   application:
-    name: deepaudit-java
+    name: java-audit
   config:
     # 将项目根目录的 .env 作为 Properties 文件加载；文件不存在时仍允许启动。
     import: optional:file:./.env[.properties]
@@ -60,7 +60,7 @@ deepaudit:
   codegraph:
     # OFF 完全禁用；SHADOW 只比较影响范围；AUGMENT 扩展影响范围和 Agent 候选上下文。
     mode: ${DEEPAUDIT_CODEGRAPH_MODE:SHADOW}
-    executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:codegraph}
+    executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
     # Windows 官方 ZIP 可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
     bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
     expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
