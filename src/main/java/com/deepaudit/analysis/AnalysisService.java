@@ -1,6 +1,7 @@
 package com.deepaudit.analysis;
 
 import com.deepaudit.agent.AgentCandidate;
+import com.deepaudit.agent.AgentCandidateConsolidator;
 import com.deepaudit.agent.AgentTask;
 import com.deepaudit.agent.AgentTraceService;
 import com.deepaudit.agent.CriticAgentService;
@@ -31,7 +32,6 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -111,19 +111,30 @@ public class AnalysisService {
             throw new AiUnavailableException("所有专业 Agent 都未能返回合法结构化响应，无法形成可信审计结果");
         }
 
-        // Critic 独立寻找反证，随后校验文件证据并按位置去重。
-        List<Finding> confirmed = new ArrayList<>();
-        Set<String> deduplication = new HashSet<>();
-        for (AgentCandidate candidate : candidates) {
+        // Critic 前只合并同一主代码块、同一类型且建议行范围重叠的明确重复候选，
+        // 减少重复模型调用；最终权威去重仍以 Critic 重定位后的真实位置为准。
+        List<AgentCandidate> criticCandidates = AgentCandidateConsolidator.consolidate(candidates);
+        if (criticCandidates.size() < candidates.size()) {
+            log.info("任务 {} 在 Critic 前合并了 {} 个位置完全重叠的专业 Agent 候选",
+                    taskId, candidates.size() - criticCandidates.size());
+        }
+        List<Finding> reviewedFindings = new ArrayList<>();
+        for (AgentCandidate candidate : criticCandidates) {
             try {
                 criticAgent.review(taskId, candidate, recon, chunks, task.getScanMode())
                         .filter(finding -> validateEvidence(projectRoot, finding))
-                        .filter(finding -> deduplication.add(finding.getFingerprint()))
-                        .ifPresent(confirmed::add);
+                        .ifPresent(reviewedFindings::add);
             } catch (AiResponseFormatException exception) {
                 log.warn("任务 {} 的 Critic 对候选 {} 返回不可解析 JSON，候选不进入最终报告",
                         taskId, candidate.proposal().primaryChunkId());
             }
+        }
+        // 不使用标题、endpoint 或证据链顺序判断身份。相同漏洞类型、文件、方法且最终
+        // 行范围重叠的结果会合并，并基于合并后的真实源码锚点重新生成稳定指纹。
+        List<Finding> confirmed = FindingConsolidator.consolidate(reviewedFindings, chunks);
+        if (confirmed.size() < reviewedFindings.size()) {
+            log.info("任务 {} 在 Critic 后合并了 {} 个定位到同一代码位置的确认漏洞",
+                    taskId, reviewedFindings.size() - confirmed.size());
         }
         // 批量持久化确认结果，最终报告只接收这一组经过证据门禁的发现。
         for (int start = 0; start < confirmed.size(); start += 200) {

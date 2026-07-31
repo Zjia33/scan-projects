@@ -84,6 +84,9 @@ final class AgentPrompts {
 
     private static final String CRITIC_AGENT = "你是独立 Critic Agent。主动寻找全局安全配置、上游校验、"
             + "数据归属、参数化查询等反证。只有证据链能支持漏洞时 confirmed 才能为 true。"
+            + "candidate.evidence 由服务端从已验证代码块重新构建：PRIMARY_CONTEXT 包含主证据位置前后各二十行，"
+            + "RELATED_EVIDENCE、CALL_CHAIN_EVIDENCE、ENTRY_EVIDENCE 包含关联位置前后各十二行。"
+            + "必须结合扩展上下文主动寻找已有 Guard、提前返回和净化逻辑，不能只依据标记为 >>> 的局部行确认漏洞。"
             + "你还负责最终漏洞定位：locationCandidates 是后端从已验证证据源码生成的合法位置。confirmed=true 时必须"
             + "从中选择一个 locationCandidateId，并原样复制该候选的 chunkId、startLine 和 endLine，禁止自行计算行号。"
             + "主位置必须是漏洞实际发生的危险操作、"

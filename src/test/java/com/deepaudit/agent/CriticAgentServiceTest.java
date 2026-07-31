@@ -15,6 +15,7 @@ import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,48 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CriticAgentServiceTest {
+
+    @Test
+    void rebuildsCriticRequestWithWiderServerVerifiedContext() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        String content = java.util.stream.IntStream.rangeClosed(100, 159)
+                .mapToObj(line -> line == 130 ? "statement.execute(userSql);" : "line" + line + "();")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        CodeChunk chunk = new CodeChunk(taskId, "QueryService.java", "QueryService#search", null,
+                100, 159, content, "JAVA_METHOD", "String userSql", "", "execute");
+        chunk.setId(3001L);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "动态 SQL 注入", "外部参数进入动态查询", "使用参数化查询",
+                chunk.getId(), List.of(chunk.getId()), 130, 130);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                VulnerabilityType.SQL_INJECTION, "动态查询候选", chunk.getId(),
+                String.valueOf(chunk.getId()), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.SQL_INJECTION, proposal, "旧的四行证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(chunk.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, chunk.getId(), "search"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.BASELINE));
+
+        service.review(taskId, candidate, recon(), List.of(chunk), ScanMode.FULL);
+
+        ArgumentCaptor<LlmGateway.CriticRequest> request = ArgumentCaptor.forClass(
+                LlmGateway.CriticRequest.class);
+        verify(gateway).critique(request.capture());
+        assertThat(request.getValue().evidence())
+                .contains("[CRITIC_PRIMARY_CONTEXT]")
+                .contains("    110 | line110();")
+                .contains(">>>   130 | statement.execute(userSql);")
+                .contains("    150 | line150();")
+                .doesNotContain("旧的四行证据");
+    }
 
     @Test
     void relocatesConfirmedFindingFromControllerToActualServiceOperation() {

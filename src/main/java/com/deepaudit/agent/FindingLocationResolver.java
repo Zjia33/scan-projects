@@ -26,6 +26,11 @@ import java.util.Set;
 // 封装 FindingLocationResolver 相关的数据与处理逻辑。
 public final class FindingLocationResolver {
     private static final int CONTEXT_LINES = 4;
+    private static final int CRITIC_PRIMARY_CONTEXT_LINES = 20;
+    private static final int CRITIC_RELATED_CONTEXT_LINES = 12;
+    private static final int CRITIC_PRIMARY_MAX_CHARS = 6_000;
+    private static final int CRITIC_RELATED_MAX_CHARS = 4_000;
+    private static final int CRITIC_TOTAL_MAX_CHARS = 20_000;
     private static final int MAX_VULNERABLE_LINES = 5;
 
     // 创建 FindingLocationResolver 实例并初始化所需依赖或状态。
@@ -541,6 +546,82 @@ public final class FindingLocationResolver {
                             + " " + chunk.getSymbolName() + "\n" + formatContext(chunk, location, primary);
                 })
                 .collect(java.util.stream.Collectors.joining("\n\n"));
+    }
+
+    /**
+     * 为 Critic 审批生成比最终报告更宽、但仍受预算约束的源码窗口。主证据提供漏洞位置前后各
+     * 二十行，关联证据提供调用点或推断位置前后各十二行。所有代码仍然只能来自服务端已经批准
+     * 的证据块。
+     */
+    public static String formatCriticEvidence(
+            LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks,
+            Set<Long> allowedChunkIds, Map<Long, Integer> callSiteLines) {
+        if (proposal == null || chunks == null || chunks.isEmpty()) return "";
+        Set<Long> allowed = allowedChunkIds == null ? Set.of() : allowedChunkIds;
+        Map<Long, Integer> sites = callSiteLines == null ? Map.of() : callSiteLines;
+        LinkedHashSet<Long> orderedIds = new LinkedHashSet<>();
+        orderedIds.add(proposal.primaryChunkId());
+        orderedIds.addAll(proposal.evidenceChunkIds());
+        orderedIds.addAll(allowed);
+        orderedIds.removeIf(id -> id == null || !allowed.contains(id) || !chunks.containsKey(id));
+
+        StringBuilder result = new StringBuilder();
+        for (Long chunkId : orderedIds) {
+            CodeChunk chunk = chunks.get(chunkId);
+            boolean primary = chunkId.equals(proposal.primaryChunkId());
+            Integer callSiteLine = sites.get(chunkId);
+            Location location = primary ? resolve(proposal, chunk)
+                    : validCallSite(callSiteLine, chunk).orElseGet(() ->
+                    infer(proposal.type(), proposal.description(), chunk));
+            String label = primary ? "PRIMARY_CONTEXT" : callSiteLine == null
+                    ? "RELATED_EVIDENCE" : chunk.getEndpoint() == null || chunk.getEndpoint().isBlank()
+                    ? "CALL_CHAIN_EVIDENCE" : "ENTRY_EVIDENCE";
+            String code = formatCriticContext(chunk, location,
+                    primary ? CRITIC_PRIMARY_CONTEXT_LINES : CRITIC_RELATED_CONTEXT_LINES,
+                    primary ? CRITIC_PRIMARY_MAX_CHARS : CRITIC_RELATED_MAX_CHARS);
+            String section = "[CRITIC_" + label + "] CHUNK_ID=" + chunk.getId() + " | "
+                    + chunk.getFilePath() + ":" + chunk.getStartLine() + "-" + chunk.getEndLine()
+                    + " | " + chunk.getSymbolName() + "\n<UNTRUSTED_CODE>\n"
+                    + code + "\n</UNTRUSTED_CODE>";
+            if (!appendCriticSection(result, section)) break;
+        }
+        return result.toString();
+    }
+
+    private static String formatCriticContext(CodeChunk chunk, Location location,
+                                              int contextLines, int maxChars) {
+        String[] lines = contentLines(chunk);
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        int chunkEnd = chunkStart + Math.max(0, lines.length - 1);
+        StringBuilder result = new StringBuilder();
+        int first = Math.max(chunkStart, location.startLine() - contextLines);
+        int last = Math.min(chunkEnd, location.endLine() + contextLines);
+        for (int lineNumber = first; lineNumber <= last; lineNumber++) {
+            int index = lineNumber - chunkStart;
+            if (index < 0 || index >= lines.length) continue;
+            boolean marked = lineNumber >= location.startLine() && lineNumber <= location.endLine();
+            String numbered = (marked ? ">>> " : "    ")
+                    + String.format(Locale.ROOT, "%5d | ", lineNumber) + lines[index] + '\n';
+            if (result.length() + numbered.length() > maxChars) break;
+            result.append(numbered);
+        }
+        return result.toString().stripTrailing();
+    }
+
+    private static boolean appendCriticSection(StringBuilder result, String section) {
+        String separator = result.isEmpty() ? "" : "\n\n";
+        int remaining = CRITIC_TOTAL_MAX_CHARS - result.length() - separator.length();
+        if (remaining <= 0) return false;
+        result.append(separator);
+        if (section.length() <= remaining) {
+            result.append(section);
+            return true;
+        }
+        String marker = "\n... [CRITIC_CONTEXT_TRUNCATED] ...";
+        int contentLength = Math.max(0, remaining - marker.length());
+        result.append(section, 0, Math.min(section.length(), contentLength));
+        if (remaining >= marker.length()) result.append(marker);
+        return false;
     }
 
     // 执行 FindingLocationResolver 中的 validCallSite 处理。

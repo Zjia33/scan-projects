@@ -88,6 +88,79 @@ class FindingLocationResolverTest {
     }
 
     @Test
+    void givesCriticTwentyLinesAroundPrimaryLocationInsteadOfFour() {
+        String content = IntStream.rangeClosed(100, 159)
+                .mapToObj(line -> line == 130 ? "statement.execute(userSql);" : "line" + line + "();")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        CodeChunk chunk = chunk(100, 159, content);
+        LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 130, 130);
+
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, Map.of(1L, chunk), Set.of(1L), Map.of());
+
+        assertThat(evidence)
+                .contains("[CRITIC_PRIMARY_CONTEXT]")
+                .contains("    110 | line110();")
+                .contains(">>>   130 | statement.execute(userSql);")
+                .contains("    150 | line150();")
+                .doesNotContain("line109();", "line151();");
+    }
+
+    @Test
+    void givesCriticTwelveLinesAroundRelatedCallSite() {
+        CodeChunk primary = chunk(1, 3, "start();\nstatement.execute(sql);\nfinish();");
+        CodeChunk related = new CodeChunk(UUID.randomUUID(), "demo/Controller.java",
+                "Controller#search", "/search", 200, 259,
+                IntStream.rangeClosed(200, 259).mapToObj(line -> "line" + line + "();")
+                        .collect(java.util.stream.Collectors.joining("\n")),
+                "JAVA_METHOD", "String query", "", "search");
+        related.setId(2L);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",
+                1L, List.of(1L, 2L), 2, 2);
+
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, Map.of(1L, primary, 2L, related), Set.of(1L, 2L), Map.of(2L, 230));
+
+        assertThat(evidence)
+                .contains("[CRITIC_ENTRY_EVIDENCE]")
+                .contains("    218 | line218();")
+                .contains(">>>   230 | line230();")
+                .contains("    242 | line242();")
+                .doesNotContain("line217();", "line243();");
+    }
+
+    @Test
+    void capsCombinedCriticContextToAvoidUnboundedTokenGrowth() {
+        Map<Long, CodeChunk> chunks = new java.util.LinkedHashMap<>();
+        List<Long> ids = new java.util.ArrayList<>();
+        Map<Long, Integer> callSites = new java.util.LinkedHashMap<>();
+        String content = IntStream.rangeClosed(1, 60)
+                .mapToObj(line -> "line" + line + "_" + "x".repeat(180) + "();")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        for (long id = 1; id <= 7; id++) {
+            CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "demo/Chunk" + id + ".java",
+                    "Chunk" + id + "#run", id == 1 ? null : "/entry/" + id,
+                    1, 60, content, "JAVA_METHOD", "", "", "run");
+            chunk.setId(id);
+            chunks.put(id, chunk);
+            ids.add(id);
+            if (id > 1) callSites.put(id, 30);
+        }
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",
+                1L, ids, 30, 30);
+
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, chunks, Set.copyOf(ids), callSites);
+
+        assertThat(evidence.length()).isLessThanOrEqualTo(20_000);
+        assertThat(evidence).contains("[CRITIC_CONTEXT_TRUNCATED]");
+    }
+
+    @Test
     void relocatesCriticLineThatDoesNotMatchStructuredRootCauseAndRole() {
         CodeChunk chunk = chunk(70, 74, """
                 public List<User> search(String name) {

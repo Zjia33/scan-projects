@@ -63,11 +63,15 @@ public class CriticAgentService {
                     candidate.proposal(), independentEvidence.evidenceChunkIds(), chunksById);
             List<LlmGateway.LocationCandidate> locationCandidates =
                     FindingLocationResolver.locationCandidates(chunksById, allowedLocationChunks);
+            Map<Long, Integer> criticCallSites = semanticEvidenceService.callSiteLines(
+                    taskId, candidate.proposal().primaryChunkId(), allowedLocationChunks);
+            String criticEvidence = FindingLocationResolver.formatCriticEvidence(
+                    candidate.proposal(), chunksById, allowedLocationChunks, criticCallSites);
             // Critic 只接收确定性技术栈，不携带 Recon 模型生成的架构意见。
             LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("", List.of(), List.of(), List.of(),
                     recon == null ? null : recon.technologyProfile());
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
-                    taskId, candidate.sourceAgent(), candidate.proposal(), candidate.evidence(),
+                    taskId, candidate.sourceAgent(), candidate.proposal(), criticEvidence,
                     independentEvidence.text(), criticRecon, originalPrimary.getChangeType().name(),
                     originalPrimary.getAnalysisScope().name(), originalPrimary.getBaseContent(),
                     locationCandidates));
@@ -128,8 +132,8 @@ public class CriticAgentService {
                     FindingLocationResolver.formatEvidence(proposal, chunksById, callSites),
                     safeText(proposal.remediation()));
             finding.setDeltaStatus(FindingDeltaStatus.normalizeFor(scanMode, decision.deltaStatus()));
-            finding.setFingerprint(fingerprint(proposal.type().name(), primary.getFilePath(),
-                    primary.getSymbolName(), endpoint));
+            finding.setFingerprint(FindingFingerprint.create(
+                    proposal.type(), primary, location.startLine(), location.endLine()));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.FINDING,
                     "确认 " + proposal.type().getDisplayName() + "：" + proposal.title());
             run.complete("Critic Agent 已确认漏洞证据链");
@@ -247,19 +251,6 @@ public class CriticAgentService {
         return proposal.evidenceChunkIds().stream().map(chunks::get).filter(java.util.Objects::nonNull)
                 .map(CodeChunk::getEndpoint).filter(value -> value != null && !value.isBlank())
                 .findFirst().orElse(null);
-    }
-
-    // 执行 CriticAgentService 中的 fingerprint 处理。
-    private String fingerprint(String type, String path, String symbol, String endpoint) {
-        String normalized = String.join("|", type, path == null ? "" : path.replace('\\', '/'),
-                symbol == null ? "" : symbol, endpoint == null ? "" : endpoint);
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return java.util.HexFormat.of().formatHex(digest);
-        } catch (Exception exception) {
-            throw new IllegalStateException("无法生成漏洞稳定指纹", exception);
-        }
     }
 
     private record Correction(Optional<LlmGateway.FindingProposal> proposal, String reason) {
