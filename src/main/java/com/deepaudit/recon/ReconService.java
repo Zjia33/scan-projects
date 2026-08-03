@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -43,6 +44,9 @@ public class ReconService {
     private static final long MAX_SOURCE_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_TEXT_CHUNK_CHARS = 12_000;
     private static final int MAX_TEXT_CHUNK_LINES = 160;
+    private static final int MAX_FRAMEWORK_FILE_CHARS = 24_000;
+    private static final int MAX_FRAMEWORK_CONTEXT_CHARS = 120_000;
+    private static final int MAX_FRAMEWORK_FILES = 40;
     private static final Set<String> TEXT_EXTENSIONS = Set.of(
             "java", "xml", "html", "htm", "jsp", "ftl", "vue", "jsx", "tsx", "js", "ts",
             "properties", "yml", "yaml", "sql"
@@ -97,7 +101,7 @@ public class ReconService {
         // 所有代码块都参与结构化画像；仅输出模块、分层和事实计数，不携带具体位置或业务源码。
         ProjectStructureProfile projectStructure = structureProfiler.profile(root, chunks);
         return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(),
-                technologyProfile, projectStructure);
+                technologyProfile, projectStructure, frameworkFiles(root));
     }
 
     // 将调用图扩展得到的代码块提升为深度分析范围。
@@ -112,12 +116,6 @@ public class ReconService {
             }
         }
         promoted.forEach(chunkMapper::updateIncrementalMetadata);
-    }
-
-    // 增量影响范围在语义分析后才最终确定，因此在 Recon Agent 调用前刷新结构画像中的范围统计。
-    public ReconSummary refreshProjectStructure(Path root, ReconSummary summary, List<CodeChunk> chunks) {
-        return new ReconSummary(summary.sourceFileCount(), summary.javaMethodCount(), summary.endpointCount(),
-                summary.chunkCount(), summary.technologyProfile(), structureProfiler.profile(root, chunks));
     }
 
     // 执行 ReconService 中的 applyIncrementalMetadata 处理。
@@ -337,6 +335,62 @@ public class ReconService {
         String name = path.getFileName().toString();
         int dot = name.lastIndexOf('.');
         return dot > 0 && TEXT_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.ROOT));
+    }
+
+    // Recon 只读取构建描述和 Spring 应用配置原文；普通业务源码仍由本地画像和后续专业 Agent 处理。
+    private List<ReconFrameworkFile> frameworkFiles(Path root) {
+        List<Path> candidates;
+        try (Stream<Path> paths = Files.walk(root)) {
+            candidates = paths.filter(Files::isRegularFile)
+                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(this::isFrameworkFile)
+                    .sorted(Comparator.comparingInt(this::frameworkPriority)
+                            .thenComparing(path -> normalizePath(root.relativize(path).toString())))
+                    .limit(MAX_FRAMEWORK_FILES)
+                    .toList();
+        } catch (IOException exception) {
+            log.warn("无法完整收集 Recon 框架配置文件: {}", root, exception);
+            return List.of();
+        }
+        List<ReconFrameworkFile> result = new ArrayList<>();
+        int remaining = MAX_FRAMEWORK_CONTEXT_CHARS;
+        for (Path file : candidates) {
+            if (remaining <= 0) break;
+            try {
+                String content = Files.readString(file, StandardCharsets.UTF_8);
+                int length = Math.min(Math.min(content.length(), MAX_FRAMEWORK_FILE_CHARS), remaining);
+                result.add(new ReconFrameworkFile(normalizePath(root.relativize(file).toString()),
+                        frameworkFileKind(file), content.substring(0, length)));
+                remaining -= length;
+            } catch (Exception exception) {
+                log.debug("跳过无法读取的 Recon 框架配置文件: {}", file, exception);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private boolean isFrameworkFile(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.equals("pom.xml") || name.equals("package.json")
+                || name.startsWith("build.gradle") || name.startsWith("settings.gradle")
+                || name.matches("(?:application|bootstrap)(?:-[^.]+)?\\.(?:yml|yaml|properties)");
+    }
+
+    private int frameworkPriority(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle")) return 0;
+        if (name.equals("application.yml") || name.equals("application.yaml")
+                || name.equals("application.properties")) return 1;
+        if (name.startsWith("application-")) return 2;
+        if (name.startsWith("bootstrap")) return 3;
+        return 4;
+    }
+
+    private String frameworkFileKind(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle")
+                || name.equals("package.json")) return "BUILD_DESCRIPTOR";
+        return name.startsWith("bootstrap") ? "BOOTSTRAP_CONFIGURATION" : "APPLICATION_CONFIGURATION";
     }
 
     // 执行 ReconService 中的 truncate 处理。

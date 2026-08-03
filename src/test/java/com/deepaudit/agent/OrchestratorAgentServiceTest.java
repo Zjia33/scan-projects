@@ -25,6 +25,14 @@ import static org.mockito.Mockito.when;
 class OrchestratorAgentServiceTest {
 
     @Test
+    void routesSensitiveInformationToDedicatedProfessionalAgent() {
+        assertThat(OrchestratorAgentService.agentFor(VulnerabilityType.AUTHORIZATION))
+                .isEqualTo(AgentType.AUTHORIZATION);
+        assertThat(OrchestratorAgentService.agentFor(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE))
+                .isEqualTo(AgentType.SENSITIVE_INFORMATION);
+    }
+
+    @Test
     void guardRemovalCannotBeSkippedByTriage() {
         UUID taskId = UUID.randomUUID();
         IncrementalReviewUnit unit = unit(41, "CHANGED",
@@ -134,6 +142,6 @@ class OrchestratorAgentServiceTest {
     }
 
     private LlmGateway.ReconInsight recon() {
-        return new LlmGateway.ReconInsight("测试项目", List.of(), List.of(), List.of());
+        return new LlmGateway.ReconInsight("测试项目", com.deepaudit.recon.TechnologyProfile.empty());
     }
 }

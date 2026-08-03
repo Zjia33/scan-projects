@@ -27,11 +27,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RemoteLlmGatewayTest {
 
     @Test
-    void sendsAggregateProjectFactsToReconWithoutLocationsOrBusinessSource() {
+    void sendsOnlyFrameworkFactsAndPriorityConfigurationFilesToRecon() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
-                {"architectureSummary":"Spring MVC 分层服务","attackSurfaces":["HTTP API"],
-                 "securityMechanisms":["Spring Security"],"riskAreas":["公开接口"]}
+                {"architectureSummary":"Spring MVC 分层服务"}
                 """);
         ProjectStructureProfile structure = new ProjectStructureProfile(
                 List.of(new ProjectStructureProfile.ModuleProfile(".", 12, 80, 6, 0, 0)),
@@ -41,22 +40,25 @@ class RemoteLlmGatewayTest {
                 List.of(), List.of(), List.of());
         ReconSummary summary = new ReconSummary(12, 80, 6, 90,
                 new TechnologyProfile(List.of("Spring MVC"), List.of("Spring Security"),
-                        List.of(), List.of("Maven"), List.of(),
-                        List.of("Spring MVC <- pom.xml [spring-boot-starter-web]")), structure);
+                        List.of(), List.of("Maven"), List.of("@PreAuthorize"),
+                        List.of("Spring MVC <- pom.xml [spring-boot-starter-web]")), structure,
+                List.of(new com.deepaudit.recon.ReconFrameworkFile("pom.xml", "BUILD_DESCRIPTOR",
+                                "<artifactId>spring-boot-starter-web</artifactId>"),
+                        new com.deepaudit.recon.ReconFrameworkFile("src/main/resources/application.yml",
+                                "APPLICATION_CONFIGURATION", "spring:\n  application:\n    name: orders")));
 
         gateway.inspectProject(UUID.randomUUID(), summary);
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("整体技术框架", "只包含模块、分层和事实命中数量", "不负责审查具体业务逻辑、评估风险或确认漏洞")
-                .contains("不得输出或推测具体文件、类、方法、接口路径、代码位置")
-                .contains("attackSurfaces、securityMechanisms 和 riskAreas 必须返回空数组");
+                .contains("只负责客观概括项目技术框架", "application/bootstrap 配置文件", "不执行漏洞审计")
+                .contains("不得输出文件中的密码、Token、密钥");
         assertThat(gateway.requests.get(0).get(1).get("content"))
-                .contains("\"projectFacts\"", "\"projectStructure\"", "\"HTTP_GET\"",
-                        "\"occurrenceCount\":6", "\"Spring MVC\"", "\"evidence\":[]")
-                .contains("必须为空的 string[]")
-                .doesNotContain("\"occurrenceCount\":6,\"evidence\"", "pom.xml", "OrderController", "/orders/{id}",
-                        "representativeTargets", "codeExcerpt", "return orderService");
+                .contains("\"projectFramework\"", "\"entryPointTypes\":[\"HTTP_GET\"]", "\"Spring MVC\"",
+                        "\"path\":\"pom.xml\"", "spring-boot-starter-web", "application.yml", "name: orders")
+                .doesNotContain("sourceFileCount", "javaMethodCount", "endpointCount", "chunkCount",
+                        "occurrenceCount", "changedChunkCount", "impactedChunkCount", "securityAnnotations",
+                        "attackSurfaces", "riskAreas", "taskId", "OrderController", "/orders/{id}");
     }
 
     @Test
@@ -282,8 +284,7 @@ class RemoteLlmGatewayTest {
     }
 
     private LlmGateway.ReconInsight recon() {
-        return new LlmGateway.ReconInsight("Spring MVC", List.of("/search"),
-                List.of(), List.of("动态 SQL"));
+        return new LlmGateway.ReconInsight("Spring MVC", com.deepaudit.recon.TechnologyProfile.empty());
     }
 
     private static class StubRemoteLlmGateway extends RemoteLlmGateway {

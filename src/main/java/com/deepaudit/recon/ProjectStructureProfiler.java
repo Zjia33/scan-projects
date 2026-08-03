@@ -19,7 +19,7 @@ import java.util.TreeMap;
 import java.util.stream.Stream;
 
 /**
- * 将完整项目索引压缩为 Recon 可消费的整体结构画像。所有代码块都参与统计，模型只接收聚合计数。
+ * 生成本地项目结构画像；Recon 模型只接收从该画像提取的去计数框架类别。
  */
 @Slf4j
 final class ProjectStructureProfiler {

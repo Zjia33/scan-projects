@@ -65,7 +65,7 @@ public class CriticAgentService {
             String criticEvidence = FindingLocationResolver.formatCriticEvidence(
                     candidate.proposal(), chunksById, allowedLocationChunks, criticCallSites);
             // Critic 只接收确定性技术栈，不携带 Recon 模型生成的架构意见。
-            LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("", List.of(), List.of(), List.of(),
+            LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("",
                     recon == null ? null : recon.technologyProfile());
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
                     taskId, candidate.sourceAgent(), candidate.proposal(), criticEvidence,

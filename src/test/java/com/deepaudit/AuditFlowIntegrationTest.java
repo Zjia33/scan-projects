@@ -94,7 +94,7 @@ class AuditFlowIntegrationTest {
         Set<String> types = objectMapper.readTree(findingsJson).findValues("type").stream()
                 .map(JsonNode::asText).collect(Collectors.toSet());
         assertThat(types).contains("SQL_INJECTION", "AUTHORIZATION",
-                "UNAUTHORIZED_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
+                "SENSITIVE_INFORMATION_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
         assertThat(findingsJson).contains("[漏洞位置]", ">>>");

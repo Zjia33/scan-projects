@@ -84,7 +84,6 @@ public class AnalysisService {
         reconcileIncrementalScope(chunks, incrementalScope);
         primaryScopeIds.addAll(incrementalScope.changedChunkIds());
         primaryScopeIds.addAll(incrementalScope.impactedChunkIds());
-        reconSummary = reconService.refreshProjectStructure(projectRoot, reconSummary, chunks);
         log.info("任务 {} 增量范围：{} 个直接变更块、{} 个最终影响块、{} 个 CodeGraph 候选，"
                         + "全局配置变化={}",
                 taskId, incrementalScope.changedChunkIds().size(),

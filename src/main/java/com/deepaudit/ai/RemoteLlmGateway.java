@@ -49,17 +49,13 @@ public class RemoteLlmGateway implements LlmGateway {
         this.restClient = RestClient.builder().baseUrl(properties.getBaseUrl()).requestFactory(factory).build();
     }
 
-    // 请求 Recon 模型基于完整项目的结构化画像总结攻击面，不发送普通业务源码正文。
+    // 请求 Recon 模型只根据构建描述、应用配置和去计数后的框架事实生成架构摘要。
     @Override
     public ReconInsight inspectProject(UUID taskId, ReconSummary summary) {
         String systemPrompt = AgentPrompts.reconAgent();
-        ReconSummary aggregateFacts = new ReconSummary(summary.sourceFileCount(), summary.javaMethodCount(),
-                summary.endpointCount(), summary.chunkCount(), summary.technologyProfile().withoutEvidence(),
-                summary.projectStructure());
-        String userPrompt = json(Map.of("taskId", taskId, "projectFacts", aggregateFacts,
-                "outputSchema", Map.of("architectureSummary", "仅包含整体技术架构、模块和分层事实的 string",
-                        "attackSurfaces", "必须为空的 string[]", "securityMechanisms", "必须为空的 string[]",
-                        "riskAreas", "必须为空的 string[]")));
+        String userPrompt = json(Map.of("projectFramework", summary.frameworkFacts(),
+                "outputSchema", Map.of("architectureSummary",
+                        "仅包含整体技术框架、模块、分层和基础组件事实的 string")));
         return call(systemPrompt, userPrompt, ReconInsight.class);
     }
 
@@ -121,8 +117,8 @@ public class RemoteLlmGateway implements LlmGateway {
                 Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string",
                         "deltaStatus", "NEW|PERSISTING",
                         "rootCauseKind", "INEFFECTIVE_SECURITY_CONTROL|MISSING_AUTHORIZATION_CHECK|"
-                                + "UNSAFE_DATA_EXPOSURE|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT",
-                        "locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|QUERY|VALIDATION|"
+                                + "UNSAFE_DATA_EXPOSURE|HARDCODED_SECRET|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT",
+                        "locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|SECRET_DEFINITION|QUERY|VALIDATION|"
                                 + "DATA_ACCESS|DATA_OUTPUT|DANGEROUS_OPERATION|BUSINESS_OPERATION",
                         "locationCandidateId", "confirmed=true 时优先填写，且必须来自 locationCandidates",
                         "primaryChunkId", "confirmed=true 时复制所选 locationCandidate.chunkId",

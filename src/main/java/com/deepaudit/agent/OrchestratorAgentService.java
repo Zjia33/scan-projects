@@ -492,7 +492,8 @@ public class OrchestratorAgentService {
     public static AgentType agentFor(VulnerabilityType type) {
         return switch (type) {
             case SQL_INJECTION -> AgentType.SQL_INJECTION;
-            case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> AgentType.AUTHORIZATION;
+            case AUTHORIZATION -> AgentType.AUTHORIZATION;
+            case SENSITIVE_INFORMATION_DISCLOSURE -> AgentType.SENSITIVE_INFORMATION;
             case STORED_XSS -> AgentType.STORED_XSS;
             case VALIDATION_BYPASS -> AgentType.VALIDATION_BYPASS;
         };

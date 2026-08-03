@@ -146,6 +146,13 @@ class ReconServiceTest {
                 .contains("KAFKA");
         assertThat(profile.configurationFiles()).extracting(ProjectStructureProfile.FactGroup::kind)
                 .contains("BUILD_DESCRIPTOR", "APPLICATION_CONFIGURATION");
+        assertThat(summary.frameworkFiles()).extracting(ReconFrameworkFile::path)
+                .containsExactly("pom.xml", "src/main/resources/application.yml");
+        assertThat(summary.frameworkFiles()).filteredOn(file -> file.path().endsWith("application.yml"))
+                .singleElement().satisfies(file -> assertThat(file.content()).contains("name: orders"));
+        assertThat(summary.frameworkFacts().modules()).containsExactly(".");
+        assertThat(summary.frameworkFacts().entryPointTypes()).contains("HTTP_GET", "KAFKA_LISTENER");
+        assertThat(summary.frameworkFacts().technology().securityFrameworks()).contains("Spring Security");
     }
 
     @Test

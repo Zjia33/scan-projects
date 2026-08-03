@@ -20,11 +20,11 @@
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
 - 面向五类新任务漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
 - Java、XML、HTML、JSP、Vue、JavaScript、TypeScript、YAML 等文本索引
-- Recon Agent：基于完整项目的模块、分层、入口、安全配置、数据访问和外部集成结构画像理解架构；不抽样发送普通业务源码
+- Recon Agent：只读取去计数后的框架事实、构建描述和 application/bootstrap 配置，生成技术架构摘要；不接收普通业务源码或增量作用域
 - Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
 - `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
 - 只有 `INVESTIGATE` 单元创建 SQL 注入、权限、敏感信息泄露、XSS 或验证绕过专业 Agent
-- SQL 注入、权限与越权、未授权敏感信息泄露、存储 XSS、验证绕过专业 Agents
+- SQL 注入、越权、敏感信息泄露、存储 XSS、验证绕过五类独立专业 Agents
 - 受控多轮工具调用，返回真实代码块而不是只有文件名
 - Critic Agent：主动寻找全局权限、参数化查询、归属校验等反证
 - Report Agent：仅依据确认结果生成管理摘要和覆盖说明
@@ -42,7 +42,7 @@
   → 确定性技术栈、项目结构画像和语义索引
   → CodeGraph 扩展调用方、被调用方和安全配置影响面
   → JavaParser 在作用域内验证调用现场并构建轻量安全数据流
-  → Recon Agent 仅依据结构化全项目事实归纳架构和攻击面，不读取普通业务方法正文
+  → Recon Agent 读取构建描述、application/bootstrap 配置和去计数框架事实，归纳技术架构
   → 按入口、危险操作、安全配置、变更和语义流构建紧凑审计单元
   → Triage Orchestrator 三态轻量分流
   → NEED_CONTEXT 定向补充调用链和安全上下文后复判
@@ -205,6 +205,7 @@ http://localhost:8080/
 - `V15__enforce_incremental_only_defaults.sql`：统一增量扫描范围和结果默认值
 - `V16__drop_legacy_scan_mode.sql`：删除已停用的扫描模式字段
 - `V17__remove_retired_audit_values.sql`：删除退役漏洞数据并约束当前枚举值
+- `V18__separate_sensitive_information_audit.sql`：拆分敏感信息泄露类型和独立专业 Agent
 
 `V7` 和 `V9` 是不可改写的历史迁移，新版本会继续保留文件用于已有数据库校验；当前运行时代码不再使用 RAG、Embedding 或向量召回。
 

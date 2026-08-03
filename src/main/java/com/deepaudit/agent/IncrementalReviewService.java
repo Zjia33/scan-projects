@@ -45,6 +45,9 @@ public class IncrementalReviewService {
             "outerhtml", "document.write", "th:utext", "v-html");
     private static final Set<String> VALIDATION = Set.of(
             "validate", "isvalid", "verify", "captcha", "otp", "signature", "checktoken");
+    private static final Set<String> SENSITIVE_INFORMATION = Set.of(
+            "password", "passwd", "secret", "apikey", "api-key", "privatekey", "private-key",
+            "client-secret", "access-token", "refresh-token", "idcard", "bankcard");
 
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
@@ -128,6 +131,7 @@ public class IncrementalReviewService {
         if (containsAny(searchable, DATA_ACCESS)) facts.add("HAS_DATA_ACCESS");
         if (containsAny(searchable, OUTPUT)) facts.add("HAS_OUTPUT_OPERATION");
         if (containsAny(searchable, VALIDATION)) facts.add("HAS_VALIDATION_OPERATION");
+        if (containsAny(searchable, SENSITIVE_INFORMATION)) facts.add("HAS_SENSITIVE_INFORMATION");
         if (!edges.isEmpty()) facts.add("HAS_CALL_RELATIONS");
         if (edges.stream().anyMatch(edge -> edge.getCalleeChunkId() == null
                 || "UNRESOLVED".equals(edge.getEdgeType()))) facts.add("HAS_UNRESOLVED_CALL");

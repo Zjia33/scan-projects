@@ -97,7 +97,7 @@ public class AuditOrchestrator {
 
                     task = update(task, AuditStatus.RECON, 55,
                             "识别到 " + recon.endpointCount() + " 个接口、" + recon.javaMethodCount() + " 个 Java 方法");
-                    task = update(task, AuditStatus.AGENT_RECON, 62, "Recon Agent 理解架构、提交差异与攻击面");
+                    task = update(task, AuditStatus.AGENT_RECON, 62, "Recon Agent 解析框架、模块与技术架构");
                     task = update(task, AuditStatus.PLANNING, 68, "Triage Orchestrator 正在轻量分流审计单元");
                     task = update(task, AuditStatus.ANALYSIS, 74,
                             "专业安全 Agents 调查变更及语义影响面");

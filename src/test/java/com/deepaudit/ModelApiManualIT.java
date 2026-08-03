@@ -66,10 +66,7 @@ class ModelApiManualIT {
                 List.of(VulnerabilityType.SQL_INJECTION));
         LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight(
                 "Spring MVC 接口直接使用 JdbcTemplate 访问数据库",
-                List.of("GET /users/search"),
-                List.of(),
-                List.of("用户输入进入动态 SQL")
-        );
+                com.deepaudit.recon.TechnologyProfile.empty());
 
         LlmGateway.TriagePlan plan = llmGateway.triage(taskId, recon, List.of(auditUnit));
         printJson("对话模型配置", new ModelConfiguration(aiProperties.getBaseUrl(), aiProperties.getModel()));

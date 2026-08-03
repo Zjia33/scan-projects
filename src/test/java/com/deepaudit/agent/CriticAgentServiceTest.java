@@ -146,11 +146,11 @@ class CriticAgentServiceTest {
         controller.setAnalysisScope(AnalysisScope.IMPACTED);
         dataRead.setAnalysisScope(AnalysisScope.CHANGED);
         LlmGateway.FindingProposal proposedAtDataRead = new LlmGateway.FindingProposal(
-                VulnerabilityType.UNAUTHORIZED_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
                 "方法级权限注解未生效", "项目未启用 @EnableGlobalMethodSecurity，@PreAuthorize 不生效",
                 "启用方法级安全", dataRead.getId(), List.of(dataRead.getId(), controller.getId()), 60, 60);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
-                VulnerabilityType.UNAUTHORIZED_DISCLOSURE, "未授权用户可以读取公告", dataRead.getId(),
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, "公开接口暴露敏感公告", dataRead.getId(),
                 dataRead.getId() + "," + controller.getId(), Confidence.HIGH);
         AgentCandidate candidate = new AgentCandidate(
                 AgentType.AUTHORIZATION, proposedAtDataRead, "候选证据", hypothesis);
@@ -158,7 +158,7 @@ class CriticAgentServiceTest {
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(dataRead.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, dataRead.getId(), "renderNoticeBoard"));
         when(semanticEvidenceService.independentCriticEvidence(
-                taskId, dataRead.getId(), VulnerabilityType.UNAUTHORIZED_DISCLOSURE))
+                taskId, dataRead.getId(), VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE))
                 .thenReturn("全局方法级安全配置缺失");
         when(semanticEvidenceService.callSiteLines(eq(taskId), eq(controller.getId()), anySet()))
                 .thenReturn(Map.of());
@@ -383,7 +383,7 @@ class CriticAgentServiceTest {
     }
 
     private LlmGateway.ReconInsight recon() {
-        return new LlmGateway.ReconInsight("Spring MVC 银行业务", List.of("HTTP API"),
-                List.of("Spring Security"), List.of("支付业务逻辑"));
+        return new LlmGateway.ReconInsight("Spring MVC 银行业务",
+                com.deepaudit.recon.TechnologyProfile.empty());
     }
 }

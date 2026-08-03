@@ -296,7 +296,7 @@ public final class FindingLocationResolver {
         String claim = String.join(" ", safe(proposal.title()), safe(proposal.description()),
                 safe(decision.reason())).toLowerCase(Locale.ROOT);
         if ((proposal.type() == VulnerabilityType.AUTHORIZATION
-                || proposal.type() == VulnerabilityType.UNAUTHORIZED_DISCLOSURE)
+                || proposal.type() == VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE)
                 && ineffectiveSecurityClaim(claim)) {
             return RootCause.INEFFECTIVE_SECURITY_CONTROL;
         }
@@ -305,7 +305,7 @@ public final class FindingLocationResolver {
         if (declared.isPresent()) return declared.get();
         return switch (proposal.type()) {
             case AUTHORIZATION -> RootCause.MISSING_AUTHORIZATION_CHECK;
-            case UNAUTHORIZED_DISCLOSURE -> RootCause.UNSAFE_DATA_EXPOSURE;
+            case SENSITIVE_INFORMATION_DISCLOSURE -> RootCause.UNSAFE_DATA_EXPOSURE;
             case SQL_INJECTION -> RootCause.UNSAFE_QUERY;
             case STORED_XSS -> RootCause.UNSAFE_OUTPUT;
             case VALIDATION_BYPASS -> RootCause.MISSING_VALIDATION;
@@ -316,9 +316,10 @@ public final class FindingLocationResolver {
         return switch (type) {
             case AUTHORIZATION -> rootCause == RootCause.INEFFECTIVE_SECURITY_CONTROL
                     || rootCause == RootCause.MISSING_AUTHORIZATION_CHECK;
-            case UNAUTHORIZED_DISCLOSURE -> rootCause == RootCause.INEFFECTIVE_SECURITY_CONTROL
+            case SENSITIVE_INFORMATION_DISCLOSURE -> rootCause == RootCause.INEFFECTIVE_SECURITY_CONTROL
                     || rootCause == RootCause.MISSING_AUTHORIZATION_CHECK
-                    || rootCause == RootCause.UNSAFE_DATA_EXPOSURE;
+                    || rootCause == RootCause.UNSAFE_DATA_EXPOSURE
+                    || rootCause == RootCause.HARDCODED_SECRET;
             case SQL_INJECTION -> rootCause == RootCause.UNSAFE_QUERY;
             case STORED_XSS -> rootCause == RootCause.UNSAFE_OUTPUT;
             case VALIDATION_BYPASS -> rootCause == RootCause.MISSING_VALIDATION;
@@ -361,6 +362,8 @@ public final class FindingLocationResolver {
                     LocationRole.SECURITY_BOUNDARY, LocationRole.DATA_ACCESS,
                     LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION);
             case UNSAFE_DATA_EXPOSURE -> Set.of(LocationRole.DATA_ACCESS, LocationRole.DATA_OUTPUT);
+            case HARDCODED_SECRET -> Set.of(
+                    LocationRole.SECRET_DEFINITION, LocationRole.SECURITY_CONFIGURATION);
             case UNSAFE_QUERY -> Set.of(LocationRole.QUERY, LocationRole.DANGEROUS_OPERATION);
             case MISSING_VALIDATION -> Set.of(LocationRole.VALIDATION,
                     LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION);
@@ -391,6 +394,12 @@ public final class FindingLocationResolver {
         if (containsAny(line, "@enablemethodsecurity", "@enableglobalmethodsecurity", "securityfilterchain",
                 "authorizehttprequests", "authorizerequests", "requestmatchers", "antmatchers")) {
             result.add(LocationRole.SECURITY_CONFIGURATION);
+        }
+        if (looksLikeSecretDefinition(line)) {
+            result.add(LocationRole.SECRET_DEFINITION);
+            if (containsAny(line, "password", "secret", "private-key", "private_key", "client-secret")) {
+                result.add(LocationRole.SECURITY_CONFIGURATION);
+            }
         }
         if (containsAny(line, "executequery", "executeupdate", "statement.execute", "createstatement",
                 "preparestatement", "jdbctemplate", "createquery", "createnativequery", "${", "select ",
@@ -425,6 +434,13 @@ public final class FindingLocationResolver {
             if (value.contains(marker)) return true;
         }
         return false;
+    }
+
+    private static boolean looksLikeSecretDefinition(String line) {
+        boolean assignment = line.contains(":") || line.contains("=");
+        return assignment && containsAny(line, "password", "passwd", "pwd", "secret", "api-key", "api_key",
+                "apikey", "access-key", "access_key", "private-key", "private_key", "client-secret",
+                "client_secret", "access-token", "access_token", "refresh-token", "refresh_token");
     }
 
     private static String safe(String value) {
@@ -506,7 +522,8 @@ public final class FindingLocationResolver {
                     "queryfor", "createnativequery", "${", "select ", "insert ", "update ", "delete ");
             case AUTHORIZATION -> List.of("findbyid", "delete", "update", "save(", "owner", "userid",
                     "accountid", "tenant", "transfer", "withdraw", "purchase");
-            case UNAUTHORIZED_DISCLOSURE -> List.of("return ", "find", "load", "get", "response", "body(");
+            case SENSITIVE_INFORMATION_DISCLOSURE -> List.of("password", "secret", "api-key", "apikey",
+                    "access-key", "private-key", "client-secret", "token", "return ", "response", "body(");
             case STORED_XSS -> List.of("v-html", "innerhtml", "outerhtml", "document.write", "th:utext",
                     "<%=", "append(", "html(");
             case VALIDATION_BYPASS -> List.of("validate", "isvalid", "if (", "if(", "return ", "save(",
@@ -660,6 +677,7 @@ public final class FindingLocationResolver {
         INEFFECTIVE_SECURITY_CONTROL,
         MISSING_AUTHORIZATION_CHECK,
         UNSAFE_DATA_EXPOSURE,
+        HARDCODED_SECRET,
         UNSAFE_QUERY,
         MISSING_VALIDATION,
         UNSAFE_OUTPUT
@@ -672,6 +690,7 @@ public final class FindingLocationResolver {
         VALIDATION,
         DATA_ACCESS,
         DATA_OUTPUT,
+        SECRET_DEFINITION,
         DANGEROUS_OPERATION,
         BUSINESS_OPERATION
     }

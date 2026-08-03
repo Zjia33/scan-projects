@@ -8,6 +8,7 @@ public enum AgentType {
     ORCHESTRATOR,
     SQL_INJECTION,
     AUTHORIZATION,
+    SENSITIVE_INFORMATION,
     STORED_XSS,
     VALIDATION_BYPASS,
     CRITIC,
@@ -20,6 +21,7 @@ public enum AgentType {
         return switch (normalized) {
             case "SQLI", "SQL_INJECTION_AGENT" -> SQL_INJECTION;
             case "AUTH", "AUTHORIZATION_AGENT", "ACCESS_CONTROL", "UNAUTHORIZED_ACCESS" -> AUTHORIZATION;
+            case "SENSITIVE_INFORMATION_AGENT", "INFORMATION_DISCLOSURE", "DATA_LEAK" -> SENSITIVE_INFORMATION;
             case "XSS", "STORED_XSS_AGENT" -> STORED_XSS;
             case "VALIDATION", "VALIDATION_BYPASS_AGENT", "AUTH_BYPASS" -> VALIDATION_BYPASS;
             default -> exactOrNull(normalized);

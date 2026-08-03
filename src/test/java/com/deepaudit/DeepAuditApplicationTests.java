@@ -94,13 +94,13 @@ class DeepAuditApplicationTests {
     void normalizesTriageEnumsAndKeepsUnknownValuesSkippable() throws Exception {
         String modelJson = """
                 {
-                  "summary": "权限审计分流",
+                  "summary": "敏感信息审计分流",
                   "decisions": [
                     {
                       "unitId": "chunk-10",
                       "primaryChunkId": 10,
                       "disposition": "investigate",
-                      "vulnerabilityTypes": ["UnauthorizedAccess"],
+                      "vulnerabilityTypes": ["敏感信息泄露"],
                       "reasonCodes": ["EXTERNAL_ENTRY"],
                       "requiredContext": [],
                       "reason": "未授权接口可能泄露敏感信息"
@@ -122,7 +122,7 @@ class DeepAuditApplicationTests {
 
         assertThat(plan.decisions().get(0).disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
         assertThat(plan.decisions().get(0).vulnerabilityTypes())
-                .containsExactly(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
+                .containsExactly(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
         assertThat(plan.decisions().get(1).disposition()).isNull();
         assertThat(plan.decisions().get(1).vulnerabilityTypes()).isEmpty();
     }

@@ -653,7 +653,7 @@ public class LightweightSemanticAnalyzer {
         boolean sensitiveData = containsAny(current, "password", "secret", "apikey", "privatekey",
                 "idcard", "bankcard", "balance", "token", "salary");
         if (publicEndpoint && sensitiveData) {
-            offer(taskId, VulnerabilityType.UNAUTHORIZED_DISCLOSURE, entry, state,
+            offer(taskId, VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, entry, state,
                     "允许匿名访问的接口", "敏感字段进入接口返回路径",
                     "认证要求/响应字段白名单：未确认", program, best);
         }

@@ -64,21 +64,11 @@ public interface LlmGateway {
     }
 
     // 封装 ReconInsight 使用的不可变结构化数据。
-    record ReconInsight(String architectureSummary, List<String> attackSurfaces,
-                        List<String> securityMechanisms, List<String> riskAreas,
-                        TechnologyProfile technologyProfile) {
+    record ReconInsight(String architectureSummary, TechnologyProfile technologyProfile) {
         // 校验并规范化 ReconInsight 的构造参数。
         public ReconInsight {
-            attackSurfaces = attackSurfaces == null ? List.of() : List.copyOf(attackSurfaces);
-            securityMechanisms = securityMechanisms == null ? List.of() : List.copyOf(securityMechanisms);
-            riskAreas = riskAreas == null ? List.of() : List.copyOf(riskAreas);
+            architectureSummary = architectureSummary == null ? "" : architectureSummary;
             technologyProfile = technologyProfile == null ? TechnologyProfile.empty() : technologyProfile;
-        }
-
-        // 创建 ReconInsight 实例并初始化所需依赖或状态。
-        public ReconInsight(String architectureSummary, List<String> attackSurfaces,
-                            List<String> securityMechanisms, List<String> riskAreas) {
-            this(architectureSummary, attackSurfaces, securityMechanisms, riskAreas, TechnologyProfile.empty());
         }
     }
 

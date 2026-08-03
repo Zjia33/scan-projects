@@ -1245,7 +1245,7 @@ function runStatusText(status) {
 function agentText(agent) {
     return ({
         RECON: 'Recon Agent', ORCHESTRATOR: 'Triage Orchestrator', SQL_INJECTION: 'SQL 注入 Agent',
-        AUTHORIZATION: '权限审计 Agent', UNAUTHORIZED_DISCLOSURE: '数据披露 Agent',
+        AUTHORIZATION: '权限审计 Agent', SENSITIVE_INFORMATION: '敏感信息审计 Agent',
         STORED_XSS: '存储 XSS Agent', VALIDATION_BYPASS: '验证绕过 Agent',
         CRITIC: 'Critic Agent', REPORT: 'Report Agent'
     })[agent] || agent || 'SYSTEM';
@@ -1269,7 +1269,7 @@ function confidenceText(value) {
 
 function vulnerabilityTypeText(value) {
     return ({
-        SQL_INJECTION: 'SQL 注入', AUTHORIZATION: '越权漏洞', UNAUTHORIZED_DISCLOSURE: '未授权数据披露',
+        SQL_INJECTION: 'SQL 注入', AUTHORIZATION: '越权漏洞', SENSITIVE_INFORMATION_DISCLOSURE: '敏感信息泄露',
         STORED_XSS: '存储型 XSS', VALIDATION_BYPASS: '验证绕过'
     })[value] || value || '安全问题';
 }

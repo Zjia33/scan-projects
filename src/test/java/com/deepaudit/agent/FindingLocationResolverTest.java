@@ -182,6 +182,34 @@ class FindingLocationResolverTest {
                 });
     }
 
+    @Test
+    void acceptsHardcodedSecretAtConfigurationDefinitionInsteadOfAuthorizationLocation() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "src/main/resources/application.yml",
+                "application.yml#part-1", null, 20, 21,
+                "spring.datasource.password: committed-value\nserver.port: 8080",
+                "TEXT_YML", "", "", "");
+        chunk.setId(88L);
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                Map.of(88L, chunk), Set.of(88L));
+        LlmGateway.LocationCandidate secret = candidates.stream()
+                .filter(candidate -> candidate.roles().contains("SECRET_DEFINITION"))
+                .findFirst().orElseThrow();
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                "配置中包含硬编码密码", "Target 新增了密码字面量", "使用 Secret 管理服务",
+                88L, List.of(88L), 20, 20);
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "配置行直接定义了凭据", com.deepaudit.domain.FindingDeltaStatus.NEW,
+                88L, 20, 20, "HARDCODED_SECRET", "SECRET_DEFINITION", secret.candidateId());
+
+        assertThat(FindingLocationResolver.resolveCriticPrimary(
+                proposal, decision, Map.of(88L, chunk), Set.of(88L)))
+                .get().satisfies(location -> {
+                    assertThat(location.chunkId()).isEqualTo(88L);
+                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(20, 20));
+                });
+    }
+
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {
         return new LlmGateway.FindingProposal(type, Severity.HIGH, Confidence.HIGH,
                 "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",

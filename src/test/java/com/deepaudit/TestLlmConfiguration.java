@@ -26,7 +26,8 @@ public class TestLlmConfiguration {
         return new LlmGateway() {
             @Override
             public ReconInsight inspectProject(UUID taskId, ReconSummary summary) {
-                return new ReconInsight("Spring Boot Web 分层项目", List.of(), List.of(), List.of());
+                return new ReconInsight("Spring Boot Web 分层项目",
+                        com.deepaudit.recon.TechnologyProfile.empty());
             }
 
             @Override
@@ -115,7 +116,8 @@ public class TestLlmConfiguration {
             private String tool(VulnerabilityType type) {
                 return switch (type) {
                     case SQL_INJECTION -> "resolve_data_access";
-                    case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> "inspect_security_policy";
+                    case AUTHORIZATION -> "inspect_security_policy";
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> "read_chunk";
                     default -> "explore_call_graph";
                 };
             }
@@ -123,8 +125,10 @@ public class TestLlmConfiguration {
             private Map<String, Object> toolArguments(AgentTurn turn) {
                 return switch (turn.vulnerabilityType()) {
                     case SQL_INJECTION -> Map.of("selector", turn.target().symbolName(), "depth", 3, "limit", 5);
-                    case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> Map.of(
+                    case AUTHORIZATION -> Map.of(
                             "endpoint", turn.target().endpoint() == null ? "" : turn.target().endpoint(), "limit", 5);
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> Map.of(
+                            "chunkId", turn.target().chunkId(), "limit", 5);
                     default -> Map.of("limit", 5);
                 };
             }
@@ -146,7 +150,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "动态 SQL 存在注入风险";
                     case AUTHORIZATION -> "接口存在越权访问风险";
-                    case UNAUTHORIZED_DISCLOSURE -> "公开接口可能泄露敏感信息";
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> "代码或响应中可能泄露敏感信息";
                     case STORED_XSS -> "持久化内容可能进入非转义输出";
                     case VALIDATION_BYPASS -> "验证流程可能被绕过";
                 };
@@ -156,7 +160,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "UNSAFE_QUERY";
                     case AUTHORIZATION -> "MISSING_AUTHORIZATION_CHECK";
-                    case UNAUTHORIZED_DISCLOSURE -> "UNSAFE_DATA_EXPOSURE";
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> "UNSAFE_DATA_EXPOSURE";
                     case STORED_XSS -> "UNSAFE_OUTPUT";
                     case VALIDATION_BYPASS -> "MISSING_VALIDATION";
                 };
@@ -166,7 +170,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "QUERY";
                     case AUTHORIZATION -> "SECURITY_BOUNDARY";
-                    case UNAUTHORIZED_DISCLOSURE, STORED_XSS -> "DATA_OUTPUT";
+                    case SENSITIVE_INFORMATION_DISCLOSURE, STORED_XSS -> "DATA_OUTPUT";
                     case VALIDATION_BYPASS -> "VALIDATION";
                 };
             }

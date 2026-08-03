@@ -49,6 +49,9 @@ public class AuditUnitService {
     private static final Set<String> AUTHORIZATION_MARKERS = Set.of(
             "preauthorize", "secured", "rolesallowed", "permitall", "hasrole", "hasauthority",
             "tenant", "owner", "userid", "accountid", "deletebyid", "findbyid");
+    private static final Set<String> SENSITIVE_INFORMATION_MARKERS = Set.of(
+            "password", "passwd", "secret", "apikey", "api-key", "privatekey", "private-key",
+            "client-secret", "access-token", "refresh-token", "idcard", "bankcard");
 
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
@@ -112,7 +115,6 @@ public class AuditUnitService {
             if (hasExternalEntry(chunk, searchable)) {
                 reasonCodes.add("EXTERNAL_ENTRY");
                 candidateTypes.add(VulnerabilityType.AUTHORIZATION);
-                candidateTypes.add(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
                 candidateTypes.add(VulnerabilityType.VALIDATION_BYPASS);
             }
             if (isSecurityConfiguration(chunk, searchable)) {
@@ -199,7 +201,10 @@ public class AuditUnitService {
         if (containsAny(searchable, AUTHORIZATION_MARKERS)) {
             reasons.add("AUTHORIZATION_BOUNDARY");
             types.add(VulnerabilityType.AUTHORIZATION);
-            types.add(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
+        }
+        if (containsAny(searchable, SENSITIVE_INFORMATION_MARKERS)) {
+            reasons.add("SENSITIVE_INFORMATION_BOUNDARY");
+            types.add(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
         }
     }
 
