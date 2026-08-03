@@ -73,7 +73,7 @@ class FindingLocationResolverTest {
                 """, "JAVA_METHOD", "PurchaseRequest request", "", "debit,completed");
         service.setId(1549L);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "服务端直接信任 quotedUnitPrice", "服务端查询可信价格",
                 1549L, List.of(1549L, 1497L), 86, 88);
 
@@ -171,8 +171,8 @@ class FindingLocationResolverTest {
                 """);
         LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 71, 71);
         LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
-                true, Confidence.HIGH, "外部参数进入动态查询", com.deepaudit.domain.FindingDeltaStatus.BASELINE,
-                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY");
+                true, Confidence.HIGH, "外部参数进入动态查询", com.deepaudit.domain.FindingDeltaStatus.NEW,
+                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY", null);
 
         assertThat(FindingLocationResolver.resolveCriticPrimary(
                 proposal, decision, Map.of(chunk.getId(), chunk), Set.of(chunk.getId())))

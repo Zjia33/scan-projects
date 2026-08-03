@@ -10,7 +10,6 @@ public enum AgentType {
     AUTHORIZATION,
     STORED_XSS,
     VALIDATION_BYPASS,
-    FINANCIAL_RISK, // 仅用于读取历史 Agent 轨迹，不再创建新任务
     CRITIC,
     REPORT;
 
@@ -23,7 +22,6 @@ public enum AgentType {
             case "AUTH", "AUTHORIZATION_AGENT", "ACCESS_CONTROL", "UNAUTHORIZED_ACCESS" -> AUTHORIZATION;
             case "XSS", "STORED_XSS_AGENT" -> STORED_XSS;
             case "VALIDATION", "VALIDATION_BYPASS_AGENT", "AUTH_BYPASS" -> VALIDATION_BYPASS;
-            case "FINANCIAL", "FINANCIAL_RISK_AGENT", "BUSINESS_LOGIC" -> FINANCIAL_RISK;
             default -> exactOrNull(normalized);
         };
     }

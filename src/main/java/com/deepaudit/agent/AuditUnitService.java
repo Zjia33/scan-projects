@@ -2,7 +2,6 @@ package com.deepaudit.agent;
 
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.SecurityFlow;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
@@ -56,12 +55,12 @@ public class AuditUnitService {
     private final SemanticMethodChangeMapper semanticChangeMapper;
 
     // 从全部项目事实中构建安全相关审计单元
-    public List<AuditUnit> build(UUID taskId, List<CodeChunk> chunks, ScanMode scanMode,
+    public List<AuditUnit> build(UUID taskId, List<CodeChunk> chunks,
                                  Map<Long, Set<VulnerabilityType>> hints,
                                  Map<Long, String> hintDescriptions) {
         Map<Long, List<SecurityFlow>> flowsByChunk = flowMapper.findByTaskId(taskId).stream()
                 .filter(flow -> flow.getPrimaryChunkId() != null)
-                .filter(flow -> flow.getType() != null && flow.getType().isDetectable())
+                .filter(flow -> flow.getType() != null)
                 .collect(Collectors.groupingBy(SecurityFlow::getPrimaryChunkId,
                         LinkedHashMap::new, Collectors.toList()));
         Map<Long, List<SemanticCallEdge>> edgesByCaller = edgeMapper.findByTaskId(taskId).stream()
@@ -75,7 +74,7 @@ public class AuditUnitService {
 
         List<AuditUnit> units = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
-            if (chunk.getId() == null || !insideDeepScope(chunk, scanMode)) continue;
+            if (chunk.getId() == null || !insideDeepScope(chunk)) continue;
             List<SecurityFlow> flows = flowsByChunk.getOrDefault(chunk.getId(), List.of());
             List<SemanticCallEdge> edges = edgesByCaller.getOrDefault(chunk.getId(), List.of());
             List<SemanticMethodChange> semanticChanges = semanticChangesByPath
@@ -87,7 +86,7 @@ public class AuditUnitService {
             Set<VulnerabilityType> candidateTypes = EnumSet.noneOf(VulnerabilityType.class);
             Set<String> reasonCodes = new LinkedHashSet<>();
             Set<VulnerabilityType> chunkHints = hints.getOrDefault(chunk.getId(), Set.of()).stream()
-                    .filter(VulnerabilityType::isDetectable)
+                    .filter(java.util.Objects::nonNull)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
 
             if (!chunkHints.isEmpty()) {
@@ -97,7 +96,7 @@ public class AuditUnitService {
             if (!flows.isEmpty()) {
                 reasonCodes.add("SEMANTIC_FLOW");
                 flows.stream().map(SecurityFlow::getType).filter(java.util.Objects::nonNull)
-                        .filter(VulnerabilityType::isDetectable).forEach(candidateTypes::add);
+                        .forEach(candidateTypes::add);
             }
             if (!semanticChanges.isEmpty()) {
                 reasonCodes.add("SEMANTIC_CHANGE");
@@ -125,10 +124,9 @@ public class AuditUnitService {
             if (edges.stream().anyMatch(this::isUnresolved)) {
                 reasonCodes.add("UNRESOLVED_CALL");
             }
-            if (scanMode == ScanMode.INCREMENTAL && chunk.getAnalysisScope() == AnalysisScope.CHANGED) {
+            if (chunk.getAnalysisScope() == AnalysisScope.CHANGED) {
                 reasonCodes.add("DIRECT_CHANGE");
-            } else if (scanMode == ScanMode.INCREMENTAL
-                    && chunk.getAnalysisScope() == AnalysisScope.IMPACTED) {
+            } else if (chunk.getAnalysisScope() == AnalysisScope.IMPACTED) {
                 reasonCodes.add("IMPACTED_BY_CHANGE");
             }
             if (reasonCodes.isEmpty() || candidateTypes.isEmpty()) continue;
@@ -152,7 +150,7 @@ public class AuditUnitService {
         List<SemanticCallEdge> allEdges = edgeMapper.findByTaskId(taskId);
         Map<Long, List<SecurityFlow>> flowsByChunk = flowMapper.findByTaskId(taskId).stream()
                 .filter(flow -> flow.getPrimaryChunkId() != null)
-                .filter(flow -> flow.getType() != null && flow.getType().isDetectable())
+                .filter(flow -> flow.getType() != null)
                 .collect(Collectors.groupingBy(SecurityFlow::getPrimaryChunkId));
         return units.stream().map(unit -> {
             List<SemanticCallEdge> relatedEdges = allEdges.stream()
@@ -178,8 +176,8 @@ public class AuditUnitService {
     }
 
     // 执行 AuditUnitService 中的 insideDeepScope 处理。
-    private boolean insideDeepScope(CodeChunk chunk, ScanMode scanMode) {
-        return scanMode == ScanMode.FULL || chunk.getAnalysisScope() == AnalysisScope.CHANGED
+    private boolean insideDeepScope(CodeChunk chunk) {
+        return chunk.getAnalysisScope() == AnalysisScope.CHANGED
                 || chunk.getAnalysisScope() == AnalysisScope.IMPACTED;
     }
 

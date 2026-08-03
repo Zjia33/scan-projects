@@ -7,7 +7,6 @@ import com.deepaudit.domain.AgentEvent;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.GitFileChange;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.report.ReportService;
 import com.deepaudit.mapper.AuditTaskMapper;
@@ -131,17 +130,17 @@ public class AuditController {
                 request == null ? null : request.accessToken());
     }
 
-    // 对单个 Target 提交创建全量任务，或对 Base/Target 创建增量任务。
+    // 对必填的 Base/Target 提交创建增量任务。
     @PostMapping(value = "/projects/{projectId}/audits", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<AuditSubmissionResponse> createAudit(@PathVariable UUID projectId,
                                                                @RequestBody CreateAuditRequest request)
             throws IOException {
-        ProjectService.Submission submission = projectService.submitAudit(projectId, request.scanMode(),
+        ProjectService.Submission submission = projectService.submitAudit(projectId,
                 request.baseCommit(), request.targetCommit());
         AuditTask task = submission.task();
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new AuditSubmissionResponse(
                 submission.project().getId(), task.getId(), submission.project().getName(),
-                task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
+                task.getBaseCommitSha(), task.getTargetCommitSha(),
                 task.getMergeBaseSha(),
                 "Git 审计任务已创建，正在后台执行"));
     }
@@ -235,7 +234,7 @@ public class AuditController {
         int modelCalls = runs.stream().mapToInt(AgentRun::getModelCallCount).sum();
         int toolCalls = runs.stream().mapToInt(AgentRun::getToolCallCount).sum();
         return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getOriginalFilename(),
-                project.getRepositoryUrl(), task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
+                project.getRepositoryUrl(), task.getBaseCommitSha(), task.getTargetCommitSha(),
                 task.getMergeBaseSha(), task.getChangeSummary(),
                 task.getStatus().name(), task.getProgress(), task.getCurrentStage(), task.getErrorMessage(),
                 findingMapper.countByTaskId(task.getId()), runs.size(), modelCalls, toolCalls,
@@ -274,7 +273,7 @@ public class AuditController {
     }
 
     // 封装 CreateAuditRequest 使用的不可变结构化数据。
-    public record CreateAuditRequest(ScanMode scanMode, String baseCommit, String targetCommit) {
+    public record CreateAuditRequest(String baseCommit, String targetCommit) {
     }
 
     // 封装 RepositoryResponse 使用的不可变结构化数据。
@@ -291,13 +290,13 @@ public class AuditController {
 
     // 封装 AuditSubmissionResponse 使用的不可变结构化数据。
     public record AuditSubmissionResponse(UUID projectId, UUID taskId, String projectName,
-                                          ScanMode scanMode, String baseCommit, String targetCommit,
+                                          String baseCommit, String targetCommit,
                                           String mergeBase, String message) {
     }
 
     // 封装 TaskResponse 使用的不可变结构化数据。
     public record TaskResponse(UUID taskId, UUID projectId, String projectName, String originalFilename,
-                               String repositoryUrl, ScanMode scanMode, String baseCommit,
+                               String repositoryUrl, String baseCommit,
                                String targetCommit, String mergeBase, String changeSummary,
                                String status, int progress, String currentStage, String errorMessage,
                                long findingCount, int agentRunCount, int modelCallCount, int toolCallCount,

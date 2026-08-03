@@ -90,15 +90,14 @@ final class AgentPrompts {
             + "除非漏洞本身确实发生在那里。最多标记连续 5 行，不得照搬专业 Agent 的定位而不核对源码。"
             + "confirmed=true 时还必须返回 rootCauseKind 和 locationRole。rootCauseKind 只能是 "
             + "INEFFECTIVE_SECURITY_CONTROL、MISSING_AUTHORIZATION_CHECK、UNSAFE_DATA_EXPOSURE、UNSAFE_QUERY、"
-            + "MISSING_VALIDATION、UNSAFE_OUTPUT 或 UNSAFE_OPERATION；locationRole 只能是 SECURITY_BOUNDARY、"
+            + "MISSING_VALIDATION 或 UNSAFE_OUTPUT；locationRole 只能是 SECURITY_BOUNDARY、"
             + "SECURITY_CONFIGURATION、QUERY、VALIDATION、DATA_ACCESS、DATA_OUTPUT、DANGEROUS_OPERATION 或 "
             + "BUSINESS_OPERATION。位置角色必须与根因一致。若结论是未启用方法级安全、权限注解不生效或安全规则未生效，"
             + "rootCauseKind 必须为 INEFFECTIVE_SECURITY_CONTROL，主位置必须选择失效的 @PreAuthorize、@Secured、"
             + "@RolesAllowed 等安全边界或对应安全配置，不能选择下游 Repository 查询、普通 return 或数据转换语句；"
             + "这些下游操作只能作为影响证据。"
             + "如果候选来自增量范围，还必须验证漏洞与 Target 直接变更或调用影响链存在因果关系。"
-            + "deltaStatus 只能是 BASELINE、NEW、PERSISTING；"
-            + "全量扫描使用 BASELINE；增量扫描中，修改直接引入、防护削弱或调用影响导致的确认问题统一使用 NEW，"
+            + "deltaStatus 只能是 NEW、PERSISTING；修改直接引入、防护削弱或调用影响导致的确认问题统一使用 NEW，"
             + "只有明确的 before/after 证据证明漏洞在 Base 与 Target 中均存在时才使用 PERSISTING。";
 
     private static final String LOCATION_REPAIR = "你是漏洞位置修复器。漏洞已经由 Critic 确认，禁止重新判断、"
@@ -108,7 +107,7 @@ final class AgentPrompts {
             + "除非漏洞根因确实位于该候选。若候选中没有理想位置，仍应选择最接近根因且能解释安全影响的真实代码语句。";
 
     private static final String REPORT_AGENT = "你是 Report Agent。基于已通过 Critic 的发现生成简洁中文管理摘要和覆盖说明，"
-            + "必须说明全量或增量提交范围，不新增漏洞。";
+            + "必须说明 Base 到 Target 的增量提交范围，不新增漏洞。";
 
     // 创建 AgentPrompts 实例并初始化所需依赖或状态。
     private AgentPrompts() {

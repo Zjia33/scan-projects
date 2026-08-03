@@ -1,6 +1,8 @@
 package com.deepaudit.codegraph;
 
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.SemanticChangeKind;
+import com.deepaudit.domain.SemanticMethodChange;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -14,30 +16,20 @@ import static org.mockito.Mockito.when;
 
 class CodeGraphIntegrationServiceTest {
     @Test
-    void shadowModeMeasuresButDoesNotChangeNativeImpactScope() {
-        Fixture fixture = fixture(CodeGraphMode.SHADOW);
+    void unionsCodeGraphAndDeterministicImpactWithoutRemovingNativeTargets() {
+        Fixture fixture = fixture();
 
         CodeGraphIntegrationService.ImpactDecision result = fixture.service.decideImpact(
-                fixture.taskId, fixture.chunks, Set.of(1L), Set.of(3L));
-
-        assertThat(result.codeGraphImpactedChunkIds()).containsExactly(2L);
-        assertThat(result.effectiveImpactedChunkIds()).containsExactly(3L);
-    }
-
-    @Test
-    void augmentModeUnionsCodeGraphAndNativeImpactWithoutRemovingNativeTargets() {
-        Fixture fixture = fixture(CodeGraphMode.AUGMENT);
-
-        CodeGraphIntegrationService.ImpactDecision result = fixture.service.decideImpact(
-                fixture.taskId, fixture.chunks, Set.of(1L), Set.of(3L));
+                fixture.taskId, fixture.chunks, Set.of(1L), Set.of(3L), List.of());
 
         assertThat(result.effectiveImpactedChunkIds()).containsExactlyInAnyOrder(2L, 3L);
     }
 
     @Test
     void agentContextReturnsOnlyCandidateChunkIdsInAugmentMode() {
-        Fixture fixture = fixture(CodeGraphMode.AUGMENT);
-        when(fixture.client.related(fixture.taskId, "OrderController.entry", 10))
+        Fixture fixture = fixture();
+        when(fixture.client.related(fixture.taskId, CodeGraphSnapshot.TARGET,
+                "OrderController.entry", 10))
                 .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
                         new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
                                 "src/OrderService.java", 10)), List.of()));
@@ -49,21 +41,74 @@ class CodeGraphIntegrationServiceTest {
         assertThat(result.text()).contains("CODEGRAPH_CANDIDATE", "verify_relation", "CHUNK_ID=2");
     }
 
-    private Fixture fixture(CodeGraphMode mode) {
+    @Test
+    void deletionUsesBaseCallersAndMapsSurvivingCallerIntoTargetScope() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk caller = chunk(taskId, 1L, "src/OrderController.java", "OrderController#load", 5, 15);
+        CodeGraphProperties properties = new CodeGraphProperties();
+        CodeGraphClient client = mock(CodeGraphClient.class);
+        when(client.impact(taskId, CodeGraphSnapshot.BASE, "demo.OrderService.removed", 2))
+                .thenReturn(List.of());
+        when(client.related(taskId, CodeGraphSnapshot.BASE, "demo.OrderService.removed", 100))
+                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
+                        new CodeGraphClient.CodeGraphLocation("OrderController.load", "method",
+                                "src/OrderController.java", 7)), List.of()));
+        CodeGraphIntegrationService service = new CodeGraphIntegrationService(
+                properties, client, new CodeGraphResultMapper());
+        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
+        SemanticMethodChange deleted = new SemanticMethodChange(taskId, SemanticChangeKind.METHOD_DELETED,
+                "removed", "src/OrderService.java", null, "demo.OrderService.removed()", null,
+                4, 8, null, null, "void removed() {}", "", "方法已删除");
+
+        CodeGraphIntegrationService.ImpactDecision result = service.decideImpact(
+                taskId, List.of(caller), Set.of(), Set.of(), List.of(deleted));
+
+        assertThat(result.effectiveImpactedChunkIds()).containsExactly(1L);
+    }
+
+    @Test
+    void buildsDirectedScopedTopologyFromTargetCallersAndCallees() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk current = chunk(taskId, 1L, "src/OrderService.java", "OrderService#load", 10, 20);
+        CodeChunk caller = chunk(taskId, 2L, "src/OrderController.java", "OrderController#show", 4, 9);
+        CodeChunk callee = chunk(taskId, 3L, "src/OrderMapper.java", "OrderMapper#find", 2, 7);
+        CodeGraphProperties properties = new CodeGraphProperties();
+        CodeGraphClient client = mock(CodeGraphClient.class);
+        when(client.related(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 100))
+                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
+                        new CodeGraphClient.CodeGraphLocation("OrderController.show", "method",
+                                "src/OrderController.java", 6)), List.of(
+                        new CodeGraphClient.CodeGraphLocation("OrderMapper.find", "method",
+                                "src/OrderMapper.java", 4))));
+        CodeGraphIntegrationService service = new CodeGraphIntegrationService(
+                properties, client, new CodeGraphResultMapper());
+        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
+
+        CodeGraphIntegrationService.ScopedTopology topology = service.scopedTopology(
+                taskId, List.of(current, caller, callee), Set.of(1L));
+
+        assertThat(topology.contextChunkIds()).containsExactlyInAnyOrder(2L, 3L);
+        assertThat(topology.relations()).extracting(
+                CodeGraphIntegrationService.ScopedRelation::callerChunkId,
+                CodeGraphIntegrationService.ScopedRelation::calleeChunkId)
+                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple(2L, 1L),
+                        org.assertj.core.groups.Tuple.tuple(1L, 3L));
+    }
+
+    private Fixture fixture() {
         UUID taskId = UUID.randomUUID();
         CodeChunk changed = chunk(taskId, 1L, "src/OrderController.java", "OrderController#entry", 1, 8);
         CodeChunk external = chunk(taskId, 2L, "src/OrderService.java", "OrderService#load", 10, 20);
         CodeChunk nativeImpact = chunk(taskId, 3L, "src/OrderRepository.java", "OrderRepository#find", 4, 7);
         List<CodeChunk> chunks = List.of(changed, external, nativeImpact);
         CodeGraphProperties properties = new CodeGraphProperties();
-        properties.setMode(mode);
         CodeGraphClient client = mock(CodeGraphClient.class);
-        when(client.impact(taskId, "OrderController.entry", 2)).thenReturn(List.of(
+        when(client.impact(taskId, CodeGraphSnapshot.TARGET, "OrderController.entry", 2)).thenReturn(List.of(
                 new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
                         "src/OrderService.java", 10)));
         CodeGraphIntegrationService service = new CodeGraphIntegrationService(
                 properties, client, new CodeGraphResultMapper());
-        service.prepare(taskId, Path.of("unused"));
+        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
         return new Fixture(taskId, chunks, client, service);
     }
 

@@ -9,7 +9,6 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.FindingDeltaStatus;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
@@ -59,9 +58,11 @@ class CriticAgentServiceTest {
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(chunk.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, chunk.getId(), "search"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
-                false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.BASELINE));
+                false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.NEW,
+                null, null, null, null, null, null));
 
-        service.review(taskId, candidate, recon(), List.of(chunk), ScanMode.FULL);
+        chunk.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
+        service.review(taskId, candidate, recon(), List.of(chunk));
 
         ArgumentCaptor<LlmGateway.CriticRequest> request = ArgumentCaptor.forClass(
                 LlmGateway.CriticRequest.class);
@@ -87,28 +88,29 @@ class CriticAgentServiceTest {
         CodeChunk vulnerableService = vulnerableService(taskId);
         CodeChunk debitRepository = debitRepository(taskId);
         LlmGateway.FindingProposal proposedAtController = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "服务端直接信任 quotedUnitPrice", "服务端查询可信价格",
                 controller.getId(), List.of(controller.getId(), vulnerableService.getId(),
                         debitRepository.getId()), 82, 83);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
-                VulnerabilityType.FINANCIAL_RISK, "报价可以被客户端控制", controller.getId(),
+                VulnerabilityType.VALIDATION_BYPASS, "报价缺少服务端验证", controller.getId(),
                 controller.getId() + "," + vulnerableService.getId(), Confidence.HIGH);
         AgentCandidate candidate = new AgentCandidate(
-                AgentType.FINANCIAL_RISK, proposedAtController, "旧的候选证据文本", hypothesis);
+                AgentType.VALIDATION_BYPASS, proposedAtController, "旧的候选证据文本", hypothesis);
 
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(controller.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, controller.getId(), "purchase"));
         when(semanticEvidenceService.independentCriticEvidence(
-                taskId, controller.getId(), VulnerabilityType.FINANCIAL_RISK)).thenReturn("调用链证据");
+                taskId, controller.getId(), VulnerabilityType.VALIDATION_BYPASS)).thenReturn("调用链证据");
         when(semanticEvidenceService.callSiteLines(eq(taskId), eq(vulnerableService.getId()), anySet()))
                 .thenReturn(Map.of(controller.getId(), 84));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
-                true, Confidence.HIGH, "实际风险发生在服务层扣款逻辑", FindingDeltaStatus.BASELINE,
-                vulnerableService.getId(), 86, 88));
+                true, Confidence.HIGH, "实际风险发生在服务层扣款逻辑", FindingDeltaStatus.NEW,
+                vulnerableService.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
+        controller.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
-                List.of(controller, vulnerableService, debitRepository), ScanMode.FULL);
+                List.of(controller, vulnerableService, debitRepository));
 
         assertThat(result).isPresent();
         Finding finding = result.orElseThrow();
@@ -165,10 +167,10 @@ class CriticAgentServiceTest {
                 true, Confidence.HIGH,
                 "全局未启用 @EnableGlobalMethodSecurity，导致 @PreAuthorize 注解不生效",
                 FindingDeltaStatus.PERSISTING, dataRead.getId(), 60, 60,
-                "INEFFECTIVE_SECURITY_CONTROL", "DATA_ACCESS"));
+                "INEFFECTIVE_SECURITY_CONTROL", "DATA_ACCESS", null));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
-                List.of(controller, dataRead), ScanMode.INCREMENTAL);
+                List.of(controller, dataRead));
 
         assertThat(result).isPresent();
         Finding finding = result.orElseThrow();
@@ -196,18 +198,18 @@ class CriticAgentServiceTest {
                 gateway, traceService, hypothesisMapper, semanticEvidenceService);
         CodeChunk operation = customOperation(taskId);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "未验证指令被提交", "外部指令直接交给账本端口执行", "提交前验证金额与归属",
                 operation.getId(), List.of(operation.getId()), 40, 40);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
-                VulnerabilityType.FINANCIAL_RISK, "未验证指令可改变账本", operation.getId(),
+                VulnerabilityType.VALIDATION_BYPASS, "指令缺少服务端验证", operation.getId(),
                 String.valueOf(operation.getId()), Confidence.HIGH);
-        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "候选证据", hypothesis);
+        AgentCandidate candidate = new AgentCandidate(AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
-                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.BASELINE,
-                operation.getId(), 40, 40, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.NEW,
+                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
         when(gateway.repairLocation(any())).thenAnswer(invocation -> {
             LlmGateway.LocationRepairRequest request = invocation.getArgument(0);
             LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
@@ -216,7 +218,8 @@ class CriticAgentServiceTest {
             return new LlmGateway.LocationDecision(selected.candidateId(), "选择真实账本调用");
         });
 
-        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation), ScanMode.FULL);
+        operation.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
 
         assertThat(result).get().satisfies(finding -> {
             assertThat(finding.getStartLine()).isEqualTo(41);
@@ -237,22 +240,23 @@ class CriticAgentServiceTest {
                 gateway, traceService, hypothesisMapper, semanticEvidenceService);
         CodeChunk operation = customOperation(taskId);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "未验证指令被提交", "外部指令直接交给账本端口执行", "提交前验证金额与归属",
                 operation.getId(), List.of(operation.getId()), 40, 40);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
-                VulnerabilityType.FINANCIAL_RISK, "未验证指令可改变账本", operation.getId(),
+                VulnerabilityType.VALIDATION_BYPASS, "指令缺少服务端验证", operation.getId(),
                 String.valueOf(operation.getId()), Confidence.HIGH);
-        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "候选证据", hypothesis);
+        AgentCandidate candidate = new AgentCandidate(AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
-                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.BASELINE,
-                operation.getId(), 40, 40, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+                true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.NEW,
+                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
         when(gateway.repairLocation(any())).thenReturn(
                 new LlmGateway.LocationDecision("invented:1-1", "错误候选"));
 
-        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation), ScanMode.FULL);
+        operation.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
 
         assertThat(result).isEmpty();
         assertThat(hypothesis.getStatus())
@@ -275,21 +279,21 @@ class CriticAgentServiceTest {
         changedEntry.setAnalysisScope(AnalysisScope.CHANGED);
         contextOperation.setAnalysisScope(AnalysisScope.CONTEXT);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "变更入口调用原有的不安全扣款操作", "服务端查询可信价格",
                 changedEntry.getId(), List.of(changedEntry.getId(), contextOperation.getId()), 84, 84);
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
-                VulnerabilityType.FINANCIAL_RISK, "变更入口暴露原有危险扣款操作", changedEntry.getId(),
+                VulnerabilityType.VALIDATION_BYPASS, "变更入口暴露未验证操作", changedEntry.getId(),
                 changedEntry.getId() + "," + contextOperation.getId(), Confidence.HIGH);
-        AgentCandidate candidate = new AgentCandidate(AgentType.FINANCIAL_RISK, proposal, "调用链证据", hypothesis);
+        AgentCandidate candidate = new AgentCandidate(AgentType.VALIDATION_BYPASS, proposal, "调用链证据", hypothesis);
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(changedEntry.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, changedEntry.getId(), "purchase"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "变更入口能够到达原有危险扣款逻辑", FindingDeltaStatus.NEW,
-                contextOperation.getId(), 86, 88, "UNSAFE_OPERATION", "BUSINESS_OPERATION"));
+                contextOperation.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
-                List.of(changedEntry, contextOperation), ScanMode.INCREMENTAL);
+                List.of(changedEntry, contextOperation));
 
         assertThat(result).get().satisfies(finding -> {
             assertThat(finding.getFilePath()).isEqualTo("LabScenarioService.java");

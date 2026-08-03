@@ -51,7 +51,7 @@ public class CodeChunk {
         this.annotations = annotations;
         this.calledSymbols = calledSymbols;
         this.changeType = ChunkChangeType.UNCHANGED;
-        this.analysisScope = AnalysisScope.FULL;
+        this.analysisScope = AnalysisScope.CONTEXT;
         this.baseContent = "";
     }
 

@@ -6,7 +6,6 @@ import com.deepaudit.domain.AuditStatus;
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.Project;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.git.GitDiffService;
 import com.deepaudit.git.GitRepositoryService;
 import com.deepaudit.git.GitSnapshotService;
@@ -48,8 +47,8 @@ public class AuditOrchestrator {
         AuditTask task = requireTask(taskId);
         try {
             Project project = requireProject(task.getProjectId());
-            log.info("开始执行 Git 代码读取流程：taskId={}，projectId={}，mode={}，base={}，target={}",
-                    taskId, project.getId(), task.getScanMode(), shortSha(task.getBaseCommitSha()),
+            log.info("开始执行增量 Git 代码读取流程：taskId={}，projectId={}，base={}，target={}",
+                    taskId, project.getId(), shortSha(task.getBaseCommitSha()),
                     shortSha(task.getTargetCommitSha()));
             Path repositoryPath = Path.of(project.getStoragePath()).toAbsolutePath().normalize();
             Path projectDirectory = repositoryPath.getParent();
@@ -66,51 +65,44 @@ public class AuditOrchestrator {
                     log.info("目标提交快照已就绪：taskId={}，commit={}，files={}，skipped={}，bytes={}",
                             taskId, shortSha(targetSnapshot.commitSha()), targetSnapshot.fileCount(),
                             targetSnapshot.skippedFileCount(), targetSnapshot.totalBytes());
-                    if (task.getScanMode() == ScanMode.INCREMENTAL) {
-                        String comparisonBaseSha = comparisonBase(task);
-                        GitSnapshotService.SnapshotResult baseSnapshot = snapshotService.materialize(
-                                repository, comparisonBaseSha, baseRoot);
-                        log.info("分支变更基线快照已就绪：taskId={}，selectedBase={}，comparisonBase={}，files={}，skipped={}，bytes={}",
-                                taskId, shortSha(task.getBaseCommitSha()), shortSha(baseSnapshot.commitSha()),
-                                baseSnapshot.fileCount(), baseSnapshot.skippedFileCount(),
-                                baseSnapshot.totalBytes());
-                        task = update(task, AuditStatus.DIFFING, 20,
-                                "正在比较 " + shortSha(comparisonBaseSha) + " → "
-                                        + shortSha(task.getTargetCommitSha()));
-                        GitDiffService.ChangeSet changeSet = diffService.compare(repository, taskId,
-                                comparisonBaseSha, task.getTargetCommitSha());
-                        log.info("增量差异读取完成：taskId={}，summary={}", taskId, changeSet.summary());
-                        changes = changeSet.changes();
-                        task.setChangeSummary(changeSet.summary());
-                        persistTask(task);
-                        changeMapper.deleteByTaskId(taskId);
-                        for (int start = 0; start < changes.size(); start += 300) {
-                            changeMapper.insertBatch(changes.subList(start, Math.min(start + 300, changes.size())));
-                        }
-                        if (changes.isEmpty()) {
-                            throw new IllegalArgumentException("两个提交之间没有可审计的生产代码或配置变化");
-                        }
-                    } else {
-                        task.setChangeSummary("全量扫描提交 " + shortSha(task.getTargetCommitSha()));
-                        persistTask(task);
+                    String comparisonBaseSha = comparisonBase(task);
+                    GitSnapshotService.SnapshotResult baseSnapshot = snapshotService.materialize(
+                            repository, comparisonBaseSha, baseRoot);
+                    log.info("分支变更基线快照已就绪：taskId={}，selectedBase={}，comparisonBase={}，files={}，skipped={}，bytes={}",
+                            taskId, shortSha(task.getBaseCommitSha()), shortSha(baseSnapshot.commitSha()),
+                            baseSnapshot.fileCount(), baseSnapshot.skippedFileCount(),
+                            baseSnapshot.totalBytes());
+                    task = update(task, AuditStatus.DIFFING, 20,
+                            "正在比较 " + shortSha(comparisonBaseSha) + " → "
+                                    + shortSha(task.getTargetCommitSha()));
+                    GitDiffService.ChangeSet changeSet = diffService.compare(repository, taskId,
+                            comparisonBaseSha, task.getTargetCommitSha());
+                    log.info("增量差异读取完成：taskId={}，summary={}", taskId, changeSet.summary());
+                    changes = changeSet.changes();
+                    task.setChangeSummary(changeSet.summary());
+                    persistTask(task);
+                    changeMapper.deleteByTaskId(taskId);
+                    for (int start = 0; start < changes.size(); start += 300) {
+                        changeMapper.insertBatch(changes.subList(start, Math.min(start + 300, changes.size())));
+                    }
+                    if (changes.isEmpty()) {
+                        throw new IllegalArgumentException("两个提交之间没有可审计的生产代码或配置变化");
                     }
 
                     task = update(task, AuditStatus.INVENTORY, 28,
                             "项目盘点：" + targetSnapshot.fileCount() + " 个文件");
                     task = update(task, AuditStatus.INDEXING, 42,
-                            task.getScanMode() == ScanMode.FULL ? "构建全量代码与语义索引"
-                                    : "构建 Base/Target 方法差异、完整语义事实和增量代码索引");
-                    var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, task.getScanMode(), changes);
+                            "构建 Base/Target 方法差异、CodeGraph 拓扑和增量语义索引");
+                    var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, changes);
 
                     task = update(task, AuditStatus.RECON, 55,
                             "识别到 " + recon.endpointCount() + " 个接口、" + recon.javaMethodCount() + " 个 Java 方法");
                     task = update(task, AuditStatus.AGENT_RECON, 62, "Recon Agent 理解架构、提交差异与攻击面");
                     task = update(task, AuditStatus.PLANNING, 68, "Triage Orchestrator 正在轻量分流审计单元");
                     task = update(task, AuditStatus.ANALYSIS, 74,
-                            task.getScanMode() == ScanMode.FULL ? "专业安全 Agents 全量调查代码"
-                                    : "专业安全 Agents 调查变更及语义影响面");
+                            "专业安全 Agents 调查变更及语义影响面");
                     AnalysisService.AnalysisResult analysis = analysisService.analyze(
-                            taskId, targetRoot, recon, project.getName(), task);
+                            taskId, targetRoot, baseRoot, recon, project.getName(), task);
 
                     task = update(task, AuditStatus.CRITIC_REVIEW, 90, "Critic Agent 已完成独立反证复核");
                     task = update(task, AuditStatus.RESULT_VALIDATION, 94, "校验提交、文件、行号和代码证据");

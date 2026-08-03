@@ -31,7 +31,7 @@ public class SemanticEvidenceService {
         Map<Long, Set<VulnerabilityType>> types = new LinkedHashMap<>();
         Map<Long, String> descriptions = new LinkedHashMap<>();
         for (SecurityFlow flow : flowMapper.findByTaskId(taskId)) {
-            if (flow.getType() == null || !flow.getType().isDetectable()) continue;
+            if (flow.getType() == null) continue;
             types.computeIfAbsent(flow.getPrimaryChunkId(), ignored -> new LinkedHashSet<>()).add(flow.getType());
             String hint = "语义分析调查线索（不是最终漏洞结论）：\n" + flow.getPathText();
             descriptions.merge(flow.getPrimaryChunkId(), hint, (left, right) -> left + "\n\n" + right);
@@ -93,7 +93,9 @@ public class SemanticEvidenceService {
             Long caller = edge.getCallerChunkId();
             Long callee = edge.getCalleeChunkId();
             if (caller == null || callee == null || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW
-                    || "UNRESOLVED".equals(edge.getEdgeType())) continue;
+                    || "UNRESOLVED".equals(edge.getEdgeType())
+                    || "LOCAL_UNRESOLVED".equals(edge.getEdgeType())
+                    || "CODEGRAPH_CANDIDATE".equals(edge.getEdgeType())) continue;
             graph.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
             graph.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
         }
@@ -127,6 +129,8 @@ public class SemanticEvidenceService {
                         && evidenceChunkIds.contains(edge.getCalleeChunkId()))
                 .filter(edge -> edge.getConfidence() != com.deepaudit.domain.Confidence.LOW)
                 .filter(edge -> !"UNRESOLVED".equals(edge.getEdgeType()))
+                .filter(edge -> !"LOCAL_UNRESOLVED".equals(edge.getEdgeType()))
+                .filter(edge -> !"CODEGRAPH_CANDIDATE".equals(edge.getEdgeType()))
                 .collect(Collectors.groupingBy(SemanticCallEdge::getCalleeChunkId,
                         LinkedHashMap::new, Collectors.toList()));
         Map<Long, Integer> callSites = new LinkedHashMap<>();

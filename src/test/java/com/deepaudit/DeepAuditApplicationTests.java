@@ -47,7 +47,7 @@ class DeepAuditApplicationTests {
     }
 
     @Test
-    void removesLegacyRetrievalStorageFromCurrentSchema() {
+    void currentSchemaDoesNotContainRemovedRetrievalStorage() {
         Integer cacheTables = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*)
                 FROM INFORMATION_SCHEMA.TABLES
@@ -128,16 +128,8 @@ class DeepAuditApplicationTests {
     }
 
     @Test
-    void mergesHorizontalAndVerticalAuthorizationAliasesIntoOneType() {
+    void recognizesCurrentAuthorizationType() {
         assertThat(VulnerabilityType.fromModelValue("AUTHORIZATION"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("HORIZONTAL_AUTHORIZATION"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("vertical_authorization"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("水平越权"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("垂直越权"))
                 .isEqualTo(VulnerabilityType.AUTHORIZATION);
     }
 }

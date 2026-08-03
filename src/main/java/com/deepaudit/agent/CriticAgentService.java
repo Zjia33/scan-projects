@@ -10,7 +10,6 @@ import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.HypothesisStatus;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.FindingDeltaStatus;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import lombok.RequiredArgsConstructor;
@@ -37,8 +36,7 @@ public class CriticAgentService {
 
     // 用独立语义证据和全局安全控制反证候选，仅确认项可转换为 Finding。
     public Optional<Finding> review(UUID taskId, AgentCandidate candidate,
-                                    LlmGateway.ReconInsight recon, List<CodeChunk> chunks,
-                                    ScanMode scanMode) {
+                                    LlmGateway.ReconInsight recon, List<CodeChunk> chunks) {
         AgentRun run = traceService.start(taskId, AgentType.CRITIC,
                 candidate.proposal().primaryChunkId(), candidate.proposal().title());
         try {
@@ -89,10 +87,10 @@ public class CriticAgentService {
                 return Optional.empty();
             }
             Correction corrected = correctedProposal(candidate.proposal(), decision, chunksById,
-                    allowedLocationChunks, locationCandidates, scanMode);
+                    allowedLocationChunks, locationCandidates);
             if (corrected.proposal().isEmpty() && !locationCandidates.isEmpty()) {
                 corrected = repairLocation(taskId, candidate.proposal(), decision, chunksById,
-                        allowedLocationChunks, locationCandidates, scanMode, corrected.reason(), run);
+                        allowedLocationChunks, locationCandidates, corrected.reason(), run);
             }
             if (corrected.proposal().isEmpty()) {
                 String invalidLocation = "Critic 已确认漏洞，但精确位置仍待复核：" + corrected.reason();
@@ -132,7 +130,7 @@ public class CriticAgentService {
                     safeText(proposal.description()) + "\n\nCritic Agent 复核：" + safeText(decision.reason()),
                     FindingLocationResolver.formatEvidence(proposal, chunksById, callSites),
                     safeText(proposal.remediation()));
-            finding.setDeltaStatus(FindingDeltaStatus.normalizeFor(scanMode, decision.deltaStatus()));
+            finding.setDeltaStatus(FindingDeltaStatus.normalize(decision.deltaStatus()));
             finding.setFingerprint(FindingFingerprint.create(
                     proposal.type(), primary, location.startLine(), location.endLine()));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.FINDING,
@@ -173,8 +171,8 @@ public class CriticAgentService {
     private Correction correctedProposal(
             LlmGateway.FindingProposal original, LlmGateway.CriticDecision decision,
             Map<Long, CodeChunk> chunks, Set<Long> allowed,
-            List<LlmGateway.LocationCandidate> candidates, ScanMode scanMode) {
-        if (scanMode == ScanMode.INCREMENTAL && !hasIncrementalAnchor(allowed, chunks)) {
+            List<LlmGateway.LocationCandidate> candidates) {
+        if (!hasIncrementalAnchor(allowed, chunks)) {
             return Correction.unresolved("证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
         }
         FindingLocationResolver.LocationResolution resolution =
@@ -191,7 +189,7 @@ public class CriticAgentService {
     private Correction repairLocation(UUID taskId, LlmGateway.FindingProposal original,
                                       LlmGateway.CriticDecision decision, Map<Long, CodeChunk> chunks,
                                       Set<Long> allowed, List<LlmGateway.LocationCandidate> candidates,
-                                      ScanMode scanMode, String failureReason, AgentRun run) {
+                                      String failureReason, AgentRun run) {
         try {
             run.setModelCallCount(run.getModelCallCount() + 1);
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.MODEL_CALL,
@@ -206,7 +204,7 @@ public class CriticAgentService {
                     repaired == null ? null : repaired.locationCandidateId(), candidates);
             if (resolved.isEmpty()) return Correction.unresolved(
                     failureReason + "；定位修复未选择合法候选 ID");
-            if (scanMode == ScanMode.INCREMENTAL && !hasIncrementalAnchor(allowed, chunks)) {
+            if (!hasIncrementalAnchor(allowed, chunks)) {
                 return Correction.unresolved("定位已修复，但证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
             }
             Long primaryChunkId = resolved.orElseThrow().chunkId();

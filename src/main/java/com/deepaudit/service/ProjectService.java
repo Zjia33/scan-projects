@@ -2,7 +2,6 @@ package com.deepaudit.service;
 
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.Project;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.git.GitRepositoryService;
 import com.deepaudit.mapper.AuditTaskMapper;
 import com.deepaudit.mapper.ProjectMapper;
@@ -121,14 +120,13 @@ public class ProjectService {
         return gitRepositoryService.refresh(projectId, username, accessToken);
     }
 
-    // 将用户选择解析为不可变提交 ID，并在同一事务中创建全量或增量任务。
-    public Submission submitAudit(UUID projectId, ScanMode scanMode,
+    // 将用户选择解析为不可变 Base/Target 提交 ID，并在同一事务中创建增量任务。
+    public Submission submitAudit(UUID projectId,
                                   String baseRevision, String targetRevision) throws IOException {
         Project project = requireActiveProject(projectId);
-        ScanMode effectiveMode = scanMode == null ? ScanMode.FULL : scanMode;
         GitRepositoryService.ResolvedComparison comparison = gitRepositoryService.resolveComparison(
-                project, baseRevision, targetRevision, effectiveMode == ScanMode.INCREMENTAL);
-        AuditTask task = new AuditTask(projectId, effectiveMode, comparison.baseCommitSha(),
+                project, baseRevision, targetRevision);
+        AuditTask task = new AuditTask(projectId, comparison.baseCommitSha(),
                 comparison.targetCommitSha(), comparison.mergeBaseSha());
         AuditTask persisted = transactionTemplate.execute(status -> {
             taskMapper.insert(task);

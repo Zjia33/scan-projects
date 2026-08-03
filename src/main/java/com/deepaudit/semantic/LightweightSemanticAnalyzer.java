@@ -1,5 +1,6 @@
 package com.deepaudit.semantic;
 
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.SecurityFlow;
@@ -11,7 +12,6 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
-import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
@@ -23,7 +23,6 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.stmt.ReturnStmt;
-import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -33,7 +32,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -42,7 +40,6 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -52,7 +49,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -74,12 +70,13 @@ public class LightweightSemanticAnalyzer {
 
     private final SemanticAnalysisProperties properties;
 
-    // 依次构建程序模型、跨文件调用图、方法摘要和受限安全数据流，整个过程不执行仓库代码。
-    public Result analyze(UUID taskId, Path root, List<CodeChunk> chunks) throws IOException {
-        // 第一阶段把源码目录和 Recon 代码块转换成统一的内存程序模型。
-        Program program = parseProgram(taskId, root, chunks);
-        // 第二阶段扫描 Java 方法调用，优先精确解析并为每个实参记录来源参数集合。
-        buildCallGraph(taskId, program);
+    // 只解析增量作用域，并以 CodeGraph 候选拓扑约束跨方法关系。
+    public Result analyze(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds,
+                          List<CodeGraphIntegrationService.ScopedRelation> scopedRelations) throws IOException {
+        // 第一阶段把作用域源码和 Recon 代码块转换成统一的内存程序模型。
+        Program program = parseProgram(taskId, root, chunks, scopeChunkIds);
+        // 第二阶段在调用方 AST 中验证 CodeGraph 候选关系，同时提取局部框架边界。
+        buildScopedCallGraph(taskId, program, scopedRelations);
         // 第三阶段补充普通 Java 调用图无法直接表达的 Spring 事件发布到监听器关系。
         addSpringEventEdges(taskId, program);
         // 第四阶段按照 Mapper namespace 和 statement id 连接接口方法与 MyBatis XML SQL。
@@ -100,7 +97,8 @@ public class LightweightSemanticAnalyzer {
     }
 
     // 配置 Java 17 符号求解器并把多类源码统一解析为程序节点。
-    private Program parseProgram(UUID taskId, Path root, List<CodeChunk> chunks) throws IOException {
+    private Program parseProgram(UUID taskId, Path root, List<CodeChunk> chunks,
+                                 Set<Long> scopeChunkIds) throws IOException {
         // Program 同时保存语义节点、AST 方法模型、调用边、索引和覆盖率计数器。
         Program program = new Program(root, chunks);
         // ReflectionTypeSolver 负责识别 JDK 与运行时可见类型，不用于加载或执行目标项目类。
@@ -120,13 +118,17 @@ public class LightweightSemanticAnalyzer {
                 .setSymbolResolver(new JavaSymbolSolver(typeSolver));
         JavaParser parser = new JavaParser(configuration);
 
-        // 只静态读取 .java 文件并逐文件构建类型与方法模型，不编译也不运行仓库代码。
-        try (Stream<Path> files = Files.walk(root)) {
-            files.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .forEach(file -> parseJavaFile(taskId, root, file, parser, program));
-        }
+        // 只读取作用域 Chunk 所属 Java 文件，不再遍历 Target 构建第二套全项目调用图。
+        Set<Path> javaFiles = chunks.stream()
+                .filter(chunk -> chunk.getId() != null && scopeChunkIds.contains(chunk.getId()))
+                .filter(chunk -> "JAVA_METHOD".equals(chunk.getChunkType())
+                        || chunk.getFilePath().toLowerCase(Locale.ROOT).endsWith(".java"))
+                .map(chunk -> root.resolve(chunk.getFilePath()).normalize())
+                .filter(path -> path.startsWith(root.toAbsolutePath().normalize()))
+                .filter(Files::isRegularFile)
+                .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        javaFiles.forEach(file -> parseJavaFile(taskId, root, file, parser, program, scopeChunkIds));
         // Java AST 之外再从 Recon 文本块补充 MyBatis SQL 与模板 Sink。
         parseMyBatisAndTemplates(taskId, root, chunks, program);
         // 所有节点收集完成后建立按完整签名、方法名和接口实现查询的内存索引。
@@ -153,7 +155,8 @@ public class LightweightSemanticAnalyzer {
     }
 
     // 将 Java 类型和方法声明转换为可关联原始代码块的语义符号。
-    private void parseJavaFile(UUID taskId, Path root, Path file, JavaParser parser, Program program) {
+    private void parseJavaFile(UUID taskId, Path root, Path file, JavaParser parser, Program program,
+                               Set<Long> scopeChunkIds) {
         try {
             // JavaParser 返回空结果表示语法恢复失败，此文件不生成 Java 语义节点。
             Optional<CompilationUnit> parsed = parser.parse(file).getResult();
@@ -166,9 +169,7 @@ public class LightweightSemanticAnalyzer {
                 // 优先使用符号求解得到完整类名，失败时根据 package 和声明名生成稳定回退名称。
                 String owner = declaration.getFullyQualifiedName().orElseGet(() -> fallbackOwner(unit, declaration));
                 TypeModel type = program.types.computeIfAbsent(owner,
-                        ignored -> new TypeModel(owner, declaration.getNameAsString(), declaration,
-                                declaration instanceof ClassOrInterfaceDeclaration classType && classType.isInterface(),
-                                implementedTypes(declaration)));
+                        ignored -> new TypeModel(owner, declaration.getNameAsString(), declaration));
                 for (MethodDeclaration method : declaration.getMethods()) {
                     // 内部类型的方法会在其自己的 TypeDeclaration 轮次处理，这里避免被外层类型重复收集。
                     if (method.getParentNode().orElse(null) != declaration) continue;
@@ -179,6 +180,7 @@ public class LightweightSemanticAnalyzer {
                     }
                     // 用文件和行号寻找 Recon 阶段的 JAVA_METHOD Chunk，建立语义节点到真实证据的联系。
                     CodeChunk chunk = program.findChunk(relative, line(method), "JAVA_METHOD");
+                    if (chunk == null || chunk.getId() == null || !scopeChunkIds.contains(chunk.getId())) continue;
                     // 完整签名用于精确解析调用，符号求解失败时使用类名、方法名和参数类型回退。
                     String qualifiedName = resolvedSignature(method).orElseGet(() -> fallbackSignature(owner, method));
                     String parameters = method.getParameters().stream().map(parameter -> parameter.getTypeAsString())
@@ -244,150 +246,83 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
-    // 为每个方法调用解析项目内目标并记录参数依赖和解析可信度。
-    private void buildCallGraph(UUID taskId, Program program) {
-        // 每个 Java 方法分别作为 caller，方法内所有 MethodCallExpr 都会形成覆盖率统计项。
+    // 用调用方局部 AST 独立验证 CodeGraph 候选关系，不再解析第二套全局调用拓扑。
+    private void buildScopedCallGraph(UUID taskId, Program program,
+                                      List<CodeGraphIntegrationService.ScopedRelation> scopedRelations) {
+        Map<Long, List<CodeGraphIntegrationService.ScopedRelation>> byCaller = scopedRelations.stream()
+                .filter(relation -> relation.callerChunkId() != null && relation.calleeChunkId() != null)
+                .collect(Collectors.groupingBy(CodeGraphIntegrationService.ScopedRelation::callerChunkId,
+                        LinkedHashMap::new, Collectors.toList()));
+        Set<String> verifiedRelations = new LinkedHashSet<>();
+
         for (MethodModel caller : program.methods) {
-            // 字段、参数和局部变量类型用于判断调用接收者可能属于哪个类或接口。
             Map<String, String> variableTypes = variableTypes(caller);
-            // 按源码位置排序保证赋值依赖分析与最终路径展示具有确定性。
             List<MethodCallExpr> calls = caller.declaration.findAll(MethodCallExpr.class).stream()
                     .sorted(Comparator.comparingInt(this::line).thenComparingInt(this::column)).toList();
             for (MethodCallExpr call : calls) {
                 program.totalCallSites++;
-                // 先计算调用点之前每个变量依赖当前方法的哪些参数。
                 Map<String, Set<Integer>> dependencies = variableDependencies(caller, call);
-                // 再把每个实参表达式映射为 caller 参数集合，例如 callee 参数0 <- caller 参数1。
                 Map<Integer, Set<Integer>> argumentDependencies = new LinkedHashMap<>();
                 for (int index = 0; index < call.getArguments().size(); index++) {
                     argumentDependencies.put(index, expressionDependencies(call.getArgument(index), dependencies));
                 }
-                // 先尝试项目内方法精确解析，失败后再按接收者类型、包和参数兼容度评分。
-                List<TargetResolution> targets = resolveTargets(call, caller, variableTypes, program);
-                if (targets.isEmpty()) {
-                    // 没有项目内目标时，尝试把调用识别成数据库、安全 Guard 等框架边界节点。
-                    String scopeType = inferScopeType(call, caller, variableTypes);
-                    FrameworkModel framework = frameworkTarget(taskId, call, caller, scopeType, program);
-                    if (framework != null) {
-                        SemanticCallEdge edge = edge(taskId, caller.symbol, framework.symbol, line(call),
-                                call.getNameAsString(), call.toString(), framework.edgeType, framework.confidence,
-                                framework.reason, mapping(argumentDependencies));
-                        program.edges.add(new GraphEdge(edge, caller, framework, argumentDependencies));
-                        program.frameworkResolvedCallSites++;
-                        continue;
-                    }
-                    // 框架规则也未识别时，区分已解析的第三方 API 与完全未解析调用。
-                    Optional<String> external = resolvedExternalSignature(call, program);
-                    String edgeType = external.isPresent() ? "EXTERNAL_API" : "UNRESOLVED";
-                    Confidence confidence = external.isPresent() ? Confidence.HIGH : Confidence.LOW;
-                    String reason = external.map(value -> "已解析到项目外 API: " + value)
-                            .orElse("符号解析和二阶段候选评分均未找到项目内目标");
-                    SemanticCallEdge edge = edge(taskId, caller.symbol, null, line(call), call.getNameAsString(),
-                            call.toString(), edgeType, confidence, reason, mapping(argumentDependencies));
-                    program.edges.add(new GraphEdge(edge, caller, null, argumentDependencies));
-                    if (external.isPresent()) program.externalCallSites++; else program.unresolvedCallSites++;
-                    continue;
-                }
-                // 至少存在精确或同类目标时记为精确覆盖，否则记为启发式覆盖。
-                if (targets.stream().anyMatch(target -> target.edgeType.equals("RESOLVED")
-                        || target.edgeType.equals("SAME_TYPE"))) {
+
+                List<CodeGraphIntegrationService.ScopedRelation> matches = byCaller
+                        .getOrDefault(caller.symbol.getChunkId(), List.of()).stream()
+                        .filter(relation -> call.getNameAsString().equals(relation.calledName()))
+                        .toList();
+                long sameNameCalls = calls.stream()
+                        .filter(candidate -> candidate.getNameAsString().equals(call.getNameAsString())).count();
+                // 多个同名调用或多个同名目标无法由局部现场唯一确认，必须继续保持候选状态。
+                if (!matches.isEmpty() && (sameNameCalls != 1 || matches.size() != 1)) continue;
+                boolean verified = false;
+                for (CodeGraphIntegrationService.ScopedRelation relation : matches) {
+                    MethodModel target = program.byChunkId.get(relation.calleeChunkId());
+                    if (target == null) continue;
+                    String key = relation.callerChunkId() + "->" + relation.calleeChunkId();
+                    if (!verifiedRelations.add(key)) continue;
+                    SemanticCallEdge edge = edge(taskId, caller.symbol, target.symbol, line(call),
+                            call.getNameAsString(), call.toString(), "CODEGRAPH_VERIFIED", Confidence.MEDIUM,
+                            "CodeGraph 拓扑已由调用方唯一局部 AST 调用现场独立验证", mapping(argumentDependencies));
+                    program.edges.add(new GraphEdge(edge, caller, target, argumentDependencies));
                     program.exactResolvedCallSites++;
+                    verified = true;
+                }
+                if (verified) continue;
+
+                // 未命中作用域关系时只识别当前调用现场的数据库或安全框架边界。
+                String scopeType = inferScopeType(call, caller, variableTypes);
+                FrameworkModel framework = frameworkTarget(taskId, call, caller, scopeType, program);
+                if (framework != null) {
+                    SemanticCallEdge edge = edge(taskId, caller.symbol, framework.symbol, line(call),
+                            call.getNameAsString(), call.toString(), framework.edgeType, framework.confidence,
+                            framework.reason, mapping(argumentDependencies));
+                    program.edges.add(new GraphEdge(edge, caller, framework, argumentDependencies));
+                    program.frameworkResolvedCallSites++;
                 } else {
-                    program.heuristicResolvedCallSites++;
-                }
-                // 接口分派可能返回多个实现，按符号 ID 去重后分别保留带可信度的调用边。
-                Set<UUID> seen = new HashSet<>();
-                for (TargetResolution target : targets) {
-                    if (!seen.add(target.method.symbol.getId())) continue;
-                    SemanticCallEdge edge = edge(taskId, caller.symbol, target.method.symbol, line(call),
-                            call.getNameAsString(), call.toString(), target.edgeType, target.confidence,
-                            target.reason, mapping(argumentDependencies));
-                    program.edges.add(new GraphEdge(edge, caller, target.method, argumentDependencies));
+                    // 保留局部未解析调用作为覆盖诊断，但它不能扩展作用域或进入安全证据路径。
+                    SemanticCallEdge edge = edge(taskId, caller.symbol, null, line(call), call.getNameAsString(),
+                            call.toString(), "LOCAL_UNRESOLVED", Confidence.LOW,
+                            "当前作用域的 CodeGraph 关系中没有该调用，局部 AST 不猜测跨文件目标",
+                            mapping(argumentDependencies));
+                    program.edges.add(new GraphEdge(edge, caller, null, argumentDependencies));
+                    program.unresolvedCallSites++;
                 }
             }
         }
-    }
 
-    // 优先使用符号求解精确定位，失败时再按类型和参数特征评分候选方法。
-    private List<TargetResolution> resolveTargets(MethodCallExpr call, MethodModel caller,
-                                                  Map<String, String> variableTypes, Program program) {
-        LinkedHashMap<UUID, TargetResolution> results = new LinkedHashMap<>();
-        try {
-            // 第一优先级使用 JavaParser Symbol Solver 获取包含类名和参数类型的完整方法签名。
-            ResolvedMethodDeclaration resolved = call.resolve();
-            MethodModel exact = program.byQualifiedName.get(resolved.getQualifiedSignature());
-            if (exact != null) {
-                // 精确签名命中时赋予高可信度，并继续补充接口动态分派到实现类的可能目标。
-                results.put(exact.symbol.getId(), new TargetResolution(exact, edgeType(exact, "RESOLVED"), Confidence.HIGH,
-                        "JavaParser Symbol Solver 精确解析"));
-                addImplementations(exact, results, program, isInjectedScope(call, caller));
-            }
-        } catch (RuntimeException ignored) {
-            // 继续使用源码类型启发式，缺失第三方依赖不应中断扫描。
+        // CodeGraph 返回但调用现场无法独立确认的关系保留为候选，不能成为安全流出边。
+        for (CodeGraphIntegrationService.ScopedRelation relation : scopedRelations) {
+            String key = relation.callerChunkId() + "->" + relation.calleeChunkId();
+            if (verifiedRelations.contains(key)) continue;
+            MethodModel caller = program.byChunkId.get(relation.callerChunkId());
+            MethodModel target = program.byChunkId.get(relation.calleeChunkId());
+            if (caller == null || target == null) continue;
+            SemanticCallEdge edge = edge(taskId, caller.symbol, target.symbol, relation.reportedLine(),
+                    relation.calledName(), "CodeGraph candidate " + key, "CODEGRAPH_CANDIDATE", Confidence.LOW,
+                    "CodeGraph 返回关系，但调用方局部 AST 未找到唯一调用现场", "");
+            program.edges.add(new GraphEdge(edge, caller, target, Map.of()));
         }
-
-        // 精确解析结果优先返回，避免启发式候选给确定关系引入额外歧义。
-        if (!results.isEmpty()) return List.copyOf(results.values());
-
-        // 第二阶段先推断调用接收者类型，再从同名同参数个数的方法中筛选候选。
-        String scopeType = inferScopeType(call, caller, variableTypes);
-        List<MethodModel> candidates = program.byNameArity.getOrDefault(
-                key(call.getNameAsString(), call.getArguments().size()), List.of());
-        List<ScoredMethod> scored = candidates.stream()
-                .map(method -> new ScoredMethod(method,
-                        candidateScore(call, caller, method, scopeType, variableTypes, candidates.size(), program)))
-                .filter(candidate -> candidate.score >= 55)
-                .sorted(Comparator.comparingInt(ScoredMethod::score).reversed()
-                        .thenComparing(candidate -> candidate.method.symbol.getQualifiedName()))
-                .limit(3).toList();
-        // 最多保留三个高分候选，并将分数转换成明确的调用边可信度。
-        for (ScoredMethod candidate : scored) {
-            MethodModel method = candidate.method;
-            Confidence confidence = candidate.score >= 80 ? Confidence.HIGH
-                    : candidate.score >= 60 ? Confidence.MEDIUM : Confidence.LOW;
-            String type = call.getScope().isEmpty() && method.owner.qualifiedName.equals(caller.owner.qualifiedName)
-                    ? "SAME_TYPE" : edgeType(method, "HEURISTIC_SCORE");
-            results.put(method.symbol.getId(), new TargetResolution(method, type, confidence,
-                    "二阶段源码候选评分=" + candidate.score + "，接收者="
-                            + (scopeType == null ? "未知" : scopeType)));
-            addImplementations(method, results, program, isInjectedScope(call, caller));
-        }
-        return List.copyOf(results.values());
-    }
-
-    // 判断是否满足 candidateScore 对应的条件。
-    private int candidateScore(MethodCallExpr call, MethodModel caller, MethodModel candidate,
-                               String scopeType, Map<String, String> variableTypes,
-                               int candidateCount, Program program) {
-        // 基础分叠加同类、接收者类型、包、import、唯一候选和参数兼容度，最终限制在 100 分。
-        int score = 25;
-        if (call.getScope().isEmpty() && candidate.owner.qualifiedName.equals(caller.owner.qualifiedName)) {
-            score += 55;
-        } else if (scopeType != null && typeMatches(candidate.owner, scopeType, program)) {
-            score += candidate.owner.simpleName.equals(simpleType(scopeType)) ? 50 : 40;
-            if (isInjectedScope(call, caller)) score += 10;
-        }
-        if (candidate.owner.packageName.equals(caller.owner.packageName)) score += 10;
-        if (caller.owner.imports.contains(candidate.owner.qualifiedName)
-                || caller.owner.imports.contains(candidate.owner.packageName + ".*")) score += 10;
-        if (candidateCount == 1) score += 20;
-        score += argumentCompatibilityScore(call, candidate, variableTypes);
-        return Math.min(score, 100);
-    }
-
-    // 执行 LightweightSemanticAnalyzer 中的 argumentCompatibilityScore 处理。
-    private int argumentCompatibilityScore(MethodCallExpr call, MethodModel candidate,
-                                           Map<String, String> variableTypes) {
-        // 将可推断的实参类型与候选形参类型逐位比较，作为候选排序的补充证据。
-        if (call.getArguments().isEmpty()) return 5;
-        int compatible = 0;
-        for (int index = 0; index < Math.min(call.getArguments().size(), candidate.parameterTypes.size()); index++) {
-            String actual = inferExpressionType(call.getArgument(index), variableTypes);
-            String expected = candidate.parameterTypes.get(index);
-            if (actual.isBlank() || expected.isBlank()) continue;
-            if (typesCompatible(actual, expected)) compatible++;
-        }
-        return Math.min(20, compatible * Math.max(4, 20 / call.getArguments().size()));
     }
 
     // 执行 LightweightSemanticAnalyzer 中的 typesCompatible 处理。
@@ -398,42 +333,6 @@ public class LightweightSemanticAnalyzer {
         Set<String> numbers = Set.of("byte", "short", "int", "integer", "long", "float", "double", "bigdecimal");
         return numbers.contains(left) && numbers.contains(right)
                 || left.equals("string") && (right.equals("charsequence") || right.equals("object"));
-    }
-
-    // 执行 LightweightSemanticAnalyzer 中的 edgeType 处理。
-    private String edgeType(MethodModel method, String fallback) {
-        return lower(method.symbol.getAnnotations()).contains("@async") ? "SPRING_ASYNC" : fallback;
-    }
-
-    // 向当前结果添加 addImplementations 对应的数据。
-    private void addImplementations(MethodModel method, Map<UUID, TargetResolution> results,
-                                    Program program, boolean springAware) {
-        // 只有接口方法需要展开实现类；普通类方法已经有确定的调用目标。
-        if (!method.owner.interfaceType) return;
-        List<TypeModel> implementations = program.implementations.getOrDefault(method.owner.simpleName, List.of());
-        for (TypeModel implementation : implementations) {
-            for (MethodModel target : implementation.methods) {
-                if (target.symbol.getSimpleName().equals(method.symbol.getSimpleName())
-                        && target.parameterNames.size() == method.parameterNames.size()) {
-                    // 单实现类具有更高可信度，多实现类则保留所有可能分派目标并降低可信度。
-                    results.putIfAbsent(target.symbol.getId(), new TargetResolution(target,
-                            springAware ? "SPRING_DI" : "VIRTUAL_DISPATCH",
-                            implementations.size() == 1 ? Confidence.HIGH : Confidence.MEDIUM,
-                            "接口实现和 Spring 依赖注入候选: " + implementation.qualifiedName));
-                }
-            }
-        }
-    }
-
-    // 判断是否满足 isInjectedScope 对应的条件。
-    private boolean isInjectedScope(MethodCallExpr call, MethodModel caller) {
-        // final 字段、@Autowired 或 @Resource 字段被视为 Spring 注入接收者，用于标记 SPRING_DI 边。
-        if (call.getScope().isEmpty() || !(call.getScope().get() instanceof NameExpr name)) return false;
-        return caller.owner.declaration.getFields().stream().anyMatch(field ->
-                field.getVariables().stream().anyMatch(variable -> variable.getNameAsString().equals(name.getNameAsString()))
-                        && (field.isFinal() || field.getAnnotations().stream().anyMatch(annotation ->
-                        annotation.getNameAsString().equals("Autowired")
-                                || annotation.getNameAsString().equals("Resource"))));
     }
 
     // 执行 LightweightSemanticAnalyzer 中的 frameworkTarget 处理。
@@ -488,16 +387,6 @@ public class LightweightSemanticAnalyzer {
                 "stputil.check", "subject.checkpermission", "subject.hasrole");
     }
 
-    // 解析并确定 resolvedExternalSignature 对应的目标。
-    private Optional<String> resolvedExternalSignature(MethodCallExpr call, Program program) {
-        try {
-            String signature = call.resolve().getQualifiedSignature();
-            return program.byQualifiedName.containsKey(signature) ? Optional.empty() : Optional.of(signature);
-        } catch (RuntimeException exception) {
-            return Optional.empty();
-        }
-    }
-
     // 将 Spring 事件发布者与类型匹配的监听器补成显式跨方法调用边。
     private void addSpringEventEdges(UUID taskId, Program program) {
         // 监听器必须带事件监听注解且至少有一个参数，第一个参数代表接收的事件类型。
@@ -531,7 +420,8 @@ public class LightweightSemanticAnalyzer {
                     boolean removed = program.edges.removeIf(edge -> edge.caller == publisher
                             && edge.persisted.getCallSiteLine() == line(call)
                             && edge.persisted.getCalledName().equals("publishEvent")
-                            && "UNRESOLVED".equals(edge.persisted.getEdgeType()));
+                            && ("UNRESOLVED".equals(edge.persisted.getEdgeType())
+                            || "LOCAL_UNRESOLVED".equals(edge.persisted.getEdgeType())));
                     if (removed) {
                         program.unresolvedCallSites = Math.max(0, program.unresolvedCallSites - 1);
                         program.frameworkResolvedCallSites++;
@@ -618,7 +508,9 @@ public class LightweightSemanticAnalyzer {
             boolean changed = false;
             for (GraphEdge edge : program.edges) {
                 // 只有目标为项目内 Java 方法时才存在可向调用方传播的方法摘要。
-                if (!(edge.target instanceof MethodModel target)) continue;
+                if (!(edge.target instanceof MethodModel target)
+                        || edge.persisted.getConfidence() == Confidence.LOW
+                        || "CODEGRAPH_CANDIDATE".equals(edge.persisted.getEdgeType())) continue;
                 for (Map.Entry<String, Set<Integer>> effect : target.summary.effects.entrySet()) {
                     // 将被调用方法的形参依赖通过调用边参数映射换算成调用方法的形参依赖。
                     Set<Integer> mapped = composeDependencies(effect.getValue(), edge.argumentDependencies);
@@ -794,9 +686,15 @@ public class LightweightSemanticAnalyzer {
                 .filter(Objects::nonNull).distinct().toList();
         if (chunkIds.isEmpty() || entry.symbol.getChunkId() == null) return;
         // 统计路径节点仍有多少未解析出边，用于表达语义覆盖缺口而不是隐瞒不确定性。
-        int unresolved = state.nodes.stream().map(node -> node.symbol().getId())
-                .mapToInt(id -> (int) program.outgoing.getOrDefault(id, List.of()).stream()
-                        .filter(edge -> "UNRESOLVED".equals(edge.persisted.getEdgeType())).count()).sum();
+        Set<UUID> pathSymbolIds = state.nodes.stream()
+                .map(node -> node.symbol().getId())
+                .collect(Collectors.toSet());
+        int unresolved = (int) program.edges.stream()
+                .filter(edge -> pathSymbolIds.contains(edge.persisted.getCallerSymbolId()))
+                .filter(edge -> "UNRESOLVED".equals(edge.persisted.getEdgeType())
+                        || "LOCAL_UNRESOLVED".equals(edge.persisted.getEdgeType())
+                        || "CODEGRAPH_CANDIDATE".equals(edge.persisted.getEdgeType()))
+                .count();
         // 路径无未解析边且不含低可信边为高可信，少量缺口降为中可信，其余为低可信。
         boolean lowEdge = state.edges.stream().anyMatch(edge -> edge.persisted.getConfidence() == Confidence.LOW);
         Confidence confidence = unresolved == 0 && !lowEdge ? Confidence.HIGH
@@ -1041,14 +939,6 @@ public class LightweightSemanticAnalyzer {
         catch (RuntimeException exception) { return ""; }
     }
 
-    // 执行 LightweightSemanticAnalyzer 中的 typeMatches 处理。
-    private boolean typeMatches(TypeModel owner, String scopeType, Program program) {
-        String normalized = simpleType(scopeType);
-        if (owner.simpleName.equals(normalized) || owner.qualifiedName.equals(scopeType)) return true;
-        return owner.implementedTypes.stream().map(this::simpleType).anyMatch(normalized::equals)
-                || program.implementations.getOrDefault(normalized, List.of()).contains(owner);
-    }
-
     // 执行 LightweightSemanticAnalyzer 中的 propagateTaint 处理。
     private Set<Integer> propagateTaint(Set<Integer> current, Map<Integer, Set<Integer>> argumentDependencies) {
         // 某个实参依赖当前污点参数时，对应的被调用方法形参序号成为下一节点污点。
@@ -1104,15 +994,6 @@ public class LightweightSemanticAnalyzer {
         return packageName + String.join(".", owners);
     }
 
-    // 执行 LightweightSemanticAnalyzer 中的 implementedTypes 处理。
-    private Set<String> implementedTypes(TypeDeclaration<?> declaration) {
-        if (!(declaration instanceof ClassOrInterfaceDeclaration classType)) return Set.of();
-        Set<String> result = new LinkedHashSet<>();
-        classType.getImplementedTypes().forEach(type -> result.add(type.getNameWithScope()));
-        classType.getExtendedTypes().forEach(type -> result.add(type.getNameWithScope()));
-        return Set.copyOf(result);
-    }
-
     // 执行 LightweightSemanticAnalyzer 中的 assignedName 处理。
     private String assignedName(Expression target) {
         if (target instanceof NameExpr name) return name.getNameAsString();
@@ -1157,7 +1038,6 @@ public class LightweightSemanticAnalyzer {
     // 执行 LightweightSemanticAnalyzer 中的 truncate 处理。
     private String truncate(String value, int max) { return value == null ? "" : value.substring(0, Math.min(max, value.length())); }
     // 执行 LightweightSemanticAnalyzer 中的 key 处理。
-    private String key(String name, int arity) { return name + "#" + arity; }
     // 执行 LightweightSemanticAnalyzer 中的 location 处理。
     private String location(SemanticSymbol symbol) {
         return symbol.getFilePath() + ":" + symbol.getStartLine() + " " + symbol.getQualifiedName()
@@ -1205,9 +1085,7 @@ public class LightweightSemanticAnalyzer {
         private final List<FrameworkModel> frameworkNodes = new ArrayList<>();
         private final List<GraphEdge> edges = new ArrayList<>();
         private final Map<String, TypeModel> types = new LinkedHashMap<>();
-        private final Map<String, MethodModel> byQualifiedName = new HashMap<>();
-        private final Map<String, List<MethodModel>> byNameArity = new HashMap<>();
-        private final Map<String, List<TypeModel>> implementations = new HashMap<>();
+        private final Map<Long, MethodModel> byChunkId = new HashMap<>();
         private final Map<UUID, List<GraphEdge>> outgoing = new HashMap<>();
         private int totalCallSites;
         private int exactResolvedCallSites;
@@ -1230,18 +1108,8 @@ public class LightweightSemanticAnalyzer {
 
         // 执行 Program 中的 index 处理。
         private void index() {
-            // 完整签名索引服务精确解析，方法名加参数个数索引服务缺少依赖时的启发式回退。
-            methods.forEach(method -> {
-                byQualifiedName.put(method.symbol.getQualifiedName(), method);
-                byNameArity.computeIfAbsent(method.symbol.getSimpleName() + "#" + method.parameterNames.size(), ignored -> new ArrayList<>()).add(method);
-            });
-            // 接口简单名到实现类型列表的索引用于虚方法分派和 Spring 依赖注入目标展开。
-            for (TypeModel type : types.values()) {
-                for (String implemented : type.implementedTypes) {
-                    String simple = implemented.contains(".") ? implemented.substring(implemented.lastIndexOf('.') + 1) : implemented;
-                    implementations.computeIfAbsent(simple, ignored -> new ArrayList<>()).add(type);
-                }
-            }
+            methods.stream().filter(method -> method.symbol.getChunkId() != null)
+                    .forEach(method -> byChunkId.put(method.symbol.getChunkId(), method));
         }
 
         // 构建并返回 buildOutgoing 对应的结果。
@@ -1249,6 +1117,9 @@ public class LightweightSemanticAnalyzer {
             // 路径搜索按当前符号查询下一跳，因此将扁平边列表重建为调用方邻接表。
             outgoing.clear();
             for (GraphEdge edge : edges) {
+                if (edge.target == null || edge.persisted.getConfidence() == Confidence.LOW
+                        || "CODEGRAPH_CANDIDATE".equals(edge.persisted.getEdgeType())
+                        || "LOCAL_UNRESOLVED".equals(edge.persisted.getEdgeType())) continue;
                 outgoing.computeIfAbsent(edge.persisted.getCallerSymbolId(), ignored -> new ArrayList<>()).add(edge);
             }
         }
@@ -1266,26 +1137,13 @@ public class LightweightSemanticAnalyzer {
         private final String qualifiedName;
         private final String simpleName;
         private final TypeDeclaration<?> declaration;
-        private final boolean interfaceType;
-        private final Set<String> implementedTypes;
-        private final String packageName;
-        private final Set<String> imports;
         private final List<MethodModel> methods = new ArrayList<>();
 
         // 创建 TypeModel 实例并初始化所需依赖或状态。
-        private TypeModel(String qualifiedName, String simpleName, TypeDeclaration<?> declaration,
-                          boolean interfaceType, Set<String> implementedTypes) {
+        private TypeModel(String qualifiedName, String simpleName, TypeDeclaration<?> declaration) {
             this.qualifiedName = qualifiedName;
             this.simpleName = simpleName;
             this.declaration = declaration;
-            this.interfaceType = interfaceType;
-            this.implementedTypes = implementedTypes;
-            this.packageName = declaration.findCompilationUnit()
-                    .flatMap(CompilationUnit::getPackageDeclaration)
-                    .map(value -> value.getNameAsString()).orElse("");
-            this.imports = declaration.findCompilationUnit().map(unit -> unit.getImports().stream()
-                    .map(value -> value.getNameAsString() + (value.isAsterisk() ? ".*" : ""))
-                    .collect(Collectors.toCollection(LinkedHashSet::new))).map(Set::copyOf).orElse(Set.of());
         }
     }
 
@@ -1375,10 +1233,6 @@ public class LightweightSemanticAnalyzer {
     // 封装 GraphEdge 使用的不可变结构化数据。
     private record GraphEdge(SemanticCallEdge persisted, MethodModel caller, ProgramNode target,
                              Map<Integer, Set<Integer>> argumentDependencies) {}
-    // 封装 TargetResolution 使用的不可变结构化数据。
-    private record TargetResolution(MethodModel method, String edgeType, Confidence confidence, String reason) {}
-    // 封装 ScoredMethod 使用的不可变结构化数据。
-    private record ScoredMethod(MethodModel method, int score) {}
     // 封装 PathState 使用的不可变结构化数据。
     private record PathState(ProgramNode current, Set<Integer> taintedParameters,
                              List<ProgramNode> nodes, List<GraphEdge> edges) {}

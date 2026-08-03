@@ -47,7 +47,7 @@ public class Finding {
         this.description = description;
         this.evidence = evidence;
         this.remediation = remediation;
-        this.deltaStatus = FindingDeltaStatus.BASELINE;
+        this.deltaStatus = FindingDeltaStatus.NEW;
         this.createdAt = Instant.now();
     }
 

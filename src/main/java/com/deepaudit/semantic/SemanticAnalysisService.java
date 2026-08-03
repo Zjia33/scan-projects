@@ -1,6 +1,7 @@
 package com.deepaudit.semantic;
 
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticSymbolMapper;
@@ -11,6 +12,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 // 负责 SemanticAnalysisService 对应的业务编排和处理。
@@ -36,8 +38,9 @@ public class SemanticAnalysisService {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    // 重建符号、调用边和安全数据流，并在单个事务中替换旧语义索引。
-    public Summary rebuild(UUID taskId, Path root, List<CodeChunk> chunks) {
+    // 仅分析 CodeGraph 确定的审计作用域，并用候选拓扑约束跨方法传播。
+    public Summary rebuild(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds,
+                           List<CodeGraphIntegrationService.ScopedRelation> relations) {
         if (!properties.isEnabled()) {
             // 功能关闭时仍清理历史结果，避免后续读取到过期语义证据。
             transactionTemplate.executeWithoutResult(status -> deleteExisting(taskId));
@@ -46,7 +49,8 @@ public class SemanticAnalysisService {
         try {
             // taskId 用于标记结果归属，root 用于读取源码，chunks 用于把语义节点关联回可引用证据。
             // 先在事务外完成耗时的源码解析和路径搜索，避免分析期间长期占用数据库事务。
-            LightweightSemanticAnalyzer.Result result = analyzer.analyze(taskId, root, chunks);
+            LightweightSemanticAnalyzer.Result result = analyzer.analyze(
+                    taskId, root, chunks, scopeChunkIds, relations);
             // 只有完整分析成功后才进入事务替换旧索引，防止半成品符号图被后续 Agent 读取。
             transactionTemplate.executeWithoutResult(status -> {
                 deleteExisting(taskId);

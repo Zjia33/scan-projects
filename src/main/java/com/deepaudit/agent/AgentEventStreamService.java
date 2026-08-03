@@ -24,7 +24,7 @@ public class AgentEventStreamService {
 
     // 注册任务级 SSE 订阅并先回放已持久化事件，避免连接前的日志缺失。
     public SseEmitter subscribe(UUID taskId) {
-        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
+        SseEmitter emitter = createEmitter();
         CopyOnWriteArrayList<SseEmitter> taskSubscribers =
                 subscribers.computeIfAbsent(taskId, ignored -> new CopyOnWriteArrayList<>());
         taskSubscribers.add(emitter);
@@ -39,11 +39,21 @@ public class AgentEventStreamService {
             emitter.send(SseEmitter.event().name("connected").data(taskId.toString()));
             List<AgentEvent> backlog = eventMapper.findByTaskId(taskId);
             for (AgentEvent event : backlog) send(emitter, event);
+        } catch (IOException exception) {
+            // 浏览器刷新、切换任务或网络断开都可能中止首次写入；按 SSE 生命周期结束处理，
+            // 不再通过 completeWithError 分派给返回 JSON 的全局异常处理器。
+            cleanup.run();
+            emitter.complete();
         } catch (Exception exception) {
             cleanup.run();
             emitter.completeWithError(exception);
         }
         return emitter;
+    }
+
+    // 独立创建 emitter，便于验证首次写入失败时的连接关闭语义。
+    SseEmitter createEmitter() {
+        return new SseEmitter(STREAM_TIMEOUT_MILLIS);
     }
 
     // 将新事件广播给同一任务的所有在线订阅者并清理失效连接。

@@ -57,7 +57,7 @@ public class IncrementalReviewService {
         List<SemanticCallEdge> edges = safeList(edgeMapper.findByTaskId(taskId));
         List<SecurityFlow> flows = safeList(flowMapper.findByTaskId(taskId));
         List<SemanticMethodChange> changes = safeList(semanticChangeMapper.findByTaskId(taskId));
-        List<VulnerabilityType> allowedTypes = VulnerabilityType.detectableValues().stream().sorted().toList();
+        List<VulnerabilityType> allowedTypes = java.util.Arrays.stream(VulnerabilityType.values()).sorted().toList();
         List<IncrementalReviewUnit> result = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
             if (chunk.getId() == null || !insideIncrementalScope(chunk)) continue;
@@ -142,9 +142,9 @@ public class IncrementalReviewService {
                                                    List<SemanticMethodChange> changes,
                                                    List<SecurityFlow> flows) {
         Set<VulnerabilityType> result = EnumSet.noneOf(VulnerabilityType.class);
-        hints.stream().filter(VulnerabilityType::isDetectable).forEach(result::add);
+        hints.stream().filter(java.util.Objects::nonNull).forEach(result::add);
         flows.stream().map(SecurityFlow::getType).filter(java.util.Objects::nonNull)
-                .filter(VulnerabilityType::isDetectable).forEach(result::add);
+                .forEach(result::add);
         if (changes.stream().anyMatch(change -> change.getChangeKind() == SemanticChangeKind.GUARD_REMOVED)) {
             result.add(VulnerabilityType.AUTHORIZATION);
             result.add(VulnerabilityType.VALIDATION_BYPASS);

@@ -36,7 +36,6 @@ const ui = {
     importMessage: document.querySelector('#git-message'),
     auditForm: document.querySelector('#audit-form'),
     repositorySelect: document.querySelector('#repository-select'),
-    scanMode: document.querySelector('#scan-mode'),
     baseBranchGroup: document.querySelector('#base-branch-group'),
     baseCommitGroup: document.querySelector('#base-commit-group'),
     baseBranch: document.querySelector('#base-branch'),
@@ -102,7 +101,6 @@ function bindForms() {
     ui.importForm.addEventListener('submit', importRepository);
     ui.auditForm.addEventListener('submit', submitAudit);
     ui.repositorySelect.addEventListener('change', loadCommits);
-    ui.scanMode.addEventListener('change', updateScanMode);
     ui.baseBranch.addEventListener('change', () => populateBranchCommits('base'));
     ui.targetBranch.addEventListener('change', () => populateBranchCommits('target'));
     ui.refreshCommits.addEventListener('click', refreshCommits);
@@ -178,14 +176,13 @@ async function importRepository(event) {
 async function submitAudit(event) {
     event.preventDefault();
     const projectId = ui.repositorySelect.value;
-    const incremental = ui.scanMode.value === 'INCREMENTAL';
-    const baseCommit = incremental ? ui.baseCommit.value : null;
+    const baseCommit = ui.baseCommit.value;
     const targetCommit = ui.targetCommit.value;
-    if (!projectId || !targetCommit || (incremental && !baseCommit)) {
+    if (!projectId || !targetCommit || !baseCommit) {
         setFormMessage(ui.auditMessage, '请选择仓库和完整的提交范围。', true);
         return;
     }
-    if (incremental && baseCommit === targetCommit) {
+    if (baseCommit === targetCommit) {
         setFormMessage(ui.auditMessage, 'Base 与 Target 不能是同一个提交。', true);
         return;
     }
@@ -195,7 +192,7 @@ async function submitAudit(event) {
         const response = await fetchJson(`/api/projects/${projectId}/audits`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scanMode: ui.scanMode.value, baseCommit, targetCommit })
+            body: JSON.stringify({ baseCommit, targetCommit })
         });
         state.selectedTaskId = response.taskId;
         state.renderedTaskId = null;
@@ -299,7 +296,6 @@ function populateCommits(commits) {
     populateBranchSelect(ui.targetBranch, branches, previous.targetBranch, defaultBranch);
     populateBranchCommits('target', previous.targetCommit);
     populateBranchCommits('base', previous.baseCommit);
-    updateScanMode();
 }
 
 function populateBranchSelect(select, branches, previousBranch, defaultBranch) {
@@ -354,14 +350,6 @@ function commitTimestamp(commit) {
     return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-function updateScanMode() {
-    const incremental = ui.scanMode.value === 'INCREMENTAL';
-    ui.baseBranchGroup.hidden = !incremental;
-    ui.baseCommitGroup.hidden = !incremental;
-    ui.baseBranch.required = incremental;
-    ui.baseCommit.required = incremental;
-}
-
 async function loadTasks({ forceDetail = false, notify = false } = {}) {
     if (state.loadingTasks) return;
     state.loadingTasks = true;
@@ -390,7 +378,7 @@ async function loadTasks({ forceDetail = false, notify = false } = {}) {
         const findingsChanged = task.findingCount !== state.renderedFindingCount;
         updateTaskSummary(task);
         if (findingsChanged || statusChanged) await refreshFindings(task);
-        if (task.scanMode === 'INCREMENTAL' && statusChanged) await refreshMethodChanges(task);
+        if (statusChanged) await refreshMethodChanges(task);
         state.renderedTaskStatus = task.status;
     } catch (error) {
         ui.taskList.replaceChildren(emptyState(`无法读取任务：${error.message}`));
@@ -417,7 +405,7 @@ function renderDashboard() {
         row.setAttribute('role', 'button');
         const copy = el('div');
         copy.append(el('strong', '', task.projectName),
-            el('small', '', `${scanModeText(task.scanMode)} · ${task.currentStage || statusText(task.status)} · ${formatTime(task.createdAt)}`));
+            el('small', '', `增量扫描 · ${task.currentStage || statusText(task.status)} · ${formatTime(task.createdAt)}`));
         row.append(copy, statusTag(task.status));
         const open = () => openTask(task.taskId);
         row.addEventListener('click', open);
@@ -443,7 +431,7 @@ function renderTaskList() {
         const title = el('span', 'entity-title-row');
         title.append(el('strong', '', task.projectName), statusTag(task.status));
         copy.append(title,
-            el('small', '', `${scanModeText(task.scanMode)} · ${task.currentStage || '等待启动'}`));
+            el('small', '', `增量扫描 · ${task.currentStage || '等待启动'}`));
         if (task.status === 'RUNNING') {
             const progress = el('span', 'entity-progress');
             const fill = el('i');
@@ -488,8 +476,7 @@ async function renderTaskDetail(task) {
                 ? fetchJson(`/api/tasks/${taskId}/findings`) : Promise.resolve([]),
             fetchJson(`/api/tasks/${taskId}/events`),
             fetchJson(`/api/tasks/${taskId}/agents`),
-            task.scanMode === 'INCREMENTAL'
-                ? fetchJson(`/api/tasks/${taskId}/method-changes`).catch(() => []) : Promise.resolve([])
+            fetchJson(`/api/tasks/${taskId}/method-changes`).catch(() => [])
         ]);
         if (state.selectedTaskId !== taskId) return;
         seedEvents(taskId, events);
@@ -509,7 +496,7 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
     const fragment = document.createDocumentFragment();
     const header = el('header', 'detail-header');
     const title = el('div', 'detail-header-copy');
-    title.append(el('p', 'detail-kicker', `${scanModeText(task.scanMode).toUpperCase()} / ${statusText(task.status)}`),
+    title.append(el('p', 'detail-kicker', `INCREMENTAL / ${statusText(task.status)}`),
         el('h3', '', task.projectName),
         el('p', 'detail-subtitle', `${commitRange(task)} · ${formatTime(task.createdAt)}`),
         el('p', 'detail-subtitle', task.changeSummary || task.repositoryUrl || '暂无变更摘要'));
@@ -531,7 +518,7 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
     body.append(buildProgress(task));
     if (task.errorMessage) body.append(el('p', 'error-banner', task.errorMessage));
     body.append(buildTaskStats(task, events.length));
-    if (task.scanMode === 'INCREMENTAL') body.append(buildMethodChanges(methodChanges));
+    body.append(buildMethodChanges(methodChanges));
     body.append(buildInvestigation(agents, events), buildFindings(findings, task.status));
     fragment.append(header, body);
     return fragment;
@@ -1104,7 +1091,7 @@ function buildHistoryRow(audit) {
     row.type = 'button';
     row.addEventListener('click', () => openTask(audit.taskId));
     const copy = el('span');
-    copy.append(el('strong', '', `${scanModeText(audit.scanMode)} · ${commitRange(audit)}`),
+    copy.append(el('strong', '', `增量扫描 · ${commitRange(audit)}`),
         el('small', '', `${formatTime(audit.createdAt)} · ${audit.findingCount || 0} 个确认问题`));
     row.append(copy, statusTag(audit.status));
     return row;
@@ -1251,10 +1238,6 @@ function statusText(status) {
     })[status] || '运行中';
 }
 
-function scanModeText(mode) {
-    return mode === 'INCREMENTAL' ? '增量扫描' : '全量扫描';
-}
-
 function runStatusText(status) {
     return ({ RUNNING: '运行中', COMPLETED: '已完成', FAILED: '失败' })[status] || status || '未知';
 }
@@ -1264,7 +1247,6 @@ function agentText(agent) {
         RECON: 'Recon Agent', ORCHESTRATOR: 'Triage Orchestrator', SQL_INJECTION: 'SQL 注入 Agent',
         AUTHORIZATION: '权限审计 Agent', UNAUTHORIZED_DISCLOSURE: '数据披露 Agent',
         STORED_XSS: '存储 XSS Agent', VALIDATION_BYPASS: '验证绕过 Agent',
-        FINANCIAL_RISK: '金融风险 Agent', SECURITY_CONFIG: '安全配置 Agent',
         CRITIC: 'Critic Agent', REPORT: 'Report Agent'
     })[agent] || agent || 'SYSTEM';
 }
@@ -1288,15 +1270,13 @@ function confidenceText(value) {
 function vulnerabilityTypeText(value) {
     return ({
         SQL_INJECTION: 'SQL 注入', AUTHORIZATION: '越权漏洞', UNAUTHORIZED_DISCLOSURE: '未授权数据披露',
-        STORED_XSS: '存储型 XSS', VALIDATION_BYPASS: '验证绕过', FINANCIAL_RISK: '金融业务风险',
-        SECURITY_CONFIG: '安全配置风险'
+        STORED_XSS: '存储型 XSS', VALIDATION_BYPASS: '验证绕过'
     })[value] || value || '安全问题';
 }
 
 function deltaStatusText(value) {
     return ({
-        BASELINE: '全量基线', NEW: '变更新增', REGRESSED: '安全回归',
-        PERSISTING: '持续存在', AFFECTED: '变更影响'
+        NEW: '变更新增', PERSISTING: '持续存在'
     })[value] || '未分类';
 }
 

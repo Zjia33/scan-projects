@@ -6,10 +6,6 @@ import com.deepaudit.domain.AiReportSummary;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.Project;
-import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.FindingDeltaStatus;
-import com.deepaudit.ai.LlmGateway;
-import com.deepaudit.agent.FindingLocationResolver;
 import com.deepaudit.mapper.AuditTaskMapper;
 import com.deepaudit.mapper.FindingMapper;
 import com.deepaudit.mapper.ProjectMapper;
@@ -17,15 +13,11 @@ import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.mapper.GitFileChangeMapper;
-import com.deepaudit.mapper.CodeChunkMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.UUID;
@@ -42,7 +34,6 @@ public class ReportService {
     private final AuditHypothesisMapper hypothesisMapper;
     private final AiReportSummaryMapper summaryMapper;
     private final GitFileChangeMapper changeMapper;
-    private final CodeChunkMapper chunkMapper;
 
     // 聚合任务、项目、确认发现、Agent 轨迹和假设为完整报告模型。
     public AuditReport report(UUID taskId) {
@@ -58,48 +49,10 @@ public class ReportService {
     // 查询风险排序后的发现，并移除不面向用户展示的内部证据段。
     public List<Finding> findings(UUID taskId) {
         List<Finding> findings = findingMapper.findByTaskIdOrderByRisk(taskId);
-        AuditTask task = taskMapper.findById(taskId);
-        Map<Long, CodeChunk> chunks = new LinkedHashMap<>();
-        chunkMapper.findByTaskId(taskId).forEach(chunk -> chunks.put(chunk.getId(), chunk));
         findings.forEach(finding -> {
-            if (task != null) {
-                // 同时归一化历史记录，确保增量 API 和最终报告不再展示 BASELINE/REGRESSED/AFFECTED。
-                finding.setDeltaStatus(FindingDeltaStatus.normalizeFor(
-                        task.getScanMode(), finding.getDeltaStatus()));
-            }
             finding.setEvidence(evidenceForDisplay(finding.getEvidence()));
-            localizeLegacyEvidence(finding, chunks);
         });
         return findings;
-    }
-
-    // 历史 Finding 保存的是完整方法；读取时利用仍在任务索引中的代码块转换为局部上下文。
-    private void localizeLegacyEvidence(Finding finding, Map<Long, CodeChunk> chunks) {
-        if (finding.getEvidence().contains("[漏洞位置]")) return;
-        List<Long> evidenceIds = evidenceChunkIds(finding.getEvidence());
-        CodeChunk primary = evidenceIds.stream().map(chunks::get).filter(Objects::nonNull)
-                .findFirst().orElseGet(() -> chunks.values().stream()
-                        .filter(chunk -> Objects.equals(chunk.getFilePath(), finding.getFilePath()))
-                        .filter(chunk -> finding.getStartLine() >= chunk.getStartLine()
-                                && finding.getStartLine() <= chunk.getEndLine())
-                        .findFirst().orElse(null));
-        if (primary == null) return;
-        if (evidenceIds.isEmpty()) evidenceIds = List.of(primary.getId());
-        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                finding.getType(), finding.getSeverity(), finding.getConfidence(), finding.getTitle(),
-                finding.getDescription(), finding.getRemediation(), primary.getId(), evidenceIds);
-        FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
-        finding.setStartLine(location.startLine());
-        finding.setEndLine(location.endLine());
-        finding.setEvidence(FindingLocationResolver.formatEvidence(proposal, chunks));
-    }
-
-    // 执行 ReportService 中的 evidenceChunkIds 处理。
-    private List<Long> evidenceChunkIds(String evidence) {
-        Matcher matcher = Pattern.compile("\\[CHUNK (\\d+)]").matcher(evidence == null ? "" : evidence);
-        java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
-        while (matcher.find()) ids.add(Long.parseLong(matcher.group(1)));
-        return ids.stream().distinct().toList();
     }
 
     // 将结构化报告渲染为自包含的中文 HTML 页面。
@@ -147,7 +100,7 @@ public class ReportService {
                 + "<h1>代码安全审计报告</h1>"
                 // "<p class='hero-copy'>基于代码事实、语义关系和多 Agent 复核生成的安全审计结果。</p>"
                 + "<div class='report-meta'><article><small>项目</small><strong>" + escape(report.project().getName()) + "</strong></article>"
-                + "<article><small>扫描范围</small><strong>" + escape(report.task().getScanMode().name()) + "</strong></article>"
+                + "<article><small>扫描范围</small><strong>BASE → TARGET 增量审计</strong></article>"
                 + "<article><small>目标提交</small><strong>" + escape(shortSha(report.task().getTargetCommitSha())) + "</strong></article>"
                 + "<article><small>精确定位问题</small><strong>" + report.findings().size() + "</strong></article>"
                 + "<article><small>定位待复核</small><strong>" + unlocated.size() + "</strong></article></div></header>"
@@ -329,13 +282,10 @@ public class ReportService {
 
     // 执行 ReportService 中的 deltaLabel 处理。
     private String deltaLabel(com.deepaudit.domain.FindingDeltaStatus status) {
-        if (status == null) return "全量基线";
+        if (status == null) return "变更新增";
         return switch (status) {
-            case BASELINE -> "全量基线";
             case NEW -> "变更新增";
-            case REGRESSED -> "安全回归";
             case PERSISTING -> "持续存在";
-            case AFFECTED -> "变更影响";
         };
     }
 

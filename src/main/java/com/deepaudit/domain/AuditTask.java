@@ -19,7 +19,6 @@ public class AuditTask {
     private int progress; // 任务整体进度百分比
     private String currentStage; // 前端展示的当前处理阶段说明
     private String errorMessage; // 任务失败时记录的错误摘要
-    private ScanMode scanMode; // 扫描模式：全量或增量
     private String baseCommitSha; // 增量扫描用于对比的基线提交哈希
     private String targetCommitSha; // 本次扫描目标提交的哈希
     private String mergeBaseSha; // 基线与目标提交的最近公共祖先哈希
@@ -30,15 +29,14 @@ public class AuditTask {
 
     // 创建 AuditTask 实例并初始化所需依赖或状态。
     public AuditTask(UUID projectId) {
-        this(projectId, ScanMode.FULL, null, null, null);
+        this(projectId, null, null, null);
     }
 
     // 创建 AuditTask 实例并初始化所需依赖或状态。
-    public AuditTask(UUID projectId, ScanMode scanMode, String baseCommitSha,
+    public AuditTask(UUID projectId, String baseCommitSha,
                      String targetCommitSha, String mergeBaseSha) {
         this.id = UUID.randomUUID();
         this.projectId = projectId;
-        this.scanMode = scanMode == null ? ScanMode.FULL : scanMode;
         this.baseCommitSha = baseCommitSha;
         this.targetCommitSha = targetCommitSha;
         this.mergeBaseSha = mergeBaseSha;

@@ -10,6 +10,8 @@ spring:
 
 deepaudit:
   storage-root: ./target/test-data
+  codegraph:
+    enabled: false
   git:
     allow-local-repositories: true
     allowed-hosts: localhost

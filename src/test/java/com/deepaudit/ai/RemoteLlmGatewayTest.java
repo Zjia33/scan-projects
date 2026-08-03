@@ -99,7 +99,7 @@ class RemoteLlmGatewayTest {
                 """);
         IncrementalReviewUnit unit = new IncrementalReviewUnit(
                 "change-7", 7L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
-                "MODIFIED", "CHANGED", VulnerabilityType.detectableValues().stream().toList(), List.of(),
+                "MODIFIED", "CHANGED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
                 "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", "");
 
@@ -125,7 +125,7 @@ class RemoteLlmGatewayTest {
                 """);
         IncrementalReviewUnit unit = new IncrementalReviewUnit(
                 "change-8", 8L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
-                "MODIFIED", "CHANGED", VulnerabilityType.detectableValues().stream().toList(), List.of(),
+                "MODIFIED", "CHANGED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
                 "return value.trim();", "return value.strip();", "METHOD_MODIFIED",
                 "已补充调用上下文", "");
@@ -145,25 +145,25 @@ class RemoteLlmGatewayTest {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"confirmed":true,"confidence":"HIGH","reason":"实际危险操作位于服务层",
-                 "deltaStatus":"BASELINE","primaryChunkId":1549,
+                 "deltaStatus":"NEW","primaryChunkId":1549,
                  "vulnerabilityStartLine":86,"vulnerabilityEndLine":88,
-                 "rootCauseKind":"UNSAFE_OPERATION","locationRole":"BUSINESS_OPERATION"}
+                 "rootCauseKind":"MISSING_VALIDATION","locationRole":"BUSINESS_OPERATION"}
                 """);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.FINANCIAL_RISK, Severity.HIGH, Confidence.HIGH,
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "服务端信任客户端报价", "查询可信价格",
                 1497L, List.of(1497L, 1549L), 82, 83);
         LlmGateway.CriticRequest request = new LlmGateway.CriticRequest(UUID.randomUUID(),
-                AgentType.FINANCIAL_RISK, proposal, "跨方法证据", "调用链证据", recon(),
-                "UNCHANGED", "FULL", "");
+                AgentType.VALIDATION_BYPASS, proposal, "跨方法证据", "调用链证据", recon(),
+                "MODIFIED", "CHANGED", "", List.of());
 
         LlmGateway.CriticDecision decision = gateway.critique(request);
 
         assertThat(decision.primaryChunkId()).isEqualTo(1549L);
         assertThat(decision.vulnerabilityStartLine()).isEqualTo(86);
         assertThat(decision.vulnerabilityEndLine()).isEqualTo(88);
-        assertThat(decision.deltaStatus()).isEqualTo(FindingDeltaStatus.BASELINE);
-        assertThat(decision.rootCauseKind()).isEqualTo("UNSAFE_OPERATION");
+        assertThat(decision.deltaStatus()).isEqualTo(FindingDeltaStatus.NEW);
+        assertThat(decision.rootCauseKind()).isEqualTo("MISSING_VALIDATION");
         assertThat(decision.locationRole()).isEqualTo("BUSINESS_OPERATION");
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("负责最终漏洞定位", "Controller 入口", "最多标记连续 5 行",
@@ -185,8 +185,8 @@ class RemoteLlmGatewayTest {
                 List.of("DATA_ACCESS", "DANGEROUS_OPERATION"), "CHANGED");
 
         LlmGateway.LocationDecision decision = gateway.repairLocation(new LlmGateway.LocationRepairRequest(
-                UUID.randomUUID(), VulnerabilityType.FINANCIAL_RISK, "客户端报价被用于扣款",
-                "服务端直接信任客户端价格", "漏洞已经确认", "UNSAFE_OPERATION",
+                UUID.randomUUID(), VulnerabilityType.VALIDATION_BYPASS, "客户端报价缺少验证",
+                "服务端直接信任客户端价格", "漏洞已经确认", "MISSING_VALIDATION",
                 "1497:82-83", "原始位置不是危险操作", List.of(candidate)));
 
         assertThat(decision.locationCandidateId()).isEqualTo("1549:87-87");

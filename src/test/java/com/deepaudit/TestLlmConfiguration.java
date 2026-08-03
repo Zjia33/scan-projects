@@ -90,19 +90,13 @@ public class TestLlmConfiguration {
 
             @Override
             public CriticDecision critique(CriticRequest request) {
-                boolean introducedSqlSink = request.proposal().type()
-                        == com.deepaudit.domain.VulnerabilityType.SQL_INJECTION
-                        && !request.baseCodeExcerpt().toLowerCase(java.util.Locale.ROOT)
-                        .matches("(?s).*(statement\\.execute|executequery|executeupdate|preparestatement).*" );
-                com.deepaudit.domain.FindingDeltaStatus delta = "FULL".equals(request.analysisScope())
-                        ? com.deepaudit.domain.FindingDeltaStatus.BASELINE
-                        : "ADDED".equals(request.changeType()) || introducedSqlSink
-                        ? com.deepaudit.domain.FindingDeltaStatus.NEW
-                        : com.deepaudit.domain.FindingDeltaStatus.NEW;
+                com.deepaudit.domain.FindingDeltaStatus delta =
+                        com.deepaudit.domain.FindingDeltaStatus.NEW;
                 return new CriticDecision(true, Confidence.HIGH,
                         "未找到能够推翻候选的权限或参数化反证", delta,
                         request.proposal().primaryChunkId(), request.proposal().vulnerabilityStartLine(),
-                        request.proposal().vulnerabilityEndLine());
+                        request.proposal().vulnerabilityEndLine(), rootCause(request.proposal().type()),
+                        locationRole(request.proposal().type()), null);
             }
 
             @Override
@@ -155,7 +149,25 @@ public class TestLlmConfiguration {
                     case UNAUTHORIZED_DISCLOSURE -> "公开接口可能泄露敏感信息";
                     case STORED_XSS -> "持久化内容可能进入非转义输出";
                     case VALIDATION_BYPASS -> "验证流程可能被绕过";
-                    case FINANCIAL_RISK -> "资金操作缺少关键安全约束";
+                };
+            }
+
+            private String rootCause(VulnerabilityType type) {
+                return switch (type) {
+                    case SQL_INJECTION -> "UNSAFE_QUERY";
+                    case AUTHORIZATION -> "MISSING_AUTHORIZATION_CHECK";
+                    case UNAUTHORIZED_DISCLOSURE -> "UNSAFE_DATA_EXPOSURE";
+                    case STORED_XSS -> "UNSAFE_OUTPUT";
+                    case VALIDATION_BYPASS -> "MISSING_VALIDATION";
+                };
+            }
+
+            private String locationRole(VulnerabilityType type) {
+                return switch (type) {
+                    case SQL_INJECTION -> "QUERY";
+                    case AUTHORIZATION -> "SECURITY_BOUNDARY";
+                    case UNAUTHORIZED_DISCLOSURE, STORED_XSS -> "DATA_OUTPUT";
+                    case VALIDATION_BYPASS -> "VALIDATION";
                 };
             }
         };

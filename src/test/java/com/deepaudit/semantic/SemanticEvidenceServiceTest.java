@@ -71,6 +71,23 @@ class SemanticEvidenceServiceTest {
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(10L, 20L);
     }
 
+    @Test
+    void doesNotPromoteAnUnverifiedCodeGraphCandidateRelation() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticCallEdge candidate = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
+                10L, 20L, 0, "load", "CodeGraph candidate", "CODEGRAPH_CANDIDATE",
+                Confidence.LOW, "局部 AST 未确认", "");
+        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(candidate));
+        SemanticEvidenceService service = new SemanticEvidenceService(flowMapper, edgeMapper);
+
+        SemanticEvidenceService.RelationVerification result = service.verifyRelation(taskId, 10L, 20L);
+
+        assertThat(result.verified()).isFalse();
+    }
+
     private SemanticCallEdge edge(UUID taskId, long callerChunkId, long calleeChunkId, int line) {
         return new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
                 callerChunkId, calleeChunkId, line, "purchase", "purchase(request)",

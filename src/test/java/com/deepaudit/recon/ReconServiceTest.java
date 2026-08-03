@@ -36,7 +36,8 @@ class ReconServiceTest {
         Files.createDirectories(template.getParent());
         Files.writeString(template, String.join("\n", lines));
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(UUID.randomUUID(), projectRoot);
+        ReconSummary summary = new ReconService(mapper).buildIndex(
+                UUID.randomUUID(), projectRoot, projectRoot, List.of());
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
@@ -72,7 +73,8 @@ class ReconServiceTest {
                 }
                 """);
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(UUID.randomUUID(), projectRoot);
+        ReconSummary summary = new ReconService(mapper).buildIndex(
+                UUID.randomUUID(), projectRoot, projectRoot, List.of());
 
         assertThat(summary.technologyProfile().buildTools()).contains("Maven");
         assertThat(summary.technologyProfile().frameworks()).contains("Spring MVC");
@@ -125,7 +127,8 @@ class ReconServiceTest {
                 }
                 """);
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(UUID.randomUUID(), projectRoot);
+        ReconSummary summary = new ReconService(mapper).buildIndex(
+                UUID.randomUUID(), projectRoot, projectRoot, List.of());
         ProjectStructureProfile profile = summary.projectStructure();
 
         assertThat(profile.modules()).singleElement().satisfies(module -> {
@@ -194,7 +197,7 @@ class ReconServiceTest {
         write("node_modules/example/index.js", "element.innerHTML = input;");
 
         ReconSummary summary = new ReconService(mapper)
-                .buildIndex(UUID.randomUUID(), projectRoot);
+                .buildIndex(UUID.randomUUID(), projectRoot, projectRoot, List.of());
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
@@ -220,7 +223,7 @@ class ReconServiceTest {
                 """);
 
         new ReconService(mapper)
-                .buildIndex(UUID.randomUUID(), projectRoot);
+                .buildIndex(UUID.randomUUID(), projectRoot, projectRoot, List.of());
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);

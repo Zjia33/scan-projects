@@ -119,9 +119,9 @@ public class RemoteLlmGateway implements LlmGateway {
         String systemPrompt = AgentPrompts.criticAgent();
         String userPrompt = json(Map.of("candidate", request, "outputSchema",
                 Map.of("confirmed", "boolean", "confidence", "HIGH|MEDIUM|LOW", "reason", "string",
-                        "deltaStatus", "BASELINE|NEW|PERSISTING",
+                        "deltaStatus", "NEW|PERSISTING",
                         "rootCauseKind", "INEFFECTIVE_SECURITY_CONTROL|MISSING_AUTHORIZATION_CHECK|"
-                                + "UNSAFE_DATA_EXPOSURE|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT|UNSAFE_OPERATION",
+                                + "UNSAFE_DATA_EXPOSURE|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT",
                         "locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|QUERY|VALIDATION|"
                                 + "DATA_ACCESS|DATA_OUTPUT|DANGEROUS_OPERATION|BUSINESS_OPERATION",
                         "locationCandidateId", "confirmed=true 时优先填写，且必须来自 locationCandidates",

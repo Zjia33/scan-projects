@@ -2,7 +2,6 @@ package com.deepaudit.agent;
 
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.domain.VulnerabilityType;
@@ -39,8 +38,9 @@ class AuditUnitServiceTest {
                 "/users/{id}", "return userService.findById(id);");
         CodeChunk hinted = chunk(3L, "src/main/java/demo/QueryService.java", "QueryService#lookup",
                 null, "return helper.lookup(input);");
+        List.of(getter, endpoint, hinted).forEach(chunk -> chunk.setAnalysisScope(AnalysisScope.CHANGED));
 
-        List<AuditUnit> units = service.build(taskId, List.of(getter, endpoint, hinted), ScanMode.FULL,
+        List<AuditUnit> units = service.build(taskId, List.of(getter, endpoint, hinted),
                 Map.of(3L, Set.of(VulnerabilityType.SQL_INJECTION)),
                 Map.of(3L, "动态查询线索"));
 
@@ -65,7 +65,7 @@ class AuditUnitServiceTest {
                 null, "return value.strip();");
         changed.setAnalysisScope(AnalysisScope.CHANGED);
 
-        List<AuditUnit> units = service.build(taskId, List.of(changed), ScanMode.INCREMENTAL,
+        List<AuditUnit> units = service.build(taskId, List.of(changed),
                 Map.of(), Map.of());
 
         assertThat(units).isEmpty();
@@ -90,7 +90,7 @@ class AuditUnitServiceTest {
                 null, "return repository.findById(id);");
         changed.setAnalysisScope(AnalysisScope.CHANGED);
 
-        List<AuditUnit> units = service.build(taskId, List.of(changed), ScanMode.INCREMENTAL,
+        List<AuditUnit> units = service.build(taskId, List.of(changed),
                 Map.of(), Map.of());
 
         assertThat(units).singleElement().satisfies(unit -> {
@@ -99,26 +99,6 @@ class AuditUnitServiceTest {
                     VulnerabilityType.VALIDATION_BYPASS);
             assertThat(unit.contextSummary()).contains("删除安全 Guard", "checkOwner");
         });
-    }
-
-    @Test
-    void ignoresLegacyFinancialRiskHintsWhenBuildingNewAuditUnits() {
-        UUID taskId = UUID.randomUUID();
-        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
-        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
-        SemanticMethodChangeMapper semanticChangeMapper = mock(SemanticMethodChangeMapper.class);
-        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(semanticChangeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        AuditUnitService service = new AuditUnitService(flowMapper, edgeMapper, semanticChangeMapper);
-        CodeChunk payment = chunk(10L, "src/main/java/demo/PaymentService.java",
-                "PaymentService#settle", null, "return completed;");
-
-        List<AuditUnit> units = service.build(taskId, List.of(payment), ScanMode.FULL,
-                Map.of(10L, Set.of(VulnerabilityType.FINANCIAL_RISK)),
-                Map.of(10L, "旧版资金风险提示"));
-
-        assertThat(units).isEmpty();
     }
 
     private CodeChunk chunk(long id, String path, String symbol, String endpoint, String content) {

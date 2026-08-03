@@ -81,10 +81,10 @@ class FindingConsolidatorTest {
         CodeChunk chunk = noticeChunk(taskId);
         Finding first = finding(taskId, VulnerabilityType.STORED_XSS,
                 Severity.HIGH, Confidence.HIGH, 61, 62, null,
-                "标题拼接", FindingDeltaStatus.BASELINE);
+                "标题拼接", FindingDeltaStatus.NEW);
         Finding second = finding(taskId, VulnerabilityType.STORED_XSS,
                 Severity.HIGH, Confidence.HIGH, 62, 63, null,
-                "内容输出", FindingDeltaStatus.BASELINE);
+                "内容输出", FindingDeltaStatus.NEW);
 
         List<Finding> result = FindingConsolidator.consolidate(List.of(first, second), List.of(chunk));
 
@@ -101,10 +101,10 @@ class FindingConsolidatorTest {
         CodeChunk chunk = sqlChunk(taskId);
         Finding first = finding(taskId, VulnerabilityType.SQL_INJECTION,
                 Severity.HIGH, Confidence.HIGH, 101, 101, "/search",
-                "第一条查询", FindingDeltaStatus.BASELINE);
+                "第一条查询", FindingDeltaStatus.NEW);
         Finding second = finding(taskId, VulnerabilityType.SQL_INJECTION,
                 Severity.HIGH, Confidence.HIGH, 103, 103, "/search",
-                "第二条查询", FindingDeltaStatus.BASELINE);
+                "第二条查询", FindingDeltaStatus.NEW);
         first.setFilePath("src/main/java/demo/QueryService.java");
         second.setFilePath("src/main/java/demo/QueryService.java");
 

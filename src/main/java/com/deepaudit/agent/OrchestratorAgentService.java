@@ -7,7 +7,6 @@ import com.deepaudit.domain.AgentEventType;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.domain.VulnerabilityType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,93 +38,15 @@ public class OrchestratorAgentService {
     private final LlmGateway llmGateway;
     private final AiProperties properties;
     private final AgentTraceService traceService;
-    private final AuditUnitService auditUnitService;
     private final IncrementalReviewService incrementalReviewService;
 
     // 先对紧凑审计单元执行三态分流，再仅为 INVESTIGATE 单元创建专业 Agent 任务。
     public List<AgentTask> plan(UUID taskId, LlmGateway.ReconInsight recon, List<CodeChunk> chunks,
-                                ScanMode scanMode, Map<Long, Set<VulnerabilityType>> hints,
+                                Map<Long, Set<VulnerabilityType>> hints,
                                 Map<Long, String> hintDescriptions) {
         AgentRun run = traceService.start(taskId, AgentType.ORCHESTRATOR, null, "轻量安全分流与调查编排");
         try {
-            if (scanMode == ScanMode.INCREMENTAL) {
-                return planIncremental(taskId, run, recon, chunks, hints, hintDescriptions);
-            }
-            List<AuditUnit> units = auditUnitService.build(
-                    taskId, chunks, scanMode, hints, hintDescriptions);
-            Map<Long, AuditUnit> unitsByChunk = units.stream()
-                    .collect(Collectors.toMap(AuditUnit::primaryChunkId, Function.identity()));
-            Map<String, AgentTask> tasks = new LinkedHashMap<>();
-
-            // 确定性规则和已形成的语义安全流属于必审事实，不能因模型漏返回而被静默跳过。
-            for (Map.Entry<Long, Set<VulnerabilityType>> entry : hints.entrySet()) {
-                AuditUnit unit = unitsByChunk.get(entry.getKey());
-                if (unit == null || unit.reasonCodes().stream().noneMatch(MANDATORY_REASON_CODES::contains)) continue;
-                for (VulnerabilityType type : entry.getValue()) {
-                    if (!type.isDetectable()) continue;
-                    addTask(tasks, unit, type, "确定性线索要求专业 Agent 深入核查",
-                            hintDescriptions.get(entry.getKey()));
-                }
-            }
-            // 删除权限或验证 Guard 是明确的安全退化，必须交给对应专业 Agent 复核。
-            for (AuditUnit unit : units) {
-                if (!unit.reasonCodes().contains("GUARD_REMOVED")) continue;
-                addTask(tasks, unit, VulnerabilityType.AUTHORIZATION,
-                        "Base/Target 语义差异发现安全 Guard 被删除", unit.contextSummary());
-                addTask(tasks, unit, VulnerabilityType.VALIDATION_BYPASS,
-                        "Base/Target 语义差异发现安全 Guard 被删除", unit.contextSummary());
-            }
-
-            List<String> summaries = new ArrayList<>();
-            Map<String, LlmGateway.TriageDecision> firstPass = triageBatches(
-                    taskId, run, recon, units, summaries, "初次轻量分流");
-            List<AuditUnit> needContext = new ArrayList<>();
-            int skipped = 0;
-            for (AuditUnit unit : units) {
-                LlmGateway.TriageDecision decision = firstPass.get(unit.unitId());
-                if (decision == null || decision.disposition() == TriageDisposition.NEED_CONTEXT) {
-                    needContext.add(unit);
-                } else if (decision.disposition() == TriageDisposition.INVESTIGATE) {
-                    addDecisionTasks(tasks, unit, decision, hintDescriptions.get(unit.primaryChunkId()));
-                } else if (!hasTaskFor(tasks, unit.primaryChunkId())) {
-                    skipped++;
-                }
-            }
-
-            // NEED_CONTEXT 仅进行一次受控补充，避免无限扩张模型上下文。
-            if (!needContext.isEmpty()) {
-                List<AuditUnit> enriched = auditUnitService.enrich(taskId, needContext, chunks);
-                Map<String, LlmGateway.TriageDecision> secondPass = triageBatches(
-                        taskId, run, recon, enriched, summaries, "补充上下文后复判");
-                for (AuditUnit unit : enriched) {
-                    LlmGateway.TriageDecision decision = secondPass.get(unit.unitId());
-                    if (decision != null && decision.disposition() == TriageDisposition.INVESTIGATE) {
-                        addDecisionTasks(tasks, unit, decision, hintDescriptions.get(unit.primaryChunkId()));
-                    } else if (decision != null && decision.disposition() == TriageDisposition.SKIP
-                            && !hasTaskFor(tasks, unit.primaryChunkId())) {
-                        skipped++;
-                    } else if (shouldConservativelyInvestigate(unit)) {
-                        // 安全相关事实仍无法排除时宁可交给会主动寻找反证的专业 Agent。
-                        for (VulnerabilityType type : unit.candidateTypes()) {
-                            addTask(tasks, unit, type, "补充上下文后仍无法排除安全相关性",
-                                    hintDescriptions.get(unit.primaryChunkId()));
-                        }
-                    } else if (!hasTaskFor(tasks, unit.primaryChunkId())) {
-                        skipped++;
-                    }
-                }
-            }
-
-            String modelSummary = truncate(String.join("；", summaries), 2_000);
-            long investigatedUnits = tasks.values().stream().map(AgentTask::chunkId).distinct().count();
-            String summary = "轻量分流 " + units.size() + " 个审计单元，其中 " + needContext.size()
-                    + " 个补充上下文、" + skipped + " 个跳过、" + investigatedUnits
-                    + " 个进入调查，规划 " + tasks.size() + " 个专业 Agent 任务"
-                    + (modelSummary.isBlank() ? "" : "；" + modelSummary);
-            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.PLAN, summary);
-            run.complete(summary);
-            traceService.update(run);
-            return List.copyOf(tasks.values());
+            return planIncremental(taskId, run, recon, chunks, hints, hintDescriptions);
         } catch (RuntimeException exception) {
             run.fail(exception.getMessage());
             traceService.update(run);
@@ -361,7 +282,6 @@ public class OrchestratorAgentService {
             }
             List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
                     .filter(java.util.Objects::nonNull)
-                    .filter(VulnerabilityType::isDetectable)
                     .filter(unit.allowedTypes()::contains).distinct().toList();
             if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) {
                 rejectDecision(taskId, run, diagnostics, unit.unitId(), phase,
@@ -464,7 +384,6 @@ public class OrchestratorAgentService {
                 if (unit == null || unit.primaryChunkId() != decision.primaryChunkId()) continue;
                 List<VulnerabilityType> safeTypes = decision.vulnerabilityTypes().stream()
                         .filter(java.util.Objects::nonNull)
-                        .filter(VulnerabilityType::isDetectable)
                         .filter(unit.candidateTypes()::contains).distinct().toList();
                 if (decision.disposition() == TriageDisposition.INVESTIGATE && safeTypes.isEmpty()) {
                     continue;
@@ -518,7 +437,7 @@ public class OrchestratorAgentService {
     // 向当前结果添加 addTask 对应的数据。
     private void addTask(Map<String, AgentTask> tasks, AuditUnit unit, VulnerabilityType type,
                          String reason, String hintDescription) {
-        if (type == null || !type.isDetectable() || !unit.candidateTypes().contains(type)) return;
+            if (type == null || !unit.candidateTypes().contains(type)) return;
         AgentTask task = new AgentTask(unit.primaryChunkId(), agentFor(type), type,
                 reason == null || reason.isBlank() ? "轻量编排确认需要深入调查" : reason,
                 hintDescription);
@@ -527,7 +446,7 @@ public class OrchestratorAgentService {
 
     private void addTask(Map<String, AgentTask> tasks, IncrementalReviewUnit unit,
                          VulnerabilityType type, String reason, String evidence) {
-        if (type == null || !type.isDetectable() || !unit.allowedTypes().contains(type)) return;
+            if (type == null || !unit.allowedTypes().contains(type)) return;
         AgentTask task = new AgentTask(unit.primaryChunkId(), agentFor(type), type,
                 reason == null || reason.isBlank() ? "增量变更审查确认需要深入调查" : reason,
                 joinNonBlank(evidence, unit.changeSummary(), unit.relatedContext()));
@@ -576,7 +495,6 @@ public class OrchestratorAgentService {
             case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> AgentType.AUTHORIZATION;
             case STORED_XSS -> AgentType.STORED_XSS;
             case VALIDATION_BYPASS -> AgentType.VALIDATION_BYPASS;
-            case FINANCIAL_RISK -> throw new IllegalArgumentException("资金损失风险检测已停用");
         };
     }
 }

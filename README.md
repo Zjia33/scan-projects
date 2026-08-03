@@ -2,29 +2,29 @@
 
 面向 Java/Spring 项目的 AI Agent 代码安全审计平台。用户导入 Git 仓库并选择提交后，系统以确定性代码解析提供真实事实，再由 Recon、Orchestrator、专业审计、Critic 和 Report Agents 自主规划、检索上下文、建立漏洞假设并生成可复核报告。
 
-项目只做授权范围内的静态代码审查，不运行仓库代码、不生成 PoC、不触发 Hook/Submodule/LFS/构建脚本，也不包含 CI/CD。系统支持对单个不可变提交执行全量扫描，以及比较两个不可变提交的增量安全审计。
+项目只做授权范围内的静态代码审查，不运行仓库代码、不生成 PoC、不触发 Hook/Submodule/LFS/构建脚本，也不包含 CI/CD。系统只支持比较两个不可变提交的增量安全审计。
 
 ## 当前能力
 
 - 只读导入 HTTPS Git 仓库、列出提交并安全物化不可变提交快照
 - 扫描项目基本信息维护、项目级扫描历史、归档/恢复和扫描派生数据清理
-- 单提交全量扫描，以及自动使用共同祖先作为比较基线的分支变更审计
+- Base/Target 分支变更审计；分支分叉时自动使用共同祖先作为实际比较基线
 - 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
 - 将增量语义变化分类为方法新增、修改、删除、签名变化、Guard 新增和 Guard 删除，纯删除行不再依赖 Target 新增行范围
-- Git Diff 行区间与方法语义差异共同确定变更块，并通过跨文件调用图双向扩展两层影响范围
+- Git Diff 行区间与方法语义差异共同确定变更块，由 Base/Target CodeGraph 索引计算跨文件影响范围
 - 增量任务只深入调查直接变更块和语义影响块，同时保留完整 Target 项目事实
 - 漏洞使用独立于行号的稳定指纹进行跨扫描匹配
-- Critic 将全量结果标记为基线；增量结果只区分本次变更新增和 Base/Target 持续存在
+- Critic 只输出本次变更新增或 Base/Target 持续存在的确认结果
 - JavaParser 方法级切块、接口、参数、注解和调用方法提取；模板与配置文件按行数和字符数切窗
-- JavaParser Symbol Solver 全局符号索引、跨文件方法解析和接口实现分派
+- JavaParser 只解析 CHANGED/IMPACTED 及直接上下文，验证 CodeGraph 调用现场并提取参数流、Guard 和框架语义
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
-- 面向七类漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
+- 面向五类新任务漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
 - Java、XML、HTML、JSP、Vue、JavaScript、TypeScript、YAML 等文本索引
 - Recon Agent：基于完整项目的模块、分层、入口、安全配置、数据访问和外部集成结构画像理解架构；不抽样发送普通业务源码
 - Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
 - `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
-- 只有 `INVESTIGATE` 单元创建 SQL 注入、权限、XSS、验证绕过或资金安全专业 Agent
-- SQL 注入、权限与越权、存储 XSS、验证绕过、资金安全专业 Agents
+- 只有 `INVESTIGATE` 单元创建 SQL 注入、权限、敏感信息泄露、XSS 或验证绕过专业 Agent
+- SQL 注入、权限与越权、未授权敏感信息泄露、存储 XSS、验证绕过专业 Agents
 - 受控多轮工具调用，返回真实代码块而不是只有文件名
 - Critic Agent：主动寻找全局权限、参数化查询、归属校验等反证
 - Report Agent：仅依据确认结果生成管理摘要和覆盖说明
@@ -37,11 +37,11 @@
 
 ```text
 安全物化 Git 提交快照
-  → 全量项目事实或增量 ChangeSet
+  → Base/Target ChangeSet
   → Base/Target 方法索引、稳定方法映射和六类语义差异
   → 确定性技术栈、项目结构画像和语义索引
-  → 增量模式扩展调用方、被调用方、接口与安全配置影响面
-  → 跨文件调用图和轻量安全数据流
+  → CodeGraph 扩展调用方、被调用方和安全配置影响面
+  → JavaParser 在作用域内验证调用现场并构建轻量安全数据流
   → Recon Agent 仅依据结构化全项目事实归纳架构和攻击面，不读取普通业务方法正文
   → 按入口、危险操作、安全配置、变更和语义流构建紧凑审计单元
   → Triage Orchestrator 三态轻量分流
@@ -111,12 +111,14 @@ POST {base-url}/chat/completions
 
 AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解析的 JSON 时，任务会进入 `FAILED`，不会退化为规则扫描后仍显示成功。
 
-## CodeGraph 可选增强
+## CodeGraph 全局拓扑
 
-DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 补充跨文件调用关系，
-不复制其索引器，也不把它作为新的漏洞判定引擎。CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
+DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供跨文件全局调用拓扑，
+JavaParser 不再构建第二套全项目调用图。CodeGraph 只决定影响范围和关系候选，不直接判定漏洞。
+CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
 可以从 `PATH` 调用，也可以配置 Windows 官方 ZIP 的解压根目录。无需为被审计项目单独执行
-`codegraph init`，DeepAudit 会在每个任务的不可变 Target 快照中自动建立临时索引。
+`codegraph init`。增量任务会在不可变 Comparison Base 和 Target 快照中分别建立临时索引：Target
+用于当前影响范围和作用域关系，Base 用于删除方法、签名变化和历史调用者。
 
 Windows 官方 ZIP 无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
 然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI
@@ -133,24 +135,21 @@ codegraph version
 `codegraph install`，也不需要配置 MCP。生产环境建议把 `codegraph version` 的完整输出写入
 `DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION`，避免升级后命令或 JSON 协议变化被静默接受。
 
-启用时先从 `SHADOW` 开始：
+生产配置启用 CodeGraph：
 
 ```text
-DEEPAUDIT_CODEGRAPH_MODE=SHADOW
+DEEPAUDIT_CODEGRAPH_ENABLED=true
 DEEPAUDIT_CODEGRAPH_EXECUTABLE=codegraph
 DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT=
 DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION=<codegraph version 的完整输出>
 ```
 
-- `OFF`：完全不启动 CodeGraph，也是默认值。
-- `SHADOW`：建立索引并记录与内置语义影响范围的交集、差异和映射失败，但不改变审计范围。
-- `AUGMENT`：将 CodeGraph 影响块与内置影响块取并集，并为 Agent 的调用上下文补充候选块。
+CodeGraph 是唯一的全局拓扑主来源，生产环境没有降级模式；Base/Target 索引或必要关系查询失败会使任务失败。`enabled=false` 仅用于使用确定性替身的自动化测试配置。
 
-建议先用若干真实项目观察 `SHADOW` 日志，确认符号映射质量后再切换到 `AUGMENT`。任何初始化、
-超时、非零退出、超量输出或 JSON 解析失败都会按任务降级到内置语义分析。CodeGraph 返回的关系只会
-标记为 `CODEGRAPH_CANDIDATE`，必须通过现有 `verify_relation` 门禁后才能作为漏洞证据；它不能直接
-产生 Finding，也不能减少原生分析选中的范围。CLI 通过参数数组启动而非 Shell，禁用遥测、提示 Hook
-和守护进程；索引只能写入任务 Target 快照内的单级相对目录，并在任务结束时随快照清理。
+CodeGraph 返回的直接关系先标记为候选。JavaParser 仅在调用方局部 AST 中找到唯一调用现场时，将其
+提升为 `CODEGRAPH_VERIFIED` 并补充实参到形参映射；歧义关系保持 `CODEGRAPH_CANDIDATE`，不能进入
+安全流或通过 `verify_relation` 证据门禁。CLI 通过参数数组启动而非 Shell，禁用遥测、提示 Hook 和
+守护进程；两个索引分别写入 Base/Target 任务快照内的单级相对目录，并在任务结束时随快照清理。
 
 ## Git 仓库安全边界
 
@@ -169,7 +168,7 @@ Bundle 不会物化到分析快照，也不会生成 Chunk、语义关系、增�
 
 生产环境只允许 `deepaudit.git.allowed-hosts` 中的 HTTPS 主机。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
 
-全量扫描选择一个 Target Commit。分支变更审计选择基准分支提交和目标分支提交，并同时保存所选 Base、Target 和 Merge Base 的完整 SHA；若两个分支已经分叉，系统自动以 Merge Base 作为实际比较基线，只分析目标分支自共同祖先以来引入的变化。系统解析 Target 的完整项目结构、配置和调用图，同时为实际比较基线和 Target 建立独立的方法快照索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的深度目标限制为直接变更块、两层调用影响块以及全局安全配置相关块，范围扩展不再按固定代码块数量截断。
+每次审计都必须选择基准分支提交和目标分支提交，并同时保存所选 Base、Target 和 Merge Base 的完整 SHA；若两个分支已经分叉，系统自动以 Merge Base 作为实际比较基线，只分析目标分支自共同祖先以来引入的变化。系统保留 Target 的完整项目结构和配置上下文，同时为实际比较基线和 Target 建立独立 CodeGraph 与方法快照索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的深度目标限制为直接变更块、CodeGraph 影响块以及全局安全配置相关块，范围扩展不按固定代码块数量截断。
 
 增量报告只对 Target 中仍可验证的漏洞分类：`NEW` 表示本次变更直接引入、防护削弱或调用影响导致的确认问题，`PERSISTING` 表示有明确证据证明漏洞在 Base 与 Target 中均存在。纯删除行通过 Base/Target 方法正文比较定位到 Target 方法；被删除方法会保存独立语义变化，并通过剩余调用者和同文件方法扩展影响范围。当前仍不单独生成 `FIXED` 漏洞项，因为 Target 中已不存在可通过 Critic 证据门禁的主代码块。
 
@@ -202,6 +201,10 @@ http://localhost:8080/
 - `V11__add_semantic_method_changes.sql`：持久化 Base/Target 方法新增、修改、删除、签名及 Guard 变化
 - `V12__remove_rag_storage.sql`：删除历史 Embedding 缓存和代码块向量文本
 - `V13__remove_pgvector_recall.sql`：删除历史 pgvector 列和 HNSW 索引
+- `V14__enforce_unique_finding_fingerprint.sql`：强制任务内漏洞指纹唯一
+- `V15__enforce_incremental_only_defaults.sql`：统一增量扫描范围和结果默认值
+- `V16__drop_legacy_scan_mode.sql`：删除已停用的扫描模式字段
+- `V17__remove_retired_audit_values.sql`：删除退役漏洞数据并约束当前枚举值
 
 `V7` 和 `V9` 是不可改写的历史迁移，新版本会继续保留文件用于已有数据库校验；当前运行时代码不再使用 RAG、Embedding 或向量召回。
 
@@ -236,7 +239,7 @@ http://localhost:8080/
 - `POST /api/projects/{projectId}/cleanup`：清理归档项目的扫描派生数据
 - `GET /api/projects/{projectId}/commits`：读取本地裸仓库中的提交记录
 - `POST /api/projects/{projectId}/refresh`：使用本次请求中的可选令牌刷新远端
-- `POST /api/projects/{projectId}/audits`：创建全量或增量审计任务
+- `POST /api/projects/{projectId}/audits`：创建 Base→Target 增量审计任务
 - `GET /api/tasks`：任务列表和 Agent 调用统计
 - `GET /api/tasks/{taskId}`：任务进度
 - `GET /api/tasks/{taskId}/agents`：Agent 运行记录
@@ -263,7 +266,7 @@ GitHub 私有仓库建议使用 fine-grained personal access token：`Resource o
 `Repository access` 选择目标仓库，并至少授予仓库级 `Contents: Read-only` 权限。令牌作为 HTTPS
 密码传入；服务端会去除复制时带入的首尾空白，但不会持久化、记录或回显令牌。
 
-创建全量任务时提交 `{"scanMode":"FULL","targetCommit":"<sha>"}`；创建增量任务时提交 `{"scanMode":"INCREMENTAL","baseCommit":"<sha>","targetCommit":"<sha>"}`。服务端会把修订解析并固化为完整提交 SHA。
+创建任务时提交 `{"baseCommit":"<sha>","targetCommit":"<sha>"}`。Base 和 Target 均为必填且不能相同，服务端会把修订解析并固化为完整提交 SHA。
 
 归档只会阻止仓库刷新和新建扫描，不会删除仓库或历史报告。数据清理必须先归档项目，且请求体必须包含
 `{"confirmation":"DELETE_SCAN_DATA"}`；清理会级联删除该项目的扫描任务、代码块、语义关系、

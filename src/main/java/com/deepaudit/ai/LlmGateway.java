@@ -155,13 +155,6 @@ public interface LlmGateway {
         public CriticRequest {
             locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
         }
-
-        public CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
-                             String evidence, String independentSemanticEvidence, ReconInsight recon,
-                             String changeType, String analysisScope, String baseCodeExcerpt) {
-            this(taskId, sourceAgent, proposal, evidence, independentSemanticEvidence, recon,
-                    changeType, analysisScope, baseCodeExcerpt, List.of());
-        }
     }
 
     // 封装 CriticDecision 使用的不可变结构化数据。
@@ -169,27 +162,6 @@ public interface LlmGateway {
                           FindingDeltaStatus deltaStatus, Long primaryChunkId,
                           Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
                           String rootCauseKind, String locationRole, String locationCandidateId) {
-        // 兼容不关心结构化定位语义的本地模型替身；生产模型必须返回根因和位置角色。
-        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
-                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
-                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine) {
-            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
-                    vulnerabilityStartLine, vulnerabilityEndLine, null, null, null);
-        }
-
-        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
-                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
-                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
-                              String rootCauseKind, String locationRole) {
-            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
-                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole, null);
-        }
-
-        // 创建 CriticDecision 实例并初始化所需依赖或状态。
-        public CriticDecision(boolean confirmed, Confidence confidence, String reason,
-                              FindingDeltaStatus deltaStatus) {
-            this(confirmed, confidence, reason, deltaStatus, null, null, null, null, null, null);
-        }
     }
 
     // 由后端从真实证据源码生成的可选位置；模型只能选择 candidateId，不能创造行号。

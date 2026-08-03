@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#101a2d">
     <title>DeepAudit · 智能代码审计</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101a2d'/%3E%3Cpath d='M18 16h14c11 0 18 6 18 16s-7 16-18 16H18V16zm10 9v14h5c5 0 8-2 8-7s-3-7-8-7h-5z' fill='%237de2d1'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260730-3">
+    <link rel="stylesheet" href="/styles.css?v=20260803-1">
 </head>
 <body>
 <div class="app-shell">
@@ -36,11 +36,11 @@
             </a>
         </nav>
 
-        <div class="sidebar-status">
-            <span class="status-light"></span>
-            <div><strong>分析节点在线</strong><small>只读访问 · AI 审计</small></div>
-        </div>
-        <p class="sidebar-version">DEEPAUDIT JAVA · DEV</p>
+        <!-- <div class="sidebar-status"> -->
+        <!--     <span class="status-light"></span> -->
+        <!--     <div><strong>分析节点在线</strong><small>只读访问 · AI 审计</small></div> -->
+        <!-- </div> -->
+        <!-- <p class="sidebar-version">DEEPAUDIT JAVA · DEV</p> -->
     </aside>
 
     <div class="app-main">
@@ -94,8 +94,8 @@
 
             <section class="page-view" data-page="new-audit" hidden aria-labelledby="new-audit-title">
                 <div class="page-heading">
-                    <div><span class="section-label">NEW INVESTIGATION</span><h2 id="new-audit-title">发起代码审计</h2><p>先连接 Git 仓库，再选择一次提交快照或 Base / Target 变更范围。</p></div>
-                    <div class="page-note"><b>只读安全边界</b><span>不会执行仓库代码、Hook、子模块或构建脚本</span></div>
+                    <div><span class="section-label">NEW INVESTIGATION</span><h2 id="new-audit-title">发起代码审计</h2><p>先连接 Git 仓库，再选择 Base / Target 变更范围。</p></div>
+                    <!-- <div class="page-note"><b>只读安全边界</b><span>不会执行仓库代码、Hook、子模块或构建脚本</span></div> -->
                 </div>
 
                 <div class="audit-setup-grid">
@@ -111,12 +111,11 @@
                     </form>
 
                     <form id="audit-form" class="surface form-card">
-                        <div class="form-card-head"><span class="step-number">02</span><div><h3>配置扫描范围</h3><p>全量审计 Target，或进行分支变更审计 Base → Target</p></div></div>
+                        <div class="form-card-head"><span class="step-number">02</span><div><h3>配置扫描范围</h3><p>选择 Base → Target，审计提交之间的安全变化及其影响范围</p></div></div>
                         <div class="form-grid">
-                            <label class="field"><span>已连接仓库 <b>必填</b></span><select id="repository-select" required><option value="">请选择仓库</option></select></label>
-                            <label class="field"><span>扫描模式</span><select id="scan-mode"><option value="FULL">全量扫描 · Target</option><option value="INCREMENTAL">增量扫描 · Base → Target</option></select></label>
-                            <label id="base-branch-group" class="field" hidden><span>基准分支 Base <b>必填</b></span><select id="base-branch"></select></label>
-                            <label id="base-commit-group" class="field" hidden><span>基准提交 <b>必填</b><small id="base-commit-hint">按时间从新到旧</small></span><select id="base-commit"></select></label>
+                            <label class="field wide"><span>已连接仓库 <b>必填</b></span><select id="repository-select" required><option value="">请选择仓库</option></select></label>
+                            <label id="base-branch-group" class="field"><span>基准分支 Base <b>必填</b></span><select id="base-branch" required></select></label>
+                            <label id="base-commit-group" class="field"><span>基准提交 <b>必填</b><small id="base-commit-hint">按时间从新到旧</small></span><select id="base-commit" required></select></label>
                             <label class="field"><span>目标分支 Target <b>必填</b></span><select id="target-branch" required></select></label>
                             <label class="field"><span>目标提交 <b>必填</b><small id="target-commit-hint">按时间从新到旧</small></span><select id="target-commit" required></select></label>
                         </div>

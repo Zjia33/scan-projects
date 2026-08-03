@@ -4,7 +4,6 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.ChunkChangeType;
 import com.deepaudit.domain.GitFileChange;
-import com.deepaudit.domain.ScanMode;
 import com.deepaudit.mapper.CodeChunkMapper;
 import com.deepaudit.source.AuditSourceFilter;
 import com.deepaudit.semantic.IncrementalSemanticDiffService;
@@ -70,15 +69,10 @@ public class ReconService {
     }
 
     // 扫描受支持源码，生成代码块和项目技术栈摘要。
-    @Transactional
-    public ReconSummary buildIndex(UUID taskId, Path root) throws IOException {
-        return buildIndex(taskId, root, root, ScanMode.FULL, List.of());
-    }
-
-    // 全量模式建立完整代码索引；增量模式同时保留 Base/Target 差异和完整目标上下文。
+    // 建立 Target 代码块，同时保留 Base/Target 差异和完整目标上下文。
     @Transactional
     public ReconSummary buildIndex(UUID taskId, Path root, Path baseRoot,
-                                   ScanMode scanMode, List<GitFileChange> changes) throws IOException {
+                                   List<GitFileChange> changes) throws IOException {
         // 重建前清空旧代码块，确保同一任务的索引可重复生成。
         chunkMapper.deleteByTaskId(taskId);
         List<CodeChunk> chunks = new ArrayList<>();
@@ -90,9 +84,9 @@ public class ReconService {
                     .filter(this::isSupportedTextFile)
                     .forEach(path -> indexFile(taskId, root, path, chunks, counters));
         }
-        applyIncrementalMetadata(chunks, scanMode, changes);
+        applyIncrementalMetadata(chunks, changes);
         // 增量模式进一步比较 Base/Target 方法快照，覆盖纯删除、签名和安全 Guard 变化。
-        if (scanMode == ScanMode.INCREMENTAL && incrementalSemanticDiffService != null) {
+        if (incrementalSemanticDiffService != null) {
             incrementalSemanticDiffService.analyze(taskId, baseRoot, root, chunks, changes);
         }
         for (int start = 0; start < chunks.size(); start += 500) {
@@ -127,16 +121,8 @@ public class ReconService {
     }
 
     // 执行 ReconService 中的 applyIncrementalMetadata 处理。
-    private void applyIncrementalMetadata(List<CodeChunk> chunks, ScanMode scanMode,
+    private void applyIncrementalMetadata(List<CodeChunk> chunks,
                                           List<GitFileChange> changes) {
-        if (scanMode == ScanMode.FULL) {
-            chunks.forEach(chunk -> {
-                chunk.setChangeType(ChunkChangeType.UNCHANGED);
-                chunk.setAnalysisScope(AnalysisScope.FULL);
-                chunk.setBaseContent("");
-            });
-            return;
-        }
         Map<String, GitFileChange> byPath = new LinkedHashMap<>();
         for (GitFileChange change : changes) {
             if (change.getNewPath() != null) byPath.put(normalizePath(change.getNewPath()), change);

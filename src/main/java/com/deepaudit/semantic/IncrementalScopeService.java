@@ -5,15 +5,12 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
-import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.mapper.GitFileChangeMapper;
-import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.source.AuditSourceFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayDeque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -26,13 +23,10 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class IncrementalScopeService {
-    private static final int CALL_GRAPH_DEPTH = 2;
-
-    private final SemanticCallEdgeMapper edgeMapper;
     private final GitFileChangeMapper changeMapper;
     private final SemanticMethodChangeMapper semanticChangeMapper;
 
-    // 以直接变更块为种子，沿调用图双向扩展两层，并补充同文件和全局配置影响目标。
+    // 只确定直接变化和确定性上下文；跨文件调用拓扑由 CodeGraph 负责。
     public ScopeResult determine(UUID taskId, List<CodeChunk> chunks) {
         Set<Long> changed = new LinkedHashSet<>();
         for (CodeChunk chunk : chunks) {
@@ -41,7 +35,6 @@ public class IncrementalScopeService {
             }
         }
         Set<Long> impacted = new LinkedHashSet<>(changed);
-        List<SemanticCallEdge> edges = edgeMapper.findByTaskId(taskId);
         List<SemanticMethodChange> semanticChanges = semanticChangeMapper.findByTaskId(taskId);
         // 语义差异提供比 Git 新增行更稳定的方法定位，尤其覆盖纯删除和签名变化。
         for (SemanticMethodChange change : semanticChanges) {
@@ -53,31 +46,15 @@ public class IncrementalScopeService {
                         .ifPresent(changed::add);
             }
         }
-        ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
-        changed.forEach(id -> queue.add(new NodeDepth(id, 0)));
-        while (!queue.isEmpty()) {
-            NodeDepth current = queue.removeFirst();
-            if (current.depth() >= CALL_GRAPH_DEPTH) continue;
-            for (SemanticCallEdge edge : edges) {
-                Long next = null;
-                if (current.chunkId().equals(edge.getCallerChunkId())) next = edge.getCalleeChunkId();
-                else if (current.chunkId().equals(edge.getCalleeChunkId())) next = edge.getCallerChunkId();
-                if (next != null && impacted.add(next)) queue.add(new NodeDepth(next, current.depth() + 1));
-            }
-        }
-
         Set<String> changedFiles = new LinkedHashSet<>();
         chunks.stream().filter(chunk -> changed.contains(chunk.getId()))
                 .forEach(chunk -> changedFiles.add(chunk.getFilePath()));
         chunks.stream().filter(chunk -> changedFiles.contains(chunk.getFilePath()))
                 .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
 
-        // 被删除方法没有 Target Chunk：优先补充仍在调用该方法的调用者，并补充其原文件剩余方法。
+        // 被删除方法没有 Target Chunk；这里只补充原文件剩余方法，历史调用者由 Base CodeGraph 查询。
         semanticChanges.stream().filter(change -> change.getChangeKind() == SemanticChangeKind.METHOD_DELETED)
                 .forEach(change -> {
-                    edges.stream().filter(edge -> change.getMethodName().equals(edge.getCalledName()))
-                            .map(SemanticCallEdge::getCallerChunkId).filter(java.util.Objects::nonNull)
-                            .forEach(impacted::add);
                     if (change.getTargetPath() != null) {
                         chunks.stream().filter(chunk -> change.getTargetPath().equals(chunk.getFilePath()))
                                 .map(CodeChunk::getId).filter(java.util.Objects::nonNull).forEach(impacted::add);
@@ -127,10 +104,6 @@ public class IncrementalScopeService {
                 || normalized.endsWith(".sql") || normalized.endsWith(".jsp")
                 || normalized.endsWith(".html") || normalized.endsWith(".js")
                 || normalized.endsWith(".ts") || normalized.endsWith(".vue");
-    }
-
-    // 封装 NodeDepth 使用的不可变结构化数据。
-    private record NodeDepth(Long chunkId, int depth) {
     }
 
     // 封装 ScopeResult 使用的不可变结构化数据。

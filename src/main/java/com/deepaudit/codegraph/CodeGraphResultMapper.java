@@ -17,11 +17,7 @@ import java.util.Set;
 public class CodeGraphResultMapper {
     // 执行 map 对应的数据库访问操作。
     public MappingResult map(List<CodeChunk> chunks, List<CodeGraphClient.CodeGraphLocation> locations) {
-        Map<String, List<CodeChunk>> byPath = new LinkedHashMap<>();
-        for (CodeChunk chunk : chunks) {
-            byPath.computeIfAbsent(normalizePath(chunk.getFilePath()), ignored -> new ArrayList<>()).add(chunk);
-        }
-        byPath.values().forEach(values -> values.sort(Comparator.comparingInt(CodeChunk::getStartLine)));
+        Map<String, List<CodeChunk>> byPath = index(chunks);
 
         Set<Long> ids = new LinkedHashSet<>();
         int unmapped = 0;
@@ -32,6 +28,22 @@ public class CodeGraphResultMapper {
             else ids.add(match.getId());
         }
         return new MappingResult(Set.copyOf(ids), unmapped);
+    }
+
+    // 将单个 CodeGraph 位置严格映射到唯一代码块；歧义位置不会被猜测。
+    public CodeChunk mapLocation(List<CodeChunk> chunks, CodeGraphClient.CodeGraphLocation location) {
+        if (location == null) return null;
+        Map<String, List<CodeChunk>> byPath = index(chunks);
+        return select(candidates(byPath, location.filePath()), location);
+    }
+
+    private Map<String, List<CodeChunk>> index(List<CodeChunk> chunks) {
+        Map<String, List<CodeChunk>> byPath = new LinkedHashMap<>();
+        for (CodeChunk chunk : chunks) {
+            byPath.computeIfAbsent(normalizePath(chunk.getFilePath()), ignored -> new ArrayList<>()).add(chunk);
+        }
+        byPath.values().forEach(values -> values.sort(Comparator.comparingInt(CodeChunk::getStartLine)));
+        return byPath;
     }
 
     // 执行 candidates 对应的数据库访问操作。

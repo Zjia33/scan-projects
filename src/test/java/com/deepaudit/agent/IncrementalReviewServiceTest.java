@@ -47,7 +47,7 @@ class IncrementalReviewServiceTest {
         assertThat(units.get(1).facts()).contains("IMPACTED_BY_CHANGE", "HAS_OUTPUT_OPERATION");
         assertThat(units).allSatisfy(unit -> {
             assertThat(unit.allowedTypes()).containsExactlyInAnyOrderElementsOf(
-                    VulnerabilityType.detectableValues());
+                java.util.Set.of(VulnerabilityType.values()));
             assertThat(unit.mandatoryTypes()).isEmpty();
         });
         assertThat(units.get(0).baseCodeExcerpt()).contains("cache.get");

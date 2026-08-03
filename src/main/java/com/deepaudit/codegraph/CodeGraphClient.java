@@ -7,13 +7,13 @@ import java.util.UUID;
 // 定义 CodeGraphClient 的协作接口和能力边界。
 public interface CodeGraphClient {
     // 执行 CodeGraphClient 中的 prepare 处理。
-    void prepare(UUID taskId, Path projectRoot);
+    void prepare(UUID taskId, CodeGraphSnapshot snapshot, Path projectRoot);
 
     // 执行 CodeGraphClient 中的 impact 处理。
-    List<CodeGraphLocation> impact(UUID taskId, String symbol, int depth);
+    List<CodeGraphLocation> impact(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int depth);
 
     // 执行 CodeGraphClient 中的 related 处理。
-    RelatedLocations related(UUID taskId, String symbol, int limit);
+    RelatedLocations related(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit);
 
     // 执行 CodeGraphClient 中的 release 处理。
     void release(UUID taskId);

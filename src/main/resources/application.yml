@@ -53,7 +53,7 @@ deepaudit:
     # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
-    # 控制全量审计单元或增量真实差异的单批最大数量，不限制项目总覆盖范围；增量请求另有字符预算。
+    # 控制增量真实差异的单批最大数量，不限制项目总覆盖范围；请求另有字符预算。
     triage-batch-size: 40
   semantic:
     enabled: true
@@ -61,8 +61,8 @@ deepaudit:
     max-paths-per-entry: 20
     max-states-per-entry: 1000
   codegraph:
-    # OFF 完全禁用；SHADOW 只比较影响范围；AUGMENT 扩展影响范围和 Agent 候选上下文。
-    mode: ${DEEPAUDIT_CODEGRAPH_MODE:SHADOW}
+    # CodeGraph 是生产环境唯一的全局调用拓扑与影响范围来源。
+    enabled: ${DEEPAUDIT_CODEGRAPH_ENABLED:true}
     executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
     # Windows 官方 ZIP 可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
     bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
@@ -70,8 +70,9 @@ deepaudit:
     timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:120}
     max-output-bytes: ${DEEPAUDIT_CODEGRAPH_MAX_OUTPUT_BYTES:8388608}
     impact-depth: ${DEEPAUDIT_CODEGRAPH_IMPACT_DEPTH:2}
+    relation-limit: ${DEEPAUDIT_CODEGRAPH_RELATION_LIMIT:100}
     agent-context-limit: ${DEEPAUDIT_CODEGRAPH_AGENT_CONTEXT_LIMIT:10}
-    # 索引写入任务临时 Target 快照，任务结束后随快照删除。
+    # Base/Target 索引分别写入任务临时快照，任务结束后随快照删除。
     index-directory: ${DEEPAUDIT_CODEGRAPH_INDEX_DIRECTORY:.codegraph-deepaudit}
 
 mybatis:

@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
+import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.domain.AnalysisScope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.eclipse.jgit.api.Git;
@@ -49,29 +51,33 @@ class AuditFlowIntegrationTest {
     @Autowired
     private SecurityFlowMapper securityFlowMapper;
 
+    @Autowired
+    private CodeChunkMapper codeChunkMapper;
+
     @Test
     void importsGitCommitScansAndReportsVulnerableProject() throws Exception {
         String console = mockMvc.perform(get("/index.html"))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "分支变更审计 Base → Target",
-                "扫描项目管理", "项目归档", "审计任务");
+        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "Base → Target",
+                "扫描项目管理", "项目归档", "审计任务")
+                .doesNotContain("全量扫描", "id=\"scan-mode\"");
 
-        Path repository = vulnerableProjectRepository();
+        IncrementalRepository repository = vulnerableProjectRepository();
         String importJson = mockMvc.perform(post("/api/projects/git")
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsBytes(java.util.Map.of(
-                                "name", "漏洞演示项目", "repositoryUrl", repository.toUri().toString()))))
+                                "name", "漏洞演示项目", "repositoryUrl", repository.path().toUri().toString()))))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         JsonNode imported = objectMapper.readTree(importJson);
         String projectId = imported.path("project").path("projectId").asText();
-        String targetCommit = imported.path("commits").path(0).path("sha").asText();
+        String targetCommit = repository.targetCommit();
 
         String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsBytes(java.util.Map.of(
-                                "scanMode", "FULL", "targetCommit", targetCommit))))
+                                "baseCommit", repository.baseCommit(), "targetCommit", targetCommit))))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         String taskId = objectMapper.readTree(auditJson).path("taskId").asText();
@@ -89,12 +95,10 @@ class AuditFlowIntegrationTest {
                 .map(JsonNode::asText).collect(Collectors.toSet());
         assertThat(types).contains("SQL_INJECTION", "AUTHORIZATION",
                 "UNAUTHORIZED_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
-        assertThat(types).doesNotContain("FINANCIAL_RISK", "HORIZONTAL_AUTHORIZATION",
-                "VERTICAL_AUTHORIZATION");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
         assertThat(findingsJson).contains("[漏洞位置]", ">>>");
-        assertThat(findingsJson).contains("\"deltaStatus\":\"BASELINE\"");
+        assertThat(findingsJson).contains("\"deltaStatus\":\"NEW\"");
 
         String report = mockMvc.perform(get("/api/tasks/{taskId}/report.html", taskId))
                 .andExpect(status().isOk())
@@ -127,7 +131,8 @@ class AuditFlowIntegrationTest {
         String history = mockMvc.perform(get("/api/projects/{projectId}/audits", projectId))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(history).contains(taskId, "\"scanMode\":\"FULL\"");
+        assertThat(history).contains(taskId, repository.baseCommit(), repository.targetCommit())
+                .doesNotContain("scanMode");
 
         mockMvc.perform(post("/api/projects/{projectId}/cleanup", projectId)
                         .contentType("application/json")
@@ -150,7 +155,7 @@ class AuditFlowIntegrationTest {
         mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsBytes(java.util.Map.of(
-                                "scanMode", "FULL", "targetCommit", targetCommit))))
+                                "baseCommit", repository.baseCommit(), "targetCommit", targetCommit))))
                 .andExpect(status().isBadRequest());
 
         String cleanup = mockMvc.perform(post("/api/projects/{projectId}/cleanup", projectId)
@@ -185,7 +190,7 @@ class AuditFlowIntegrationTest {
         String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsBytes(java.util.Map.of(
-                                "scanMode", "INCREMENTAL", "baseCommit", source.baseCommit(),
+                                "baseCommit", source.baseCommit(),
                                 "targetCommit", source.targetCommit()))))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
@@ -193,7 +198,7 @@ class AuditFlowIntegrationTest {
 
         JsonNode task = waitForCompletion(taskId);
         assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
-        assertThat(task.path("scanMode").asText()).isEqualTo("INCREMENTAL");
+        assertThat(task.has("scanMode")).isFalse();
         assertThat(task.path("changeSummary").asText()).contains("1 个文件发生变化");
 
         String changes = mockMvc.perform(get("/api/tasks/{taskId}/changes", taskId))
@@ -206,11 +211,37 @@ class AuditFlowIntegrationTest {
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(methodChanges).contains("\"changeKind\":\"METHOD_MODIFIED\"",
                 "SearchController.search", "repository.findByName");
+        assertThat(codeChunkMapper.findByTaskId(java.util.UUID.fromString(taskId)))
+                .anyMatch(chunk -> chunk.getAnalysisScope() == AnalysisScope.CHANGED);
 
         String findings = mockMvc.perform(get("/api/tasks/{taskId}/findings", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(findings).contains("SQL_INJECTION", "\"deltaStatus\":\"NEW\"");
+    }
+
+    @Test
+    void rejectsMissingBaseAndIdenticalCommitRange() throws Exception {
+        IncrementalRepository source = incrementalProjectRepository();
+        String importJson = mockMvc.perform(post("/api/projects/git")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "范围校验项目", "repositoryUrl", source.path().toUri().toString()))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        String projectId = objectMapper.readTree(importJson).path("project").path("projectId").asText();
+
+        mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "targetCommit", source.targetCommit()))))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "baseCommit", source.targetCommit(),
+                                "targetCommit", source.targetCommit()))))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -233,7 +264,7 @@ class AuditFlowIntegrationTest {
         String auditJson = mockMvc.perform(post("/api/projects/{projectId}/audits", projectId)
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsBytes(java.util.Map.of(
-                                "scanMode", "INCREMENTAL", "baseCommit", source.mainCommit(),
+                                "baseCommit", source.mainCommit(),
                                 "targetCommit", source.featureCommit()))))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
@@ -273,7 +304,7 @@ class AuditFlowIntegrationTest {
         return task;
     }
 
-    private Path vulnerableProjectRepository() throws Exception {
+    private IncrementalRepository vulnerableProjectRepository() throws Exception {
         String source = """
                 package demo;
                 import org.springframework.web.bind.annotation.*;
@@ -314,15 +345,21 @@ class AuditFlowIntegrationTest {
         Path template = repository.resolve("src/main/resources/templates/comment.html");
         Files.createDirectories(javaFile.getParent());
         Files.createDirectories(template.getParent());
-        Files.writeString(javaFile, source, StandardCharsets.UTF_8);
-        Files.writeString(template, "<div v-html=\"comment.content\"></div>", StandardCharsets.UTF_8);
         try (Git git = Git.init().setDirectory(repository.toFile()).call()) {
+            Files.writeString(javaFile, "package demo; class OrderController {}", StandardCharsets.UTF_8);
+            Files.writeString(template, "<div>safe</div>", StandardCharsets.UTF_8);
             git.add().addFilepattern(".").call();
-            git.commit().setMessage("initial vulnerable project")
+            String base = git.commit().setMessage("safe baseline")
                     .setAuthor("DeepAudit Test", "test@example.invalid")
-                    .setCommitter("DeepAudit Test", "test@example.invalid").call();
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            Files.writeString(javaFile, source, StandardCharsets.UTF_8);
+            Files.writeString(template, "<div v-html=\"comment.content\"></div>", StandardCharsets.UTF_8);
+            git.add().addFilepattern(".").call();
+            String target = git.commit().setMessage("introduce vulnerable project")
+                    .setAuthor("DeepAudit Test", "test@example.invalid")
+                    .setCommitter("DeepAudit Test", "test@example.invalid").call().getId().name();
+            return new IncrementalRepository(repository, base, target);
         }
-        return repository;
     }
 
     private IncrementalRepository incrementalProjectRepository() throws Exception {

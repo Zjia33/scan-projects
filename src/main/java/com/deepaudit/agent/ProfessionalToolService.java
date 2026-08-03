@@ -186,7 +186,7 @@ public class ProfessionalToolService {
                         || includeConfiguration && change.isConfigurationChange())
                 .limit(limit).toList();
         if (methodChanges.isEmpty() && fileChanges.isEmpty()) {
-            return ToolResult.empty("[CHANGE_CONTEXT] 当前目标没有方法级或文件级增量变更记录，可能是全量审计任务。");
+            return ToolResult.empty("[CHANGE_CONTEXT] 当前目标没有直接方法级或文件级变化，可能仅由影响范围纳入。");
         }
 
         Set<Long> evidence = new LinkedHashSet<>();

@@ -150,9 +150,8 @@ public final class FindingConsolidator {
 
     private static int deltaRank(FindingDeltaStatus value) {
         return switch (value) {
-            case NEW, REGRESSED, AFFECTED -> 3;
+            case NEW -> 3;
             case PERSISTING -> 2;
-            case BASELINE -> 1;
         };
     }
 

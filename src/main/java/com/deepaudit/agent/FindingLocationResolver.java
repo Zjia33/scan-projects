@@ -309,7 +309,6 @@ public final class FindingLocationResolver {
             case SQL_INJECTION -> RootCause.UNSAFE_QUERY;
             case STORED_XSS -> RootCause.UNSAFE_OUTPUT;
             case VALIDATION_BYPASS -> RootCause.MISSING_VALIDATION;
-            case FINANCIAL_RISK -> RootCause.UNSAFE_OPERATION;
         };
     }
 
@@ -323,7 +322,6 @@ public final class FindingLocationResolver {
             case SQL_INJECTION -> rootCause == RootCause.UNSAFE_QUERY;
             case STORED_XSS -> rootCause == RootCause.UNSAFE_OUTPUT;
             case VALIDATION_BYPASS -> rootCause == RootCause.MISSING_VALIDATION;
-            case FINANCIAL_RISK -> rootCause == RootCause.UNSAFE_OPERATION;
         };
     }
 
@@ -367,8 +365,6 @@ public final class FindingLocationResolver {
             case MISSING_VALIDATION -> Set.of(LocationRole.VALIDATION,
                     LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION);
             case UNSAFE_OUTPUT -> Set.of(LocationRole.DATA_OUTPUT, LocationRole.DANGEROUS_OPERATION);
-            case UNSAFE_OPERATION -> Set.of(LocationRole.BUSINESS_OPERATION,
-                    LocationRole.DANGEROUS_OPERATION, LocationRole.DATA_ACCESS);
         };
     }
 
@@ -515,8 +511,6 @@ public final class FindingLocationResolver {
                     "<%=", "append(", "html(");
             case VALIDATION_BYPASS -> List.of("validate", "isvalid", "if (", "if(", "return ", "save(",
                     "execute(");
-            case FINANCIAL_RISK -> List.of("price", "amount", "balance", "total", "transfer", "withdraw",
-                    "deposit", "purchase", "debit", "credit");
         };
     }
 
@@ -668,8 +662,7 @@ public final class FindingLocationResolver {
         UNSAFE_DATA_EXPOSURE,
         UNSAFE_QUERY,
         MISSING_VALIDATION,
-        UNSAFE_OUTPUT,
-        UNSAFE_OPERATION
+        UNSAFE_OUTPUT
     }
 
     private enum LocationRole {

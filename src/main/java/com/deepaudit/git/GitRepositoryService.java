@@ -152,17 +152,11 @@ public class GitRepositoryService {
 
     // 解析并确定 resolveComparison 对应的目标。
     public ResolvedComparison resolveComparison(Project project, String baseRevision,
-                                                String targetRevision, boolean incremental) throws IOException {
-        log.info("开始解析审计提交：projectId={}，mode={}，base={}，target={}",
-                project.getId(), incremental ? "INCREMENTAL" : "FULL",
-                incremental ? shortSha(baseRevision) : "-", shortSha(targetRevision));
+                                                String targetRevision) throws IOException {
+        log.info("开始解析增量审计提交：projectId={}，base={}，target={}",
+                project.getId(), shortSha(baseRevision), shortSha(targetRevision));
         try (Repository repository = open(project); RevWalk walk = new RevWalk(repository)) {
             RevCommit target = resolveCommit(repository, walk, targetRevision);
-            if (!incremental) {
-                log.info("全量审计提交解析完成：projectId={}，target={}",
-                        project.getId(), shortSha(target.getId().name()));
-                return new ResolvedComparison(null, target.getId().name(), null);
-            }
             RevCommit base = resolveCommit(repository, walk, baseRevision);
             if (base.equals(target)) throw new IllegalArgumentException("Base 和 Target 不能是同一个提交");
             boolean ancestor = walk.isMergedInto(base, target);

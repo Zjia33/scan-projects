@@ -11,23 +11,18 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "deepaudit.codegraph")
 public class CodeGraphProperties {
-    private CodeGraphMode mode = CodeGraphMode.OFF;
+    private boolean enabled = true;
     private String executable = "codegraph";
     private String bundleRoot = "";
     private String expectedVersion = "";
     private int timeoutSeconds = 120;
     private long maxOutputBytes = 8L * 1024L * 1024L;
     private int impactDepth = 2;
+    private int relationLimit = 100;
     private int agentContextLimit = 10;
     private String indexDirectory = ".codegraph-deepaudit";
 
-    // 执行 CodeGraphProperties 中的 enabled 处理。
     public boolean enabled() {
-        return mode != CodeGraphMode.OFF;
-    }
-
-    // 执行 CodeGraphProperties 中的 augmentsResults 处理。
-    public boolean augmentsResults() {
-        return mode == CodeGraphMode.AUGMENT;
+        return enabled;
     }
 }
