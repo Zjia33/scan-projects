@@ -122,7 +122,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "resolve_data_access";
                     case AUTHORIZATION, UNAUTHORIZED_DISCLOSURE -> "inspect_security_policy";
-                    default -> "call_context";
+                    default -> "explore_call_graph";
                 };
             }
 

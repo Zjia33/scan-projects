@@ -42,12 +42,12 @@ public class AgentRuntime {
         CodeChunk target = byId.get(task.chunkId());
         if (target == null) return Optional.empty();
         AgentRun run = traceService.start(taskId, task.agentType(), target.getId(), target.getSymbolName());
-        List<LlmGateway.Observation> observations = new ArrayList<>();
+        List<RuntimeObservation> observations = new ArrayList<>();
         Set<Long> allowedEvidence = new LinkedHashSet<>();
         Set<Long> candidateEvidence = new LinkedHashSet<>();
         allowedEvidence.add(target.getId());
         SemanticEvidenceService.EvidenceResult semanticEvidence = semanticEvidenceService.query(
-                taskId, target.getId(), "trace_data_flow", 10, task.vulnerabilityType());
+                taskId, target.getId(), 10, task.vulnerabilityType());
         allowedEvidence.addAll(semanticEvidence.evidenceChunkIds());
         try {
             int maxIterations = Math.max(1, properties.getMaxIterationsPerAgent());
@@ -57,7 +57,8 @@ public class AgentRuntime {
                 run.setModelCallCount(run.getModelCallCount() + 1);
                 LlmGateway.AgentTurn turn = new LlmGateway.AgentTurn(taskId, task.agentType(),
                         task.vulnerabilityType(), AgentPromptSupport.target(target, Set.of(task.vulnerabilityType())),
-                        task.ruleHint(), semanticEvidence.text(), recon, List.copyOf(observations), iteration);
+                        task.ruleHint(), semanticEvidence.text(), recon,
+                        promptObservations(observations), iteration);
                 String observationContext = observations.isEmpty()
                         ? "结合 Recon 技术栈和语义调用链进行安全判断"
                         : "结合 Recon 技术栈、语义调用链和 " + observations.size()
@@ -75,14 +76,21 @@ public class AgentRuntime {
                     run.setToolCallCount(run.getToolCallCount() + 1);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.TOOL_CALL,
                             decision.tool() + "：" + safe(decision.summary()));
-                    AuditToolService.ToolResult result = toolService.execute(decision.tool(), decision.arguments(),
-                            target, chunks, task.vulnerabilityType());
+                    ToolResult result = toolService.execute(decision.tool(), decision.arguments(),
+                            target, chunks, task.vulnerabilityType(),
+                            new ToolSessionContext(target.getId(), allowedEvidence, candidateEvidence));
                     allowedEvidence.addAll(result.evidenceChunkIds());
                     candidateEvidence.addAll(result.candidateChunkIds());
                     candidateEvidence.removeAll(result.evidenceChunkIds());
-                    observations.add(new LlmGateway.Observation(decision.tool(), decision.arguments(), result.text()));
+                    int remaining = Math.max(0,
+                            properties.getMaxToolCallsPerAgent() - run.getToolCallCount());
+                    String observationText = result.observationText()
+                            + "\n[TOOL_BUDGET remaining=" + remaining + "]";
+                    observations.add(new RuntimeObservation(decision.tool(), decision.arguments(),
+                            observationText, result.status(), result.evidenceChunkIds(),
+                            result.candidateChunkIds()));
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.OBSERVATION,
-                            result.text());
+                            observationText);
                     continue;
                 }
                 if ("FINDING".equals(action)) {
@@ -91,8 +99,9 @@ public class AgentRuntime {
                             decision.finding(), task, allowedEvidence, byId);
                     if (proposal == null) {
                         String feedback = invalidEvidenceFeedback(decision.finding(), allowedEvidence, candidateEvidence);
-                        observations.add(new LlmGateway.Observation("evidence_validator",
-                                Map.of("operation", "验证漏洞证据引用"), feedback));
+                        observations.add(new RuntimeObservation("evidence_validator",
+                                Map.of("operation", "验证漏洞证据引用"), feedback,
+                                ToolResult.Status.DENIED, Set.of(), Set.of()));
                         traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.OBSERVATION, feedback);
                         traceService.update(run);
                         continue;
@@ -188,8 +197,48 @@ public class AgentRuntime {
         return FindingLocationResolver.formatEvidence(proposal, chunks, callSites);
     }
 
+    private List<LlmGateway.Observation> promptObservations(List<RuntimeObservation> observations) {
+        int detailedCount = Math.max(1, properties.getMaxDetailedObservations());
+        int maxChars = Math.max(500, properties.getMaxObservationChars());
+        int detailedFrom = Math.max(0, observations.size() - detailedCount);
+        List<LlmGateway.Observation> result = new ArrayList<>();
+        for (int index = 0; index < observations.size(); index++) {
+            RuntimeObservation observation = observations.get(index);
+            String text = index >= detailedFrom
+                    ? truncate(observation.result(), maxChars)
+                    : compactObservation(observation);
+            result.add(new LlmGateway.Observation(
+                    observation.tool(), observation.arguments(), text));
+        }
+        return List.copyOf(result);
+    }
+
+    private String compactObservation(RuntimeObservation observation) {
+        String firstLine = observation.result().lines().findFirst().orElse("");
+        return "[COMPACT_OBSERVATION status=" + observation.status()
+                + " evidenceChunkIds=" + observation.evidenceChunkIds()
+                + " candidateChunkIds=" + observation.candidateChunkIds() + "] "
+                + truncate(firstLine, 300);
+    }
+
+    private String truncate(String value, int maxChars) {
+        if (value == null) return "";
+        return value.substring(0, Math.min(value.length(), maxChars));
+    }
+
     // 执行 AgentRuntime 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), 2_000));
+    }
+
+    private record RuntimeObservation(String tool, Map<String, Object> arguments, String result,
+                                      ToolResult.Status status,
+                                      Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {
+        private RuntimeObservation {
+            arguments = arguments == null ? Map.of() : Map.copyOf(arguments);
+            result = result == null ? "" : result;
+            evidenceChunkIds = evidenceChunkIds == null ? Set.of() : Set.copyOf(evidenceChunkIds);
+            candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
+        }
     }
 }

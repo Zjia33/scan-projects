@@ -1358,13 +1358,10 @@ function summarizeToolCall(message) {
     const separator = raw.search(/[：:]/);
     const tool = (separator >= 0 ? raw.slice(0, separator) : raw).trim().toLowerCase();
     const summaries = {
-        get_chunk: '读取目标代码块，核对实现细节',
+        read_source: '读取目标或候选源码，核对实现细节',
         verify_relation: '验证候选代码与当前审计目标的确定性关系',
-        call_context: '查询当前审计目标的直接调用上下文',
-        get_call_chain: '追踪当前审计目标的调用链',
-        trace_data_flow: '追踪输入到敏感操作的数据流',
-        find_security_guards: '查找调用路径上的认证、授权与校验保护',
         search_symbols: '按符号、注解、路径或文本查找相关代码',
+        search_code: '按字面量搜索相关源码',
         explore_call_graph: '按方向和深度探索调用路径',
         get_change_context: '读取当前目标的 Base/Target 变更上下文',
         resolve_data_access: '解析关联的数据访问、SQL 与参数绑定',

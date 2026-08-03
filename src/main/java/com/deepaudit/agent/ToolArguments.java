@@ -1,8 +1,10 @@
 package com.deepaudit.agent;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 // 封装 ToolArguments 相关的数据与处理逻辑。
 final class ToolArguments {
@@ -61,6 +63,18 @@ final class ToolArguments {
     boolean bool(String name, boolean defaultValue) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
         return value == null ? defaultValue : Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    boolean has(String name) {
+        return values.containsKey(name.toLowerCase(Locale.ROOT));
+    }
+
+    Set<String> unknownKeys(Set<String> allowed) {
+        Set<String> normalizedAllowed = new LinkedHashSet<>();
+        allowed.forEach(value -> normalizedAllowed.add(value.toLowerCase(Locale.ROOT)));
+        return values.keySet().stream()
+                .filter(key -> !normalizedAllowed.contains(key))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
     }
 
 }

@@ -50,7 +50,7 @@ class ProfessionalToolServiceTest {
         CodeChunk mapper = chunk(2L, "demo/OrderMapper.xml", "OrderMapper#selectById", null,
                 "SELECT * FROM orders WHERE id = #{id}");
 
-        ProfessionalToolService.Result result = service.searchSymbols(taskId, current, List.of(current, mapper),
+        ToolResult result = service.searchSymbols(taskId, current, List.of(current, mapper),
                 ToolArguments.of(Map.of("symbol", "selectById", "kind", "MYBATIS")), 5);
 
         assertThat(result.candidateChunkIds()).containsExactly(2L);
@@ -67,7 +67,7 @@ class ProfessionalToolServiceTest {
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(
                 edge(1L, 2L, 8, "id -> id"), edge(2L, 3L, 15, "id -> id")));
 
-        ProfessionalToolService.Result result = service.exploreCallGraph(taskId, controller,
+        ToolResult result = service.exploreCallGraph(taskId, controller,
                 List.of(controller, serviceChunk, mapper),
                 ToolArguments.of(Map.of("direction", "CALLEES", "depth", 3, "targetChunkId", 3)), 5);
 
@@ -88,7 +88,7 @@ class ProfessionalToolServiceTest {
         when(methodChangeMapper.findByTaskId(taskId)).thenReturn(List.of(change));
         when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of(configChange));
 
-        ProfessionalToolService.Result result = service.getChangeContext(taskId, current,
+        ToolResult result = service.getChangeContext(taskId, current,
                 List.of(current, config), ToolArguments.of(Map.of("includeConfiguration", true)), 5);
 
         assertThat(result.evidenceChunkIds()).contains(1L);
@@ -103,7 +103,7 @@ class ProfessionalToolServiceTest {
                 "SELECT * FROM users WHERE name = ${name} AND tenant_id = #{tenantId}");
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(edge(1L, 2L, 7, "input -> name")));
 
-        ProfessionalToolService.Result result = service.resolveDataAccess(taskId, current,
+        ToolResult result = service.resolveDataAccess(taskId, current,
                 List.of(current, mapper), ToolArguments.of(Map.of("depth", 2)), 5);
 
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 2L);
@@ -119,7 +119,7 @@ class ProfessionalToolServiceTest {
         CodeChunk unrelated = chunk(3L, "demo/AdminSecurity.java", "AdminSecurity#chain", null,
                 "http.authorizeHttpRequests(a -> a.requestMatchers(\"/admin/**\").hasRole(\"ADMIN\"));");
 
-        ProfessionalToolService.Result result = service.inspectSecurityPolicy(taskId, current,
+        ToolResult result = service.inspectSecurityPolicy(taskId, current,
                 List.of(current, matched, unrelated), ToolArguments.of(Map.of()), 5);
 
         assertThat(result.evidenceChunkIds()).contains(1L, 2L);
@@ -136,12 +136,61 @@ class ProfessionalToolServiceTest {
                 Confidence.HIGH, 1, 0);
         when(flowMapper.findByTaskAndChunk(taskId, 1L)).thenReturn(List.of(flow));
 
-        ProfessionalToolService.Result result = service.traceValue(taskId, current, List.of(current),
+        ToolResult result = service.traceValue(taskId, current, List.of(current),
                 ToolArguments.of(Map.of("variable", "input", "sink", "Statement.execute")),
                 5, VulnerabilityType.SQL_INJECTION);
 
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 2L);
         assertThat(result.text()).contains("VALUE_TRACE", "HTTP parameter input", "Statement.execute(sql)");
+    }
+
+    @Test
+    void searchesCodeWithLineSnippetsAndCursorPagination() {
+        CodeChunk current = chunk(1L, "src/main/java/demo/Controller.java",
+                "Controller#entry", "/orders", "return service.load(id);");
+        CodeChunk first = chunk(2L, "src/main/java/demo/SecurityConfig.java",
+                "SecurityConfig#api", null, """
+                http.authorizeHttpRequests(auth -> auth
+                    .requestMatchers("/public/**").permitAll()
+                    .anyRequest().authenticated());
+                """);
+        CodeChunk second = chunk(3L, "src/main/java/demo/AdminSecurity.java",
+                "AdminSecurity#api", null, """
+                http.authorizeHttpRequests(auth -> auth
+                    .requestMatchers("/health").permitAll()
+                    .anyRequest().hasRole("ADMIN"));
+                """);
+
+        ToolResult pageOne = service.searchCode(taskId, current,
+                List.of(current, first, second), ToolArguments.of(Map.of(
+                        "query", "permitAll", "scope", "PROJECT", "contextLines", 1)), 1);
+        ToolResult pageTwo = service.searchCode(taskId, current,
+                List.of(current, first, second), ToolArguments.of(Map.of(
+                        "query", "permitAll", "scope", "PROJECT", "contextLines", 1,
+                        "cursor", pageOne.nextCursor())), 1);
+
+        assertThat(pageOne.status()).isEqualTo(ToolResult.Status.OK);
+        assertThat(pageOne.truncated()).isTrue();
+        assertThat(pageOne.nextCursor()).isEqualTo("1");
+        assertThat(pageOne.candidateChunkIds()).hasSize(1);
+        assertThat(pageOne.text()).contains("CODE_SEARCH", ">>>", "permitAll");
+        assertThat(pageTwo.truncated()).isFalse();
+        assertThat(pageTwo.nextCursor()).isNull();
+        assertThat(pageTwo.candidateChunkIds()).hasSize(1)
+                .doesNotContainAnyElementsOf(pageOne.candidateChunkIds());
+    }
+
+    @Test
+    void treatsRegexSyntaxAsLiteralText() {
+        CodeChunk current = chunk(1L, "src/main/java/demo/Controller.java",
+                "Controller#entry", "/orders", "String marker = \"(a+)+\";");
+
+        ToolResult result = service.searchCode(taskId, current,
+                List.of(current), ToolArguments.of(Map.of(
+                        "query", "(a+)+", "scope", "PROJECT")), 5);
+
+        assertThat(result.status()).isEqualTo(ToolResult.Status.OK);
+        assertThat(result.text()).contains(">>>", "(a+)+");
     }
 
     private SemanticCallEdge edge(long caller, long callee, int line, String mapping) {

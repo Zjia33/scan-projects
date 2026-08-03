@@ -4,11 +4,9 @@ import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.semantic.SemanticEvidenceService;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -24,7 +22,6 @@ public class AuditToolService {
     private final ProfessionalToolService professionalToolService;
 
     // 创建 AuditToolService 实例并初始化所需依赖或状态。
-    @Autowired
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
                             CodeGraphIntegrationService codeGraphIntegrationService,
                             ProfessionalToolService professionalToolService) {
@@ -33,67 +30,72 @@ public class AuditToolService {
         this.professionalToolService = professionalToolService;
     }
 
-    // 创建 AuditToolService 实例并初始化所需依赖或状态。
-    AuditToolService(SemanticEvidenceService semanticEvidenceService) {
-        this(semanticEvidenceService, null, null);
-    }
-
-    // 创建 AuditToolService 实例并初始化所需依赖或状态。
-    AuditToolService(SemanticEvidenceService semanticEvidenceService,
-                     CodeGraphIntegrationService codeGraphIntegrationService) {
-        this(semanticEvidenceService, codeGraphIntegrationService, null);
-    }
-
-    // 在只读白名单内分发 Agent 工具，并统一限制每次返回的结果数量。
+    // 使用当前 Agent 工具会话中的证据状态执行只读工具。
     public ToolResult execute(String tool, Map<String, Object> rawArguments,
                               CodeChunk current, List<CodeChunk> chunks,
-                              VulnerabilityType vulnerabilityType) {
+                              VulnerabilityType vulnerabilityType, ToolSessionContext session) {
         ToolArguments arguments = ToolArguments.of(rawArguments);
         int limit = arguments.integer("limit", 6, 1, 10);
-        String normalizedTool = tool == null ? "call_context" : tool.toLowerCase(Locale.ROOT);
-        return switch (normalizedTool) {
-            case "get_chunk" -> getChunk(reference(arguments, "chunkId"), current, chunks);
-            case "verify_relation" -> verifyRelation(reference(arguments, "candidateChunkId"),
-                    current, chunks);
-            case "call_context" -> addCodeGraphCandidates(callContext(current, chunks, limit),
-                    current, chunks, limit);
-            case "get_call_chain" -> addCodeGraphCandidates(
-                    semantic(normalizedTool, current, limit, vulnerabilityType), current, chunks, limit);
-            case "trace_data_flow", "find_security_guards" ->
-                    semantic(normalizedTool, current, limit, vulnerabilityType);
-            case "search_symbols" -> advanced(professionalToolService == null ? null
-                    : professionalToolService.searchSymbols(current.getTaskId(), current, chunks, arguments, limit));
-            case "explore_call_graph" -> addCodeGraphCandidates(advanced(professionalToolService == null ? null
-                    : professionalToolService.exploreCallGraph(current.getTaskId(), current, chunks,
-                    arguments, limit)), current, chunks, limit);
-            case "get_change_context" -> advanced(professionalToolService == null ? null
-                    : professionalToolService.getChangeContext(current.getTaskId(), current, chunks,
-                    arguments, limit));
-            case "resolve_data_access" -> advanced(professionalToolService == null ? null
-                    : professionalToolService.resolveDataAccess(current.getTaskId(), current, chunks,
-                    arguments, limit));
-            case "inspect_security_policy" -> advanced(professionalToolService == null ? null
-                    : professionalToolService.inspectSecurityPolicy(current.getTaskId(), current, chunks,
-                    arguments, limit));
-            case "trace_value" -> advanced(professionalToolService == null ? null
-                    : professionalToolService.traceValue(current.getTaskId(), current, chunks,
-                    arguments, limit, vulnerabilityType));
-            default -> throw new IllegalArgumentException("不允许的 Agent 工具: " + tool);
-        };
-    }
-
-    // 执行 AuditToolService 中的 advanced 处理。
-    private ToolResult advanced(ProfessionalToolService.Result result) {
-        if (result == null) {
-            return new ToolResult("[TOOL_UNAVAILABLE] 当前运行环境未装配高级专业工具。", Set.of(), Set.of());
+        if (tool == null || tool.isBlank()) {
+            return ToolResult.invalid("TOOL 动作必须提供明确的工具名称。");
         }
-        return new ToolResult(result.text(), result.evidenceChunkIds(), result.candidateChunkIds());
+        String normalizedTool = tool.toLowerCase(Locale.ROOT);
+        AgentToolCatalog.ToolSpec spec = AgentToolCatalog.find(normalizedTool);
+        if (spec == null) {
+            return ToolResult.invalid("不允许的 Agent 工具: " + tool);
+        }
+        Set<String> unknownArguments = arguments.unknownKeys(spec.allowedArguments());
+        if (!unknownArguments.isEmpty()) {
+            return ToolResult.invalid(normalizedTool + " 包含未知参数: " + unknownArguments);
+        }
+        AnchorResolution anchorResolution = resolveAnchor(arguments, current, chunks, session);
+        if (anchorResolution.error() != null) return anchorResolution.error();
+        CodeChunk anchor = anchorResolution.chunk();
+        return switch (normalizedTool) {
+            case AgentToolCatalog.READ_SOURCE -> readSource(arguments, chunks, session);
+            case AgentToolCatalog.VERIFY_RELATION -> verifyRelation(reference(arguments, "candidateChunkId"),
+                    anchor, chunks, session);
+            case AgentToolCatalog.SEARCH_SYMBOLS -> professionalToolService.searchSymbols(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit);
+            case AgentToolCatalog.SEARCH_CODE -> professionalToolService.searchCode(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit);
+            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> addCodeGraphCandidates(
+                    professionalToolService.exploreCallGraph(anchor.getTaskId(), anchor, chunks,
+                            arguments, limit), anchor, chunks, limit);
+            case AgentToolCatalog.GET_CHANGE_CONTEXT -> professionalToolService.getChangeContext(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit);
+            case AgentToolCatalog.RESOLVE_DATA_ACCESS -> professionalToolService.resolveDataAccess(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit);
+            case AgentToolCatalog.INSPECT_SECURITY_POLICY -> professionalToolService.inspectSecurityPolicy(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit);
+            case AgentToolCatalog.TRACE_VALUE -> professionalToolService.traceValue(
+                    anchor.getTaskId(), anchor, chunks, arguments, limit, vulnerabilityType);
+            default -> ToolResult.invalid("不允许的 Agent 工具: " + tool);
+        };
     }
 
     // 执行 AuditToolService 中的 reference 处理。
     private String reference(ToolArguments arguments, String name) {
         Long value = arguments.longValue(name);
         return value == null ? null : String.valueOf(value);
+    }
+
+    private AnchorResolution resolveAnchor(ToolArguments arguments, CodeChunk current,
+                                           List<CodeChunk> chunks, ToolSessionContext session) {
+        Long requested = arguments.longValue("anchorChunkId");
+        if (requested == null) return new AnchorResolution(current, null);
+        if (!session.allowedEvidenceChunkIds().contains(requested)) {
+            return new AnchorResolution(null, ToolResult.forbidden(
+                    "anchorChunkId=" + requested + " 尚未成为已验证证据；"
+                            + "请先调用 verify_relation，候选代码块不能直接作为新的探索锚点。"));
+        }
+        CodeChunk anchor = chunks.stream().filter(chunk -> requested.equals(chunk.getId()))
+                .findFirst().orElse(null);
+        if (anchor == null) {
+            return new AnchorResolution(null, ToolResult.notFound(
+                    "当前任务不存在 anchorChunkId=" + requested));
+        }
+        return new AnchorResolution(anchor, null);
     }
 
     // CodeGraph 关系只作为候选上下文返回，不能绕过 verify_relation 进入允许证据集合。
@@ -107,107 +109,130 @@ public class AuditToolService {
         candidates.addAll(context.candidateChunkIds());
         candidates.removeAll(base.evidenceChunkIds());
         String text = base.text() + "\n\n" + context.text();
-        return new ToolResult(text, base.evidenceChunkIds(), candidates);
+        return new ToolResult(base.status(), base.code(), text, base.evidenceChunkIds(), candidates,
+                base.truncated(), base.nextCursor());
     }
 
-    // 查询已持久化的确定性语义路径并标记其中可直接引用的证据块。
-    private ToolResult semantic(String tool, CodeChunk current, int limit, VulnerabilityType vulnerabilityType) {
-        SemanticEvidenceService.EvidenceResult result = semanticEvidenceService.query(
-                current.getTaskId(), current.getId(), tool, limit, vulnerabilityType);
-        return new ToolResult("[SEMANTIC_EVIDENCE]\n" + result.text(), result.evidenceChunkIds());
+    private boolean hasUniqueDirectCallRelation(CodeChunk current, CodeChunk candidate,
+                                                List<CodeChunk> chunks, Set<String> currentCalls,
+                                                String currentMethod) {
+        String candidateMethod = methodName(candidate.getSymbolName());
+        boolean outgoing = currentCalls.contains(candidateMethod)
+                && uniqueMethod(chunks, candidateMethod, candidate.getId());
+        Set<String> candidateCalls = splitSymbols(candidate.getCalledSymbols());
+        boolean incoming = candidateCalls.contains(currentMethod)
+                && uniqueMethod(chunks, currentMethod, current.getId());
+        return outgoing || incoming;
     }
 
-    // 从同文件和精确调用符号中提取当前目标的直接上下文。
-    private ToolResult callContext(CodeChunk current, List<CodeChunk> chunks, int limit) {
-        Set<String> called = splitSymbols(current.getCalledSymbols());
-        String currentMethod = methodName(current.getSymbolName());
-        List<CodeChunk> results = chunks.stream().filter(chunk -> !chunk.getId().equals(current.getId()))
-                .filter(chunk -> current.getFilePath().equals(chunk.getFilePath())
-                        || called.contains(methodName(chunk.getSymbolName()))
-                        || splitSymbols(chunk.getCalledSymbols()).contains(currentMethod))
-                .sorted(Comparator.comparing((CodeChunk chunk) -> !hasDirectCallRelation(
-                                chunk, called, currentMethod))
-                        .thenComparing(chunk -> !current.getFilePath().equals(chunk.getFilePath()))
-                        .thenComparing(CodeChunk::getStartLine))
-                .limit(limit).toList();
-        Set<Long> evidence = results.stream().filter(chunk -> hasDirectCallRelation(chunk, called, currentMethod))
-                .map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
-        Set<Long> candidates = results.stream().map(CodeChunk::getId).filter(id -> !evidence.contains(id))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        String text = results.stream().map(chunk -> {
-            boolean verified = hasDirectCallRelation(chunk, called, currentMethod);
-            return (verified ? "[VERIFIED_EVIDENCE] " : "[UNVERIFIED_CANDIDATE] ")
-                    + format(chunk, verified ? "直接调用符号关系" : "仅同文件上下文");
-        }).collect(Collectors.joining("\n\n"));
-        return new ToolResult(text, evidence, candidates);
+    private boolean uniqueMethod(List<CodeChunk> chunks, String method, Long expectedId) {
+        if (method == null || method.isBlank()) return false;
+        List<Long> matches = chunks.stream()
+                .filter(chunk -> method.equals(methodName(chunk.getSymbolName())))
+                .map(CodeChunk::getId).distinct().limit(2).toList();
+        return matches.size() == 1 && matches.get(0).equals(expectedId);
     }
 
-    // 判断是否满足 hasDirectCallRelation 对应的条件。
-    private boolean hasDirectCallRelation(CodeChunk chunk, Set<String> called, String currentMethod) {
-        return called.contains(methodName(chunk.getSymbolName()))
-                || splitSymbols(chunk.getCalledSymbols()).contains(currentMethod);
-    }
-
-    // 按 ID 读取源码块，但只有当前目标可立即进入允许证据集合。
-    private ToolResult getChunk(String chunkReference, CodeChunk current, List<CodeChunk> chunks) {
-        Long id = current.getId();
-        try {
-            if (chunkReference != null && !chunkReference.isBlank()) {
-                id = Long.parseLong(chunkReference.replaceAll("[^0-9]", ""));
-            }
-        } catch (Exception ignored) {
-            // 无法解析时读取当前块。
+    // 读取完整代码块或按行精读；候选代码仍需 verify_relation 才能成为证据。
+    private ToolResult readSource(ToolArguments arguments, List<CodeChunk> chunks,
+                                  ToolSessionContext session) {
+        Long id = arguments.longValue("chunkId");
+        if (id == null) return ToolResult.invalid("read_source 需要有效的 chunkId。");
+        CodeChunk chunk = chunks.stream().filter(value -> id.equals(value.getId())).findFirst().orElse(null);
+        if (chunk == null) return ToolResult.notFound("当前任务不存在 CHUNK " + id);
+        if (!session.canRead(id)) {
+            return ToolResult.forbidden("CHUNK " + id + " 尚未通过搜索或语义工具进入当前会话候选集合。");
         }
-        Long selectedId = id;
-        CodeChunk result = chunks.stream().filter(chunk -> selectedId.equals(chunk.getId())).findFirst().orElse(current);
-        if (result.getId().equals(current.getId())) {
-            return new ToolResult(format(result, "当前审计目标"), Set.of(result.getId()));
+        String[] contentLines = chunk.getContent() == null ? new String[0] : chunk.getContent().split("\\R", -1);
+        if (contentLines.length == 0) return ToolResult.empty("CHUNK " + id + " 没有可读取的源码。");
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        int chunkEnd = chunkStart + contentLines.length - 1;
+        boolean ranged = arguments.has("startLine") || arguments.has("endLine");
+        int requestedStart = arguments.integer("startLine", chunkStart, chunkStart, chunkEnd);
+        int requestedEnd = arguments.integer("endLine", ranged ? requestedStart : chunkEnd,
+                chunkStart, chunkEnd);
+        if (requestedEnd < requestedStart) {
+            return ToolResult.invalid("endLine 不能小于 startLine。");
         }
-        return new ToolResult("[UNVERIFIED_CANDIDATE] 读取候选源码不等于证明关系。\n"
-                + format(result, "按ID读取候选"), Set.of(), Set.of(result.getId()));
+        int contextLines = arguments.integer("contextLines", 2, 0, 10);
+        int first = Math.max(chunkStart, requestedStart - contextLines);
+        int last = Math.min(chunkEnd, requestedEnd + contextLines);
+        boolean truncated = last - first + 1 > 80;
+        if (truncated) last = first + 79;
+        StringBuilder body = new StringBuilder();
+        for (int line = first; line <= last; line++) {
+            boolean selected = line >= requestedStart && line <= requestedEnd;
+            body.append(selected ? ">>> " : "    ")
+                    .append(String.format(Locale.ROOT, "%5d | ", line))
+                    .append(contentLines[line - chunkStart]).append('\n');
+        }
+        String text = "[SOURCE] CHUNK_ID=" + id + " | " + chunk.getFilePath() + ":"
+                + first + "-" + last + " | " + chunk.getSymbolName()
+                + "\n<UNTRUSTED_CODE>\n" + body.toString().stripTrailing() + "\n</UNTRUSTED_CODE>";
+        Set<Long> evidence = session.allowedEvidenceChunkIds().contains(id) ? Set.of(id) : Set.of();
+        Set<Long> candidates = evidence.isEmpty() ? Set.of(id) : Set.of();
+        return new ToolResult(ToolResult.Status.OK, text, evidence, candidates, truncated, null);
     }
 
     // 通过语义图或确定性结构关系把候选提升为已验证证据。
-    private ToolResult verifyRelation(String candidateReference, CodeChunk current, List<CodeChunk> chunks) {
+    private ToolResult verifyRelation(String candidateReference, CodeChunk current,
+                                      List<CodeChunk> chunks, ToolSessionContext session) {
         Long candidateId = parseChunkId(candidateReference);
         if (candidateId == null) {
-            return new ToolResult("verify_relation 需要提供候选 CHUNK_ID", Set.of(), Set.of());
+            return ToolResult.invalid("verify_relation 需要提供候选 candidateChunkId。");
         }
         CodeChunk candidate = chunks.stream().filter(chunk -> candidateId.equals(chunk.getId())).findFirst().orElse(null);
         if (candidate == null) {
-            return new ToolResult("候选代码块不存在: " + candidateId, Set.of(), Set.of());
+            return ToolResult.notFound("候选代码块不存在: " + candidateId);
+        }
+        if (!session.canRead(candidateId)) {
+            return ToolResult.forbidden("CHUNK " + candidateId
+                    + " 尚未通过搜索、语义流或调用图进入当前会话，不能直接验证猜测的代码块 ID。");
         }
         SemanticEvidenceService.RelationVerification semantic = semanticEvidenceService.verifyRelation(
                 current.getTaskId(), current.getId(), candidateId);
-        String structuralReason = structuralRelation(current, candidate);
-        boolean verified = semantic.verified() || structuralReason != null;
-        String reason = semantic.verified() ? semantic.reason()
-                : structuralReason == null ? semantic.reason() : structuralReason;
-        if (!verified) {
-            return new ToolResult("[RELATION_REJECTED] " + reason + "。该候选不能作为漏洞证据。",
-                    Set.of(), Set.of(candidateId));
+        RelationAssessment structural = structuralRelation(current, candidate, chunks);
+        if (semantic != null && semantic.verified()) {
+            return new ToolResult("[VERIFIED_EVIDENCE][SEMANTIC_RELATION] " + semantic.reason() + "\n"
+                    + format(candidate, "语义关系验证通过"), Set.of(candidateId), Set.of());
         }
-        return new ToolResult("[VERIFIED_EVIDENCE] " + reason + "\n"
+        if (!structural.verified()) {
+            String semanticReason = semantic == null || semantic.reason() == null ? "" : semantic.reason() + "；";
+            return new ToolResult(ToolResult.Status.DENIED, "RELATION_REJECTED",
+                    "[RELATION_REJECTED][" + structural.code() + "] " + semanticReason
+                            + structural.reason() + "。该候选仍只能作为上下文，不能作为漏洞证据。",
+                    Set.of(), Set.of(candidateId), false, null);
+        }
+        return new ToolResult("[VERIFIED_EVIDENCE][" + structural.code() + "] "
+                + structural.reason() + "\n"
                 + format(candidate, "确定性关系验证通过"), Set.of(candidateId), Set.of());
     }
 
-    // 检查精确调用、同一路由或安全策略匹配等无需模型判断的关系。
-    private String structuralRelation(CodeChunk current, CodeChunk candidate) {
+    // 只有唯一方法调用或明确安全策略匹配可以提升证据；同路由、同名方法仅保留为候选。
+    private RelationAssessment structuralRelation(CodeChunk current, CodeChunk candidate,
+                                                  List<CodeChunk> chunks) {
         String currentMethod = methodName(current.getSymbolName());
-        String candidateMethod = methodName(candidate.getSymbolName());
         Set<String> currentCalls = splitSymbols(current.getCalledSymbols());
-        Set<String> candidateCalls = splitSymbols(candidate.getCalledSymbols());
-        if ((!candidateMethod.isBlank() && currentCalls.contains(candidateMethod))
-                || (!currentMethod.isBlank() && candidateCalls.contains(currentMethod))) {
-            return "代码块之间存在精确方法调用符号关系";
-        }
-        if (current.getEndpoint() != null && current.getEndpoint().equals(candidate.getEndpoint())) {
-            return "代码块属于同一个接口路由";
+        if (hasUniqueDirectCallRelation(current, candidate, chunks, currentCalls, currentMethod)) {
+            return new RelationAssessment(true, "CALL_EDGE_VERIFIED",
+                    "代码块之间存在唯一方法符号调用关系");
         }
         if (securityPolicyMatches(current.getEndpoint(), candidate.getContent())) {
-            return "候选安全配置能够匹配当前接口路径";
+            return new RelationAssessment(true, "POLICY_MATCH_VERIFIED",
+                    "候选安全配置能够匹配当前接口路径");
         }
-        return null;
+        if (current.getEndpoint() != null && current.getEndpoint().equals(candidate.getEndpoint())) {
+            return new RelationAssessment(false, "SAME_ROUTE_CONTEXT_ONLY",
+                    "代码块仅属于同一接口路由，尚未证明调用或数据流关系");
+        }
+        String candidateMethod = methodName(candidate.getSymbolName());
+        if (currentCalls.contains(candidateMethod)
+                || splitSymbols(candidate.getCalledSymbols()).contains(currentMethod)) {
+            return new RelationAssessment(false, "NAME_MATCH_ONLY",
+                    "存在方法名匹配，但项目中无法唯一解析到该代码块");
+        }
+        return new RelationAssessment(false, "NO_VERIFIED_RELATION",
+                "未找到可靠的调用、数据流或安全策略关系");
     }
 
     // 执行 AuditToolService 中的 securityPolicyMatches 处理。
@@ -260,16 +285,14 @@ public class AuditToolService {
 
     // 将源码包裹为不可信代码片段，避免其文本被当作 Agent 指令执行。
     private String format(CodeChunk chunk, String reason) {
-        String code = chunk.getContent().substring(0, Math.min(chunk.getContent().length(), 4_000));
+        String content = chunk.getContent() == null ? "" : chunk.getContent();
+        String code = content.substring(0, Math.min(content.length(), 4_000));
         return "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":" + chunk.getStartLine()
                 + " | " + chunk.getSymbolName() + " | reason=" + reason
                 + "\n<UNTRUSTED_CODE>\n" + code
-                + "\n</UNTRUSTED_CODE>";
-    }
-
-    // 执行 AuditToolService 中的 ids 处理。
-    private Set<Long> ids(List<CodeChunk> chunks) {
-        return chunks.stream().map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
+                + "\n</UNTRUSTED_CODE>"
+                + (content.length() > 4_000
+                ? "\n[CONTENT_TRUNCATED] 请使用 read_source 精读目标行。" : "");
     }
 
     // 执行 AuditToolService 中的 splitSymbols 处理。
@@ -286,18 +309,9 @@ public class AuditToolService {
         return hash < 0 ? symbol : symbol.substring(hash + 1);
     }
 
-    // 封装 ToolResult 使用的不可变结构化数据。
-    public record ToolResult(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {
-        // 创建 ToolResult 实例并初始化所需依赖或状态。
-        public ToolResult(String text, Set<Long> evidenceChunkIds) {
-            this(text, evidenceChunkIds, Set.of());
-        }
+    private record AnchorResolution(CodeChunk chunk, ToolResult error) {
+    }
 
-        // 校验并规范化 ToolResult 的构造参数。
-        public ToolResult {
-            text = text == null || text.isBlank() ? "未检索到相关代码" : text;
-            evidenceChunkIds = evidenceChunkIds == null ? Set.of() : Set.copyOf(evidenceChunkIds);
-            candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
-        }
+    private record RelationAssessment(boolean verified, String code, String reason) {
     }
 }

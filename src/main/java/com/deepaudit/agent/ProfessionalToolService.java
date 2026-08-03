@@ -45,7 +45,7 @@ public class ProfessionalToolService {
     private final GitFileChangeMapper fileChangeMapper;
 
     // 查询并返回 searchSymbols 对应的数据。
-    public Result searchSymbols(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult searchSymbols(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                 ToolArguments arguments, int limit) {
         String symbol = arguments.string("symbol");
         String kind = arguments.string("kind");
@@ -55,13 +55,13 @@ public class ProfessionalToolService {
         String text = arguments.string("text");
         if (symbol.isBlank() && kind.isBlank() && annotation.isBlank() && filePath.isBlank()
                 && endpoint.isBlank() && text.isBlank()) {
-            return Result.empty("search_symbols 至少需要 symbol、kind、annotation、filePath、endpoint 或 text 参数之一。");
+            return ToolResult.empty("search_symbols 至少需要 symbol、kind、annotation、filePath、endpoint 或 text 参数之一。");
         }
 
         Map<Long, SemanticSymbol> metadata = symbolMapper.findByTaskId(taskId).stream()
                 .filter(item -> item.getChunkId() != null)
                 .collect(Collectors.toMap(SemanticSymbol::getChunkId, item -> item, (left, right) -> left));
-        List<ScoredChunk> matches = chunks.stream()
+        List<ScoredChunk> allMatches = chunks.stream()
                 .filter(chunk -> matches(chunk, metadata.get(chunk.getId()), symbol, kind, annotation,
                         filePath, endpoint, text))
                 .map(chunk -> new ScoredChunk(chunk, searchScore(chunk, metadata.get(chunk.getId()),
@@ -69,8 +69,13 @@ public class ProfessionalToolService {
                 .sorted(Comparator.comparingInt(ScoredChunk::score).reversed()
                         .thenComparing(item -> item.chunk().getFilePath())
                         .thenComparingInt(item -> item.chunk().getStartLine()))
-                .limit(limit).toList();
-        if (matches.isEmpty()) return Result.empty("[SEARCH_RESULT] 没有找到满足结构化条件的代码符号。");
+                .toList();
+        int offset = cursorOffset(arguments);
+        if (offset >= allMatches.size()) {
+            return ToolResult.empty("[SEARCH_RESULT] 没有更多满足结构化条件的代码符号。");
+        }
+        List<ScoredChunk> matches = allMatches.stream().skip(offset).limit(limit).toList();
+        if (matches.isEmpty()) return ToolResult.empty("[SEARCH_RESULT] 没有找到满足结构化条件的代码符号。");
 
         Set<Long> candidates = matches.stream().map(ScoredChunk::chunk).map(CodeChunk::getId)
                 .filter(id -> !id.equals(current.getId()))
@@ -78,12 +83,68 @@ public class ProfessionalToolService {
         String body = matches.stream().map(item -> formatChunk(item.chunk(),
                         "deterministicScore=" + item.score(), 1_600))
                 .collect(Collectors.joining("\n\n"));
-        return new Result("[SEARCH_RESULT][UNVERIFIED_CANDIDATE]\n" + body,
-                Set.of(current.getId()), candidates);
+        boolean truncated = offset + matches.size() < allMatches.size();
+        String nextCursor = truncated ? String.valueOf(offset + matches.size()) : null;
+        return new ToolResult(ToolResult.Status.OK, "[SEARCH_RESULT][UNVERIFIED_CANDIDATE]\n" + body,
+                Set.of(current.getId()), candidates, truncated, nextCursor);
+    }
+
+    // 在不可变任务源码块上执行受控文本搜索；结果只作为候选线索。
+    public ToolResult searchCode(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+                             ToolArguments arguments, int limit) {
+        String query = arguments.string("query");
+        if (query.isBlank()) return ToolResult.invalid("search_code 需要非空 query。");
+        if (query.length() > 200) return ToolResult.invalid("search_code query 最长为 200 个字符。");
+        boolean caseSensitive = arguments.bool("caseSensitive", false);
+
+        String scope = arguments.string("scope").toUpperCase(Locale.ROOT);
+        if (scope.isBlank()) scope = "RELATED";
+        if (!Set.of("CURRENT_FILE", "RELATED", "PROJECT").contains(scope)) {
+            return ToolResult.invalid("search_code scope 只能是 CURRENT_FILE、RELATED 或 PROJECT。");
+        }
+        int depth = arguments.integer("depth", 2, 1, 5);
+        Set<Long> related = "RELATED".equals(scope)
+                ? reachableChunks(taskId, current.getId(), depth) : Set.of();
+        String filePattern = arguments.string("filePattern");
+        boolean includeTests = arguments.bool("includeTests", false);
+        int contextLines = arguments.integer("contextLines", 2, 0, 5);
+        String normalizedQuery = caseSensitive ? query : lower(query);
+        String selectedScope = scope;
+        List<CodeMatch> allMatches = new ArrayList<>();
+        for (CodeChunk chunk : chunks) {
+            if (!inSearchScope(chunk, current, selectedScope, related)) continue;
+            if (!includeTests && isTestPath(chunk.getFilePath())) continue;
+            if (!filePattern.isBlank() && !globMatches(chunk.getFilePath(), filePattern)) continue;
+            String[] lines = chunk.getContent() == null ? new String[0] : chunk.getContent().split("\\R", -1);
+            for (int index = 0; index < lines.length; index++) {
+                String line = lines[index];
+                boolean matched = (caseSensitive ? line : lower(line)).contains(normalizedQuery);
+                if (matched) {
+                    allMatches.add(new CodeMatch(chunk, index, contextLines));
+                }
+            }
+        }
+        allMatches.sort(Comparator.comparing((CodeMatch match) -> match.chunk().getFilePath())
+                .thenComparingInt(CodeMatch::lineNumber));
+        int offset = cursorOffset(arguments);
+        if (offset >= allMatches.size()) return ToolResult.empty("[CODE_SEARCH] 没有更多匹配结果。");
+        List<CodeMatch> matches = allMatches.stream().skip(offset).limit(limit).toList();
+        if (matches.isEmpty()) return ToolResult.empty("[CODE_SEARCH] 没有找到匹配源码。");
+        Set<Long> evidence = matches.stream().map(CodeMatch::chunk).map(CodeChunk::getId)
+                .filter(current.getId()::equals)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> candidates = matches.stream().map(CodeMatch::chunk).map(CodeChunk::getId)
+                .filter(id -> !evidence.contains(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        String body = matches.stream().map(CodeMatch::format).collect(Collectors.joining("\n\n"));
+        boolean truncated = offset + matches.size() < allMatches.size();
+        String nextCursor = truncated ? String.valueOf(offset + matches.size()) : null;
+        return new ToolResult(ToolResult.Status.OK, "[CODE_SEARCH][UNVERIFIED_CANDIDATE] scope="
+                + scope + "\n" + body, evidence, candidates, truncated, nextCursor);
     }
 
     // 执行 ProfessionalToolService 中的 exploreCallGraph 处理。
-    public Result exploreCallGraph(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult exploreCallGraph(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                    ToolArguments arguments, int limit) {
         String direction = arguments.string("direction").toUpperCase(Locale.ROOT);
         if (!Set.of("CALLERS", "CALLEES", "BOTH").contains(direction)) direction = "BOTH";
@@ -100,7 +161,7 @@ public class ProfessionalToolService {
         List<GraphPath> paths = breadthFirstPaths(current.getId(), targetId, graph, depth, limit);
         if (paths.isEmpty()) {
             String target = targetId == null ? "" : "，目标代码块=" + targetId;
-            return Result.empty("[CALL_GRAPH] 在方向=" + direction + "、深度=" + depth + target
+            return ToolResult.empty("[CALL_GRAPH] 在方向=" + direction + "、深度=" + depth + target
                     + " 的范围内没有找到高/中可信调用路径。未解析边=" + unresolvedCount(allEdges));
         }
 
@@ -108,12 +169,12 @@ public class ProfessionalToolService {
         evidence.add(current.getId());
         paths.forEach(path -> path.steps().forEach(step -> evidence.add(step.to())));
         String body = paths.stream().map(this::formatPath).collect(Collectors.joining("\n\n"));
-        return new Result("[CALL_GRAPH] direction=" + direction + " depth=" + depth
+        return new ToolResult("[CALL_GRAPH] direction=" + direction + " depth=" + depth
                 + " unresolvedEdges=" + unresolvedCount(allEdges) + "\n" + body, evidence, Set.of());
     }
 
     // 读取并返回 getChangeContext 对应的信息。
-    public Result getChangeContext(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult getChangeContext(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                    ToolArguments arguments, int limit) {
         String selector = arguments.string("selector");
         boolean includeConfiguration = arguments.bool("includeConfiguration", true);
@@ -125,7 +186,7 @@ public class ProfessionalToolService {
                         || includeConfiguration && change.isConfigurationChange())
                 .limit(limit).toList();
         if (methodChanges.isEmpty() && fileChanges.isEmpty()) {
-            return Result.empty("[CHANGE_CONTEXT] 当前目标没有方法级或文件级增量变更记录，可能是全量审计任务。");
+            return ToolResult.empty("[CHANGE_CONTEXT] 当前目标没有方法级或文件级增量变更记录，可能是全量审计任务。");
         }
 
         Set<Long> evidence = new LinkedHashSet<>();
@@ -151,12 +212,12 @@ public class ProfessionalToolService {
 
         String methods = methodChanges.stream().map(this::formatMethodChange).collect(Collectors.joining("\n\n"));
         String files = fileChanges.stream().map(this::formatFileChange).collect(Collectors.joining("\n\n"));
-        return new Result("[CHANGE_CONTEXT]\n" + methods
+        return new ToolResult("[CHANGE_CONTEXT]\n" + methods
                 + (methods.isBlank() || files.isBlank() ? "" : "\n\n") + files, evidence, candidates);
     }
 
     // 解析并确定 resolveDataAccess 对应的目标。
-    public Result resolveDataAccess(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult resolveDataAccess(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                     ToolArguments arguments, int limit) {
         int depth = arguments.integer("depth", 3, 1, 5);
         String selector = arguments.string("selector");
@@ -174,7 +235,7 @@ public class ProfessionalToolService {
                         || matchesAnyToken(searchable(chunk), discoverySelector))
                 .limit(limit).toList() : List.of();
         List<CodeChunk> results = connected.isEmpty() ? discovered : connected;
-        if (results.isEmpty()) return Result.empty("[DATA_ACCESS] 未找到与当前目标或选择条件关联的数据访问代码。");
+        if (results.isEmpty()) return ToolResult.empty("[DATA_ACCESS] 未找到与当前目标或选择条件关联的数据访问代码。");
 
         Set<Long> evidence = results.stream().filter(chunk -> reachable.contains(chunk.getId()))
                 .map(CodeChunk::getId).collect(Collectors.toCollection(LinkedHashSet::new));
@@ -183,13 +244,13 @@ public class ProfessionalToolService {
                 .filter(id -> !evidence.contains(id)).collect(Collectors.toCollection(LinkedHashSet::new));
         String body = results.stream().map(this::formatDataAccess).collect(Collectors.joining("\n\n"));
         String evidenceLabel = connected.isEmpty() ? "[UNVERIFIED_CANDIDATE]" : "[SEMANTIC_EVIDENCE]";
-        return new Result("[DATA_ACCESS_ANALYSIS]" + evidenceLabel
+        return new ToolResult("[DATA_ACCESS_ANALYSIS]" + evidenceLabel
                 + " 仅报告确定性语法指标，不以单一指标直接判定漏洞。\n"
                 + body, evidence, candidates);
     }
 
     // 分析并提取 inspectSecurityPolicy 对应的事实。
-    public Result inspectSecurityPolicy(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult inspectSecurityPolicy(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                                         ToolArguments arguments, int limit) {
         String endpoint = arguments.string("endpoint");
         if (endpoint.isBlank()) endpoint = current.getEndpoint() == null ? "" : current.getEndpoint();
@@ -220,16 +281,16 @@ public class ProfessionalToolService {
         }
         candidates.removeAll(evidence);
         if (details.isEmpty()) {
-            return new Result("[SECURITY_POLICY] 未发现方法级或项目级安全策略；这不等于已证明入口无保护。",
+            return new ToolResult("[SECURITY_POLICY] 未发现方法级或项目级安全策略；这不等于已证明入口无保护。",
                     evidence, Set.of());
         }
-        return new Result("[SECURITY_POLICY] endpoint=" + (endpoint.isBlank() ? "未知" : endpoint)
+        return new ToolResult("[SECURITY_POLICY] endpoint=" + (endpoint.isBlank() ? "未知" : endpoint)
                 + "。配置顺序和框架启用状态仍需结合 Recon 事实判断。\n"
                 + String.join("\n\n", details), evidence, candidates);
     }
 
     // 执行 ProfessionalToolService 中的 traceValue 处理。
-    public Result traceValue(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+    public ToolResult traceValue(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
                              ToolArguments arguments, int limit, VulnerabilityType vulnerabilityType) {
         String source = arguments.string("source");
         String sink = arguments.string("sink");
@@ -243,7 +304,7 @@ public class ProfessionalToolService {
                     .collect(Collectors.toCollection(LinkedHashSet::new));
             evidence.add(current.getId());
             String body = flows.stream().map(this::formatValueFlow).collect(Collectors.joining("\n\n"));
-            return new Result("[VALUE_TRACE][SEMANTIC_EVIDENCE]\n" + body, evidence, Set.of());
+            return new ToolResult("[VALUE_TRACE][SEMANTIC_EVIDENCE]\n" + body, evidence, Set.of());
         }
 
         String token = firstNonBlank(variable, source, sink);
@@ -257,7 +318,7 @@ public class ProfessionalToolService {
                         lower(edge.getArgumentMapping() + " " + edge.getExpression()), token))
                 .limit(limit).toList();
         if (mappings.isEmpty()) {
-            return Result.empty("[VALUE_TRACE] 没有找到满足变量、来源或终点条件的已解析数据流或参数映射。");
+            return ToolResult.empty("[VALUE_TRACE] 没有找到满足变量、来源或终点条件的已解析数据流或参数映射。");
         }
         Set<Long> evidence = new LinkedHashSet<>();
         evidence.add(current.getId());
@@ -266,7 +327,7 @@ public class ProfessionalToolService {
             if (edge.getCalleeChunkId() != null) evidence.add(edge.getCalleeChunkId());
         });
         String body = mappings.stream().map(this::formatArgumentMapping).collect(Collectors.joining("\n"));
-        return new Result("[VALUE_TRACE][ARGUMENT_MAPPING]\n" + body, evidence, Set.of());
+        return new ToolResult("[VALUE_TRACE][ARGUMENT_MAPPING]\n" + body, evidence, Set.of());
     }
 
     // 判断是否满足 matches 对应的条件。
@@ -283,8 +344,8 @@ public class ProfessionalToolService {
         if (!endpoint.isBlank() && !contains(chunk.getEndpoint(), endpoint)) return false;
         if (!text.isBlank()) {
             String haystack = searchable(chunk);
-            boolean found = List.of(lower(text).split("\\s+")).stream()
-                    .filter(token -> !token.isBlank()).anyMatch(haystack::contains);
+            boolean found = java.util.Arrays.stream(lower(text).split("\\s+"))
+                    .filter(token -> !token.isBlank()).allMatch(haystack::contains);
             if (!found) return false;
         }
         return true;
@@ -326,14 +387,12 @@ public class ProfessionalToolService {
                                               int maxDepth, int limit) {
         ArrayDeque<GraphPath> queue = new ArrayDeque<>();
         queue.add(new GraphPath(start, List.of()));
-        Set<Long> visited = new LinkedHashSet<>();
-        visited.add(start);
         List<GraphPath> result = new ArrayList<>();
         while (!queue.isEmpty() && result.size() < limit) {
             GraphPath path = queue.removeFirst();
             if (path.steps().size() >= maxDepth) continue;
             for (GraphStep step : graph.getOrDefault(path.end(), List.of())) {
-                if (!visited.add(step.to())) continue;
+                if (path.contains(step.to())) continue;
                 List<GraphStep> nextSteps = new ArrayList<>(path.steps());
                 nextSteps.add(step);
                 GraphPath next = new GraphPath(step.to(), List.copyOf(nextSteps));
@@ -561,6 +620,49 @@ public class ProfessionalToolService {
                 + "\n<UNTRUSTED_CODE>" + safe(edge.getExpression(), 600) + "</UNTRUSTED_CODE>";
     }
 
+    private int cursorOffset(ToolArguments arguments) {
+        Long cursor = arguments.longValue("cursor");
+        if (cursor == null || cursor < 0) return 0;
+        return (int) Math.min(cursor, Integer.MAX_VALUE);
+    }
+
+    private boolean inSearchScope(CodeChunk chunk, CodeChunk current, String scope, Set<Long> related) {
+        if ("PROJECT".equals(scope)) return true;
+        if (samePath(chunk.getFilePath(), current.getFilePath())) return true;
+        return "RELATED".equals(scope) && related.contains(chunk.getId());
+    }
+
+    private boolean isTestPath(String filePath) {
+        String normalized = lower(filePath).replace('\\', '/');
+        return normalized.contains("/src/test/") || normalized.startsWith("src/test/")
+                || normalized.contains("/test/") || normalized.endsWith("test.java");
+    }
+
+    private boolean globMatches(String filePath, String glob) {
+        String normalizedPath = filePath == null ? "" : filePath.replace('\\', '/');
+        String normalizedGlob = glob.replace('\\', '/');
+        StringBuilder regex = new StringBuilder("^");
+        for (int index = 0; index < normalizedGlob.length(); index++) {
+            char value = normalizedGlob.charAt(index);
+            if (value == '*' && index + 1 < normalizedGlob.length()
+                    && normalizedGlob.charAt(index + 1) == '*') {
+                regex.append(".*");
+                index++;
+            } else if (value == '*') {
+                regex.append("[^/]*");
+            } else if (value == '?') {
+                regex.append("[^/]");
+            } else {
+                regex.append(Pattern.quote(String.valueOf(value)));
+            }
+        }
+        String expression = regex.append('$').toString();
+        return Pattern.compile(expression, Pattern.CASE_INSENSITIVE).matcher(normalizedPath).matches()
+                || !normalizedGlob.contains("/")
+                && Pattern.compile(expression, Pattern.CASE_INSENSITIVE)
+                .matcher(normalizedPath.substring(normalizedPath.lastIndexOf('/') + 1)).matches();
+    }
+
     // 解析输入并生成 parseIds 对应的结构化结果。
     private Set<Long> parseIds(String value) {
         if (value == null || value.isBlank()) return Set.of();
@@ -627,28 +729,39 @@ public class ProfessionalToolService {
         return value.substring(0, Math.min(value.length(), maxChars));
     }
 
-    // 封装 Result 使用的不可变结构化数据。
-    public record Result(String text, Set<Long> evidenceChunkIds, Set<Long> candidateChunkIds) {
-        // 校验并规范化 Result 的构造参数。
-        public Result {
-            text = text == null || text.isBlank() ? "工具未返回结果" : text;
-            text = text.substring(0, Math.min(text.length(), 12_000));
-            evidenceChunkIds = evidenceChunkIds == null ? Set.of() : Set.copyOf(evidenceChunkIds);
-            candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
-        }
-
-        // 执行 Result 中的 empty 处理。
-        static Result empty(String text) {
-            return new Result(text, Set.of(), Set.of());
-        }
-    }
-
     // 封装 ScoredChunk 使用的不可变结构化数据。
     private record ScoredChunk(CodeChunk chunk, int score) {}
+    private record CodeMatch(CodeChunk chunk, int lineIndex, int contextLines) {
+        int lineNumber() {
+            return Math.max(1, chunk.getStartLine()) + lineIndex;
+        }
+
+        String format() {
+            String[] lines = chunk.getContent() == null ? new String[0] : chunk.getContent().split("\\R", -1);
+            int first = Math.max(0, lineIndex - contextLines);
+            int last = Math.min(lines.length - 1, lineIndex + contextLines);
+            StringBuilder source = new StringBuilder();
+            for (int index = first; index <= last; index++) {
+                source.append(index == lineIndex ? ">>> " : "    ")
+                        .append(String.format(Locale.ROOT, "%5d | ",
+                                Math.max(1, chunk.getStartLine()) + index))
+                        .append(lines[index]).append('\n');
+            }
+            return "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":"
+                    + lineNumber() + " | " + chunk.getSymbolName()
+                    + "\n<UNTRUSTED_CODE>\n" + source.toString().stripTrailing()
+                    + "\n</UNTRUSTED_CODE>";
+        }
+    }
     // 封装 GraphStep 使用的不可变结构化数据。
     private record GraphStep(Long from, Long to, SemanticCallEdge edge) {}
     // 封装 GraphPath 使用的不可变结构化数据。
-    private record GraphPath(Long end, List<GraphStep> steps) {}
+    private record GraphPath(Long end, List<GraphStep> steps) {
+        boolean contains(Long chunkId) {
+            if (end.equals(chunkId)) return true;
+            return steps.stream().anyMatch(step -> step.from().equals(chunkId));
+        }
+    }
     // 封装 NodeDepth 使用的不可变结构化数据。
     private record NodeDepth(Long id, int depth) {}
 }

@@ -215,7 +215,8 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("所有供人阅读的摘要", "简体中文", "technologyProfile",
                         "UNVERIFIED_CANDIDATE", "verify_relation", "VERIFIED_EVIDENCE")
-                .contains("get_call_chain", "call_context", "verify_relation");
+                .contains("explore_call_graph", "search_code", "read_source", "verify_relation")
+                .doesNotContain("get_call_chain({", "call_context({", "read_source_range({");
     }
 
     @Test

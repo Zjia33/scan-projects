@@ -1,5 +1,7 @@
 package com.deepaudit.ai;
 
+import com.deepaudit.agent.AgentToolCatalog;
+
 import com.deepaudit.domain.VulnerabilityType;
 
 // 集中保存各类 Agent 的系统提示词，避免模型约束分散在网关调用参数中。
@@ -53,21 +55,7 @@ final class AgentPrompts {
             + "并从 allowedTypes 中返回至少一个具体漏洞类型；否则必须选择 SKIP 且 vulnerabilityTypes 返回空数组。"
             + "不得为了避免 SKIP 而猜测漏洞，不得创造代码、位置、事实、类型或调用关系。";
 
-    private static final String PROFESSIONAL_AGENT_TOOLS = "可用只读工具及 arguments："
-            + "get_chunk({chunkId})读取代码块；"
-            + "verify_relation({candidateChunkId})验证候选与目标的调用、语义流或配置关系；"
-            + "call_context({})读取直接调用和同文件上下文；"
-            + "get_call_chain({})读取已有语义安全流或调用出边；"
-            + "trace_data_flow({})读取当前漏洞类型的 Source-to-Sink 路径；"
-            + "find_security_guards({})读取路径上的权限、租户和验证控制；"
-            + "search_symbols({symbol,kind,annotation,filePath,endpoint,text})执行确定性结构搜索；"
-            + "explore_call_graph({direction:CALLERS|CALLEES|BOTH,depth:1..5,targetChunkId,targetSymbol})"
-            + "定向探索调用路径；"
-            + "get_change_context({selector,includeConfiguration})读取 Base/Target 方法与文件差异；"
-            + "resolve_data_access({selector,depth})解析 Mapper、Repository、SQL 和参数绑定；"
-            + "inspect_security_policy({endpoint})检查方法注解和匹配入口的全局安全规则；"
-            + "trace_value({source,sink,variable,depth})定向追踪安全流或跨调用参数映射。"
-            + "arguments 只提供当前工具需要的字段，可用 limit:1..10 控制结果数量，未知字段不要输出。";
+    private static final String PROFESSIONAL_AGENT_TOOLS = AgentToolCatalog.prompt();
 
     private static final String PROFESSIONAL_AGENT_RULES = "turn.recon 包含 Recon Agent 结论和本地确定性 technologyProfile，"
             + "必须结合框架、安全组件与注解生效条件判断，不得孤立地把注解存在或缺失直接当成漏洞。"
