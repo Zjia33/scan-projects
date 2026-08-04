@@ -51,7 +51,7 @@ public class AuditTask {
         this.status = status;
         this.progress = progress;
         this.currentStage = currentStage;
-        if (status == AuditStatus.COMPLETED || status == AuditStatus.FAILED || status == AuditStatus.CANCELLED) {
+        if (status.isTerminal()) {
             this.completedAt = Instant.now();
         }
     }

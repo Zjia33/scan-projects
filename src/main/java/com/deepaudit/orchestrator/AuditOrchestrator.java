@@ -40,13 +40,15 @@ public class AuditOrchestrator {
     private final ReconService reconService;
     private final AnalysisService analysisService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
+    private final AuditCancellationService cancellationService;
 
     // 按固定阶段编排 Git 快照、差异、语义索引和 Agent 审计。
     @Async("auditExecutor")
     public void run(UUID taskId) {
         long taskStarted = ExecutionTiming.start();
         AuditTask task = requireTask(taskId);
-        try {
+        try (AuditCancellationService.WorkerRegistration ignored = cancellationService.registerWorker(taskId)) {
+            cancellationService.throwIfCancellationRequested(taskId);
             Project project = requireProject(task.getProjectId());
             log.info("开始执行增量 Git 代码读取流程：taskId={}，projectId={}，base={}，target={}",
                     taskId, project.getId(), shortSha(task.getBaseCommitSha()),
@@ -148,10 +150,25 @@ public class AuditOrchestrator {
                 logTiming(taskId, "RESOURCE_CLEANUP", cleanupStarted, taskStarted, "status=SUCCESS");
             }
         } catch (Exception exception) {
+            if (exception instanceof AuditCancelledException
+                    || cancellationService.isCancellationRequested(taskId)) {
+                analysisService.discardFinalResults(taskId);
+                log.info("增量审计已中断：taskId={}，elapsedMs={}，说明=停止后续分析并清除未完成的正式漏洞与报告",
+                        taskId, ExecutionTiming.elapsedMillis(taskStarted));
+                return;
+            }
             log.error("Git 扫描任务 {} 失败；totalElapsedMs={}，errorType={}", taskId,
                     ExecutionTiming.elapsedMillis(taskStarted), exception.getClass().getSimpleName(), exception);
-            task.fail(exception.getMessage());
-            persistTask(task);
+            AuditTask latest = requireTask(taskId);
+            latest.fail(exception.getMessage());
+            try {
+                persistTask(latest);
+            } catch (AuditCancelledException cancelled) {
+                analysisService.discardFinalResults(taskId);
+                log.info("任务 {} 在失败状态写入前收到中断请求，保留 CANCELLED 终态", taskId);
+            }
+        } finally {
+            cancellationService.taskFinished(taskId);
         }
     }
 
@@ -163,6 +180,7 @@ public class AuditOrchestrator {
 
     // 更新 update 对应的状态或数据。
     private AuditTask update(AuditTask task, AuditStatus status, int progress, String stage) {
+        cancellationService.throwIfCancellationRequested(task.getId());
         task.moveTo(status, progress, stage);
         persistTask(task);
         return task;
@@ -171,7 +189,12 @@ public class AuditOrchestrator {
     // 保存 persistTask 对应的数据。
     private void persistTask(AuditTask task) {
         int updated = taskMapper.updateWithVersion(task);
-        if (updated != 1) throw new IllegalStateException("扫描任务状态已被并发修改: " + task.getId());
+        if (updated != 1) {
+            if (cancellationService.isCancellationRequested(task.getId())) {
+                throw new AuditCancelledException(task.getId());
+            }
+            throw new IllegalStateException("扫描任务状态已被并发修改: " + task.getId());
+        }
         task.setVersion(task.getVersion() + 1);
     }
 

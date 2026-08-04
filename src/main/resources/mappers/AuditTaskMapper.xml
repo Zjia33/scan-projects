@@ -76,4 +76,15 @@
         WHERE id = #{id}
           AND version = #{version}
     </update>
+
+    <update id="cancelIfActive">
+        UPDATE audit_task
+        SET status = 'CANCELLED',
+            current_stage = #{currentStage},
+            error_message = NULL,
+            completed_at = #{completedAt},
+            version = version + 1
+        WHERE id = #{id}
+          AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+    </update>
 </mapper>

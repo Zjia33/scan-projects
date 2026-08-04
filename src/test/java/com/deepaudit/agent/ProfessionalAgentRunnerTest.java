@@ -4,6 +4,7 @@ import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -29,7 +30,8 @@ class ProfessionalAgentRunnerTest {
     void professionalAgentsRunConcurrentlyWithinOneProject() throws Exception {
         AgentRuntime runtime = mock(AgentRuntime.class);
         ExecutorService executor = Executors.newFixedThreadPool(3);
-        ProfessionalAgentRunner runner = new ProfessionalAgentRunner(runtime, executor);
+        ProfessionalAgentRunner runner = new ProfessionalAgentRunner(
+                runtime, executor, mock(AuditCancellationService.class));
         CountDownLatch twoAgentsStarted = new CountDownLatch(2);
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maximumActive = new AtomicInteger();

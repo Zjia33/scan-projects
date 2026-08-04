@@ -19,8 +19,10 @@ import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.FindingMapper;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.semantic.SemanticAnalysisService;
 import com.deepaudit.semantic.SemanticEvidenceService;
@@ -62,15 +64,19 @@ public class AnalysisService {
     private final ReconService reconService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
     private final SemanticMethodChangeMapper semanticMethodChangeMapper;
+    private final AiReportSummaryMapper reportSummaryMapper;
+    private final AuditCancellationService cancellationService;
 
     // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
     public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
                                   String projectName, AuditTask task) {
         long analysisStarted = ExecutionTiming.start();
         long stageStarted = ExecutionTiming.start();
+        cancellationService.throwIfCancellationRequested(taskId);
         // 清理旧发现和 Agent 轨迹，保证重跑结果不混入历史数据。
         findingMapper.deleteByTaskId(taskId);
         traceService.reset(taskId);
+        cancellationService.throwIfCancellationRequested(taskId);
         // 初始只加载直接变更块，CodeGraph 命中的影响与上下文块在后续按需补入。
         List<CodeChunk> chunks = chunkMapper.findByTaskId(taskId);
         logTiming(taskId, "ANALYSIS_RESET_AND_LOAD", stageStarted, analysisStarted,
@@ -90,6 +96,7 @@ public class AnalysisService {
         CodeGraphIntegrationService.ImpactDecision codeGraphImpact = codeGraphIntegrationService.decideImpact(
                 taskId, chunks, incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds(),
                 semanticMethodChangeMapper.findByTaskId(taskId));
+        cancellationService.throwIfCancellationRequested(taskId);
         if (!codeGraphImpact.locations().isEmpty()) {
             reconService.materializeCodeGraphLocations(taskId, projectRoot, codeGraphImpact.locations());
             chunks = chunkMapper.findByTaskId(taskId);
@@ -136,6 +143,7 @@ public class AnalysisService {
         localSemanticScope.addAll(topology.contextChunkIds());
         SemanticAnalysisService.Summary semanticSummary = semanticAnalysisService.rebuild(
                 taskId, projectRoot, chunks, localSemanticScope, topology.relations());
+        cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "SCOPED_SEMANTIC_ANALYSIS", stageStarted, analysisStarted,
                 "scopeChunks=" + localSemanticScope.size() + ",relations=" + semanticSummary.callEdgeCount()
                         + ",securityFlows=" + semanticSummary.securityFlowCount());
@@ -143,6 +151,7 @@ public class AnalysisService {
         Set<Long> changedChunkIds = incrementalScope.changedChunkIds();
         HintIndex hintIndex = collectHints(taskId, projectRoot, chunks, changedChunkIds);
         mergeSemanticHints(taskId, hintIndex, changedChunkIds);
+        cancellationService.throwIfCancellationRequested(taskId);
         TimingDetailLog.info("任务 {} 生成 {} 个规则调查目标，类型分布: {}", taskId,
                 hintIndex.typesByChunk().size(), hintIndex.typesByChunk());
         TimingDetailLog.info("任务 {} 检测索引：{} 个符号、{} 条关系边、{} 条安全数据流；"
@@ -160,12 +169,14 @@ public class AnalysisService {
         long reconAndTriageStarted = ExecutionTiming.start();
         stageStarted = ExecutionTiming.start();
         LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary);
+        cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "RECON_AGENT", stageStarted, analysisStarted,
                 "sourceFiles=" + reconSummary.sourceFileCount()
                         + ",frameworkFiles=" + reconSummary.frameworkFiles().size());
         stageStarted = ExecutionTiming.start();
         List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, chunks,
                 hintIndex.typesByChunk(), hintIndex.descriptionsByChunk());
+        cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "TRIAGE_ORCHESTRATOR", stageStarted, analysisStarted,
                 "changed=" + changedChunkIds.size() + ",plannedTasks=" + plan.size());
         log.info("阶段耗时：taskId={}，阶段=架构理解与增量分诊，耗时={}ms，说明=Recon归纳项目架构，Triage仅审查CHANGED并规划专业调查，专业任务数={}",
@@ -175,6 +186,7 @@ public class AnalysisService {
         stageStarted = ExecutionTiming.start();
         ProfessionalAgentRunner.BatchResult investigation = professionalAgentRunner.investigate(
                 taskId, plan, recon, chunks);
+        cancellationService.throwIfCancellationRequested(taskId);
         List<AgentCandidate> candidates = investigation.candidates();
         if (!plan.isEmpty() && investigation.formatFailures() == plan.size()) {
             throw new AiUnavailableException("所有专业 Agent 都未能返回合法结构化响应，无法形成可信审计结果");
@@ -193,6 +205,7 @@ public class AnalysisService {
         List<Finding> reviewedFindings = new ArrayList<>();
         stageStarted = ExecutionTiming.start();
         for (AgentCandidate candidate : criticCandidates) {
+            cancellationService.throwIfCancellationRequested(taskId);
             try {
                 criticAgent.review(taskId, candidate, recon, chunks)
                         .filter(finding -> validateEvidence(projectRoot, finding))
@@ -216,6 +229,7 @@ public class AnalysisService {
         }
         // 批量持久化确认结果，最终报告只接收这一组经过证据门禁的发现。
         for (int start = 0; start < confirmed.size(); start += 200) {
+            cancellationService.throwIfCancellationRequested(taskId);
             findingMapper.insertBatch(confirmed.subList(start, Math.min(start + 200, confirmed.size())));
         }
         String comparisonBaseSha = task.getMergeBaseSha() == null || task.getMergeBaseSha().isBlank()
@@ -249,13 +263,21 @@ public class AnalysisService {
                         == com.deepaudit.domain.HypothesisStatus.REJECTED)
                 .count();
         stageStarted = ExecutionTiming.start();
+        cancellationService.throwIfCancellationRequested(taskId);
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
                 rejectedHypotheses, auditContext);
+        cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "REPORT_AGENT", stageStarted, analysisStarted,
                 "confirmed=" + confirmed.size() + ",rejected=" + rejectedHypotheses);
         TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、Critic和报告，专业任务数={}，候选数={}，正式漏洞数={}",
                 taskId, ExecutionTiming.elapsedMillis(analysisStarted), plan.size(), candidates.size(), confirmed.size());
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
+    }
+
+    /** 取消任务不保留尚未完成证据门禁的正式漏洞和报告，但保留差异、语义与 Agent 调查轨迹。 */
+    public void discardFinalResults(UUID taskId) {
+        findingMapper.deleteByTaskId(taskId);
+        reportSummaryMapper.deleteByTaskId(taskId);
     }
 
     private void logTiming(UUID taskId, String stage, long stageStarted, long analysisStarted, String details) {

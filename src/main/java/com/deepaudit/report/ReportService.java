@@ -275,7 +275,7 @@ public class ReportService {
         return switch (status) {
             case COMPLETED -> "已完成";
             case FAILED -> "失败";
-            case CANCELLED -> "已取消";
+            case CANCELLED -> "已中断";
             default -> "进行中";
         };
     }

@@ -59,7 +59,7 @@ deepaudit:
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
     # 控制增量真实差异的单批最大数量，不限制项目总覆盖范围；请求另有字符预算。
-    triage-batch-size: 40
+    triage-batch-size: 20
   semantic:
     enabled: true
     max-call-depth: 10

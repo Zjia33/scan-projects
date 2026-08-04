@@ -7,6 +7,7 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -39,8 +40,9 @@ class AgentRuntimeTest {
         AgentTraceService traceService = mock(AgentTraceService.class);
         AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
         SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
         AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
-                hypothesisMapper, semanticEvidenceService);
+                hypothesisMapper, semanticEvidenceService, cancellationService);
         CodeChunk target = chunk(taskId, 1L, "Controller#entry", "service.load(input);");
         CodeChunk candidate = chunk(taskId, 2L, "OrderService#load", "return repository.find(input);");
         List<CodeChunk> chunks = List.of(target, candidate);

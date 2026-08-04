@@ -18,6 +18,7 @@ const state = {
     events: new Map(),
     loadingTasks: false,
     loadingProjects: false,
+    cancellingTaskIds: new Set(),
     agentRefreshTimer: null,
     poller: null
 };
@@ -432,7 +433,7 @@ function renderTaskList() {
         title.append(el('strong', '', task.projectName), statusTag(task.status));
         copy.append(title,
             el('small', '', `增量扫描 · ${task.currentStage || '等待启动'}`));
-        if (task.status === 'RUNNING') {
+        if (!TERMINAL_STATUSES.has(task.status)) {
             const progress = el('span', 'entity-progress');
             const fill = el('i');
             fill.style.width = `${clampProgress(task.progress)}%`;
@@ -485,7 +486,8 @@ async function renderTaskDetail(task) {
         state.renderedTaskId = taskId;
         state.renderedTaskStatus = task.status;
         state.renderedFindingCount = task.findingCount;
-        if (state.route === 'tasks') connectEventStream(taskId);
+        if (state.route === 'tasks' && !TERMINAL_STATUSES.has(task.status)) connectEventStream(taskId);
+        else closeEventStream();
     } catch (error) {
         if (state.selectedTaskId !== taskId) return;
         ui.taskDetail.replaceChildren(emptyState(`无法读取任务详情：${error.message}`));
@@ -501,17 +503,7 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
         el('p', 'detail-subtitle', `${commitRange(task)} · ${formatTime(task.createdAt)}`),
         el('p', 'detail-subtitle', task.changeSummary || task.repositoryUrl || '暂无变更摘要'));
     const actions = el('div', 'detail-actions');
-    if (task.status === 'COMPLETED') {
-        const report = el('a', 'button primary', '查看审计报告 ↗');
-        report.href = `/api/tasks/${task.taskId}/report.html`;
-        report.target = '_blank';
-        report.rel = 'noopener';
-        actions.append(report);
-    } else {
-        const waiting = el('button', 'button secondary', '报告生成中');
-        waiting.disabled = true;
-        actions.append(waiting);
-    }
+    renderTaskActions(actions, task);
     header.append(title, actions);
 
     const body = el('div', 'detail-body');
@@ -522,6 +514,62 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
     body.append(buildInvestigation(agents, events), buildFindings(findings, task.status));
     fragment.append(header, body);
     return fragment;
+}
+
+function renderTaskActions(actions, task) {
+    actions.replaceChildren();
+    actions.dataset.status = task.status;
+    if (task.status === 'COMPLETED') {
+        const report = el('a', 'button primary', '查看审计报告 ↗');
+        report.href = `/api/tasks/${task.taskId}/report.html`;
+        report.target = '_blank';
+        report.rel = 'noopener';
+        actions.append(report);
+    } else if (!TERMINAL_STATUSES.has(task.status)) {
+        const waiting = el('button', 'button secondary', '报告生成中');
+        waiting.disabled = true;
+        const cancel = el('button', 'button danger',
+            state.cancellingTaskIds.has(task.taskId) ? '正在中断…' : '中断审计');
+        cancel.type = 'button';
+        cancel.disabled = state.cancellingTaskIds.has(task.taskId);
+        cancel.addEventListener('click', () => cancelAudit(task, cancel));
+        actions.append(waiting, cancel);
+    } else {
+        const terminal = el('button', 'button secondary',
+            task.status === 'CANCELLED' ? '审计已中断' : '审计失败');
+        terminal.disabled = true;
+        actions.append(terminal);
+    }
+}
+
+async function cancelAudit(task, button) {
+    if (TERMINAL_STATUSES.has(task.status) || state.cancellingTaskIds.has(task.taskId)) return;
+    const confirmed = await confirmAction({
+        title: '中断审计任务',
+        message: `确定中断“${task.projectName}”的本次增量审计吗？已经生成的调查轨迹会保留，但不会生成正式漏洞报告。`,
+        confirmLabel: '确认中断',
+        danger: true
+    });
+    if (!confirmed) return;
+
+    state.cancellingTaskIds.add(task.taskId);
+    button.disabled = true;
+    button.textContent = '正在中断…';
+    try {
+        const result = await fetchJson(`/api/tasks/${task.taskId}/cancel`, { method: 'POST' });
+        const index = state.tasks.findIndex(item => item.taskId === task.taskId);
+        if (index >= 0 && result.task) state.tasks[index] = result.task;
+        closeEventStream();
+        state.renderedTaskId = null;
+        await loadTasks({ forceDetail: true });
+        toast(result.message || '审计任务已中断。');
+    } catch (error) {
+        toast(error.message, true);
+        button.disabled = false;
+        button.textContent = '中断审计';
+    } finally {
+        state.cancellingTaskIds.delete(task.taskId);
+    }
 }
 
 function buildProgress(task) {
@@ -597,9 +645,14 @@ function buildFindings(findings, status) {
 function renderFindingList(container, findings, status) {
     container.replaceChildren();
     if (!findings.length) {
-        container.append(emptyState(status === 'COMPLETED'
+        const message = status === 'COMPLETED'
             ? '本轮审计没有产生通过 Critic 证据门槛的问题。'
-            : '当前正在调查，确认结果将在此出现。', true));
+            : status === 'CANCELLED'
+                ? '审计任务已中断，不生成正式漏洞列表。'
+                : status === 'FAILED'
+                    ? '审计任务失败，未生成正式漏洞列表。'
+                    : '当前正在调查，确认结果将在此出现。';
+        container.append(emptyState(message, true));
         return;
     }
     findings.forEach(finding => container.append(buildFindingCard(finding)));
@@ -785,6 +838,9 @@ function updateTaskSummary(task) {
         progressLabel.children[1].textContent = `${clampProgress(task.progress)}%`;
     }
     if (fill) fill.style.width = `${clampProgress(task.progress)}%`;
+    const actions = ui.taskDetail.querySelector('.detail-actions');
+    if (actions && actions.dataset.status !== task.status) renderTaskActions(actions, task);
+    if (TERMINAL_STATUSES.has(task.status)) closeEventStream();
     setText('#task-agent-count', task.agentRunCount);
     setText('#task-model-count', task.modelCallCount);
     setText('#task-tool-count', task.toolCallCount);
@@ -861,7 +917,7 @@ function appendAgentEvent(taskId, event) {
         if (nearBottom) feed.scrollTop = feed.scrollHeight;
     }
     setText('#task-event-count', events.length);
-    if (['STARTED', 'COMPLETED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED',
+    if (['STARTED', 'COMPLETED', 'CANCELLED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED',
         'INSUFFICIENT_EVIDENCE', 'FORMAT_ERROR', 'REJECTED'].includes(event.eventType)) {
         scheduleAgentRefresh(taskId);
     }
@@ -1235,7 +1291,7 @@ function clampProgress(value) {
 function statusText(status) {
     return ({
         UPLOADED: '排队中', PENDING: '排队中', RUNNING: '运行中', COMPLETED: '已完成',
-        FAILED: '失败', CANCELLED: '已取消', ACTIVE: '使用中', ARCHIVED: '已归档'
+        FAILED: '失败', CANCELLED: '已中断', ACTIVE: '使用中', ARCHIVED: '已归档'
     })[status] || '运行中';
 }
 
@@ -1257,7 +1313,7 @@ function eventTypeText(type) {
         STARTED: '启动', MODEL_CALL: '模型调用', REASONING: '推理摘要', PLAN: '审计计划',
         TOOL_CALL: '工具调用', OBSERVATION: '工具观察', HYPOTHESIS: '漏洞假设',
         FINDING: '确认问题', LOCATION_UNRESOLVED: '定位待复核', INSUFFICIENT_EVIDENCE: '证据不足',
-        FORMAT_ERROR: '响应异常', REJECTED: '否决', COMPLETED: '完成', ERROR: '错误'
+        FORMAT_ERROR: '响应异常', REJECTED: '否决', COMPLETED: '完成', CANCELLED: '已中断', ERROR: '错误'
     })[type] || type || '事件';
 }
 

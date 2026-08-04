@@ -20,6 +20,7 @@ import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.service.ProjectService;
 import com.deepaudit.git.GitRepositoryService;
 import com.deepaudit.agent.AgentEventStreamService;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -57,6 +58,7 @@ public class AuditController {
     private final AgentEventStreamService eventStreamService;
     private final GitFileChangeMapper changeMapper;
     private final SemanticMethodChangeMapper semanticMethodChangeMapper;
+    private final AuditCancellationService cancellationService;
 
     // 只读导入 Git 裸仓库；访问令牌不会持久化或返回。
     @PostMapping(value = "/projects/git", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -157,6 +159,14 @@ public class AuditController {
         AuditTask task = taskMapper.findById(taskId);
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         return toResponse(task);
+    }
+
+    // 立即持久化取消终态，并通知正在运行或排队中的审计线程协作式停止。
+    @PostMapping("/tasks/{taskId}/cancel")
+    public TaskCancellationResponse cancelTask(@PathVariable UUID taskId) {
+        AuditCancellationService.CancellationResult result =
+                cancellationService.requestCancellation(taskId);
+        return new TaskCancellationResponse(toResponse(result.task()), result.changed(), result.message());
     }
 
     // 仅返回经过证据过滤后可展示的最终漏洞列表。
@@ -301,5 +311,8 @@ public class AuditController {
                                String status, int progress, String currentStage, String errorMessage,
                                long findingCount, int agentRunCount, int modelCallCount, int toolCallCount,
                                java.time.Instant createdAt, java.time.Instant completedAt) {
+    }
+
+    public record TaskCancellationResponse(TaskResponse task, boolean changed, String message) {
     }
 }

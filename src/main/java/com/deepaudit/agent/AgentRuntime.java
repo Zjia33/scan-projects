@@ -9,6 +9,8 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.mapper.AuditHypothesisMapper;
+import com.deepaudit.orchestrator.AuditCancellationService;
+import com.deepaudit.orchestrator.AuditCancelledException;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import com.deepaudit.util.ExecutionTiming;
 import com.deepaudit.util.TimingDetailLog;
@@ -35,10 +37,12 @@ public class AgentRuntime {
     private final AgentTraceService traceService;
     private final AuditHypothesisMapper hypothesisMapper;
     private final SemanticEvidenceService semanticEvidenceService;
+    private final AuditCancellationService cancellationService;
 
     // 驱动单个专业 Agent 的“推理—工具—观察”循环并执行证据准入。
     public Optional<AgentCandidate> investigate(UUID taskId, AgentTask task,
                                                 LlmGateway.ReconInsight recon, List<CodeChunk> chunks) {
+        cancellationService.throwIfCancellationRequested(taskId);
         // 当前目标和确定性语义流是初始允许引用的证据集合。
         Map<Long, CodeChunk> byId = chunks.stream().collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
         CodeChunk target = byId.get(task.chunkId());
@@ -55,6 +59,7 @@ public class AgentRuntime {
             int maxIterations = Math.max(1, properties.getMaxIterationsPerAgent());
             // 每轮只允许继续调用只读工具、提交发现或结束调查。
             for (int iteration = 1; iteration <= maxIterations; iteration++) {
+                cancellationService.throwIfCancellationRequested(taskId);
                 run.setStepCount(iteration);
                 run.setModelCallCount(run.getModelCallCount() + 1);
                 LlmGateway.AgentTurn turn = new LlmGateway.AgentTurn(taskId, task.agentType(),
@@ -69,6 +74,7 @@ public class AgentRuntime {
                         "第 " + iteration + " 轮：" + observationContext);
                 long modelStarted = ExecutionTiming.start();
                 LlmGateway.AgentDecision decision = llmGateway.decide(turn);
+                cancellationService.throwIfCancellationRequested(taskId);
                 long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
                 TimingDetailLog.info("模型阶段结束：taskId={}，stage=PROFESSIONAL_AGENT_MODEL，agentType={}，chunkId={}，iteration={}，elapsedMs={}",
                         taskId, task.agentType(), task.chunkId(), iteration, modelElapsedMs);
@@ -140,6 +146,14 @@ public class AgentRuntime {
             traceService.update(run);
             return Optional.empty();
         } catch (RuntimeException exception) {
+            if (exception instanceof AuditCancelledException
+                    || cancellationService.isCancellationRequested(taskId)) {
+                run.complete("审计任务已中断，停止专业调查");
+                traceService.update(run);
+                traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.CANCELLED,
+                        "审计任务已中断，当前 Agent 停止执行");
+                throw new AuditCancelledException(taskId);
+            }
             run.fail(exception.getMessage());
             traceService.update(run);
             traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.ERROR, exception.getMessage());

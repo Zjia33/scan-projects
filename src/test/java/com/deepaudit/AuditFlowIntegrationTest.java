@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.mapper.AuditTaskMapper;
+import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.AnalysisScope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,6 +56,35 @@ class AuditFlowIntegrationTest {
 
     @Autowired
     private CodeChunkMapper codeChunkMapper;
+
+    @Autowired
+    private AuditTaskMapper auditTaskMapper;
+
+    @Test
+    void cancelsQueuedAuditAndExposesConsoleAction() throws Exception {
+        IncrementalRepository source = incrementalProjectRepository();
+        String importJson = mockMvc.perform(post("/api/projects/git")
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsBytes(java.util.Map.of(
+                                "name", "可中断审计项目", "repositoryUrl", source.path().toUri().toString()))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        UUID projectId = UUID.fromString(objectMapper.readTree(importJson)
+                .path("project").path("projectId").asText());
+        AuditTask task = new AuditTask(projectId, source.baseCommit(), source.targetCommit(), source.baseCommit());
+        auditTaskMapper.insert(task);
+
+        String cancelled = mockMvc.perform(post("/api/tasks/{taskId}/cancel", task.getId()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(cancelled).contains("\"status\":\"CANCELLED\"", "审计任务已中断");
+        assertThat(auditTaskMapper.findById(task.getId()).getStatus().name()).isEqualTo("CANCELLED");
+        String script = mockMvc.perform(get("/app.js"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(script).contains("中断审计", "/cancel", "确认中断");
+    }
 
     @Test
     void importsGitCommitScansAndReportsVulnerableProject() throws Exception {

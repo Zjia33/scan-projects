@@ -4,6 +4,7 @@ import com.deepaudit.domain.AuditTask;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.time.Instant;
 import java.util.UUID;
 
 // 定义 AuditTaskMapper 的数据库访问操作。
@@ -22,4 +23,7 @@ public interface AuditTaskMapper {
     int deleteByProjectId(@Param("projectId") UUID projectId);
     // 更新数据库中 updateWithVersion 对应的记录。
     int updateWithVersion(AuditTask task);
+    // 不依赖调用方持有的旧版本号，原子地把任意非终态任务切换为已取消。
+    int cancelIfActive(@Param("id") UUID id, @Param("completedAt") Instant completedAt,
+                       @Param("currentStage") String currentStage);
 }
