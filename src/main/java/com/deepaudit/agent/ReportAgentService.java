@@ -8,7 +8,9 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.AiReportSummary;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.mapper.AiReportSummaryMapper;
+import com.deepaudit.util.ExecutionTiming;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -17,6 +19,7 @@ import java.util.UUID;
 // 负责 ReportAgentService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ReportAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
@@ -26,6 +29,7 @@ public class ReportAgentService {
     public AiReportSummary generate(UUID taskId, String projectName, LlmGateway.ReconInsight recon,
                                     List<Finding> findings, int completedAgents, int rejectedHypotheses,
                                     String auditContext) {
+        long reportStarted = ExecutionTiming.start();
         AgentRun run = traceService.start(taskId, AgentType.REPORT, null, "AI 审计报告");
         try {
             // 将最终发现压缩为报告模型所需的只读事实，禁止引入新漏洞。
@@ -35,11 +39,16 @@ public class ReportAgentService {
             run.setModelCallCount(1);
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.MODEL_CALL,
                     "正在将已通过 Critic 的发现整理为中文安全审计报告");
+            long modelStarted = ExecutionTiming.start();
             LlmGateway.ReportNarrative narrative = llmGateway.writeReport(new LlmGateway.ReportRequest(
                     taskId, projectName, recon, facts, completedAgents, rejectedHypotheses, auditContext));
+            long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
             AiReportSummary summary = persist(taskId, narrative.executiveSummary(), narrative.coverageSummary());
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.COMPLETED,
-                    "Report Agent 已基于 " + findings.size() + " 个确认问题生成报告摘要");
+                    "Report Agent 已基于 " + findings.size() + " 个确认问题生成报告摘要；模型耗时 "
+                            + modelElapsedMs + " ms，总耗时 " + ExecutionTiming.elapsedMillis(reportStarted) + " ms");
+            log.info("阶段耗时：taskId={}，阶段=审计报告生成，耗时={}ms，说明=整理Critic确认结果并生成中文报告，模型耗时={}ms，漏洞数={}",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted), modelElapsedMs, findings.size());
             run.complete("AI 审计报告已生成");
             traceService.update(run);
             return summary;
@@ -50,11 +59,16 @@ public class ReportAgentService {
                     auditContext + "。已完成项目侦察、智能规划、" + completedAgents + " 个专业 Agent 调查任务和反证检查；"
                             + rejectedHypotheses + " 个候选未进入最终报告。");
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.ERROR,
-                    "Report Agent 返回格式异常，已使用确定性中文摘要完成报告");
+                    "Report Agent 返回格式异常，已使用确定性中文摘要完成报告；耗时 "
+                            + ExecutionTiming.elapsedMillis(reportStarted) + " ms");
+            log.warn("执行耗时：taskId={}，stage=REPORT_AGENT，elapsedMs={}，status=FORMAT_FALLBACK",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted));
             run.complete("已使用确定性中文摘要完成报告");
             traceService.update(run);
             return summary;
         } catch (RuntimeException exception) {
+            log.error("执行耗时：taskId={}，stage=REPORT_AGENT，elapsedMs={}，status=FAILED，error={}",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted), exception.getClass().getSimpleName());
             run.fail(exception.getMessage());
             traceService.update(run);
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.ERROR, exception.getMessage());

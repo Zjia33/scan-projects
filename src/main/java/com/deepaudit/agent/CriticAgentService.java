@@ -1,5 +1,6 @@
 package com.deepaudit.agent;
 
+import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentEventType;
 import com.deepaudit.domain.AgentRun;
@@ -12,7 +13,10 @@ import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import com.deepaudit.util.ExecutionTiming;
+import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -28,6 +32,7 @@ import java.util.stream.Collectors;
 // 负责 CriticAgentService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CriticAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
@@ -37,6 +42,7 @@ public class CriticAgentService {
     // 用独立语义证据和全局安全控制反证候选，仅确认项可转换为 Finding。
     public Optional<Finding> review(UUID taskId, AgentCandidate candidate,
                                     LlmGateway.ReconInsight recon, List<CodeChunk> chunks) {
+        long reviewStarted = ExecutionTiming.start();
         AgentRun run = traceService.start(taskId, AgentType.CRITIC,
                 candidate.proposal().primaryChunkId(), candidate.proposal().title());
         try {
@@ -44,7 +50,7 @@ public class CriticAgentService {
                     .collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
             run.setModelCallCount(1);
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.MODEL_CALL,
-                    "正在结合 Recon 技术栈、独立语义证据和全局安全控制寻找反证");
+                "正在结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和全局安全控制寻找反证");
             // Critic 直接读取持久化语义证据，避免只复述专业 Agent 的论证。
             SemanticEvidenceService.EvidenceResult independentEvidence =
                     semanticEvidenceService.independentCriticEvidenceResult(taskId,
@@ -58,25 +64,58 @@ public class CriticAgentService {
                     .orElseThrow(() -> new IllegalStateException("Critic 引用的主证据不存在"));
             Set<Long> allowedLocationChunks = allowedLocationChunks(
                     candidate.proposal(), independentEvidence.evidenceChunkIds(), chunksById);
+            Set<Long> relatedReviewIds = Optional.ofNullable(semanticEvidenceService.criticReviewContextIds(
+                    taskId, allowedLocationChunks, 3)).orElse(Set.of());
+            ReviewContext reviewContext = buildReviewContext(
+                    candidate.proposal(), chunksById, allowedLocationChunks, relatedReviewIds);
             List<LlmGateway.LocationCandidate> locationCandidates =
                     FindingLocationResolver.locationCandidates(chunksById, allowedLocationChunks);
             Map<Long, Integer> criticCallSites = semanticEvidenceService.callSiteLines(
                     taskId, candidate.proposal().primaryChunkId(), allowedLocationChunks);
             String criticEvidence = FindingLocationResolver.formatCriticEvidence(
                     candidate.proposal(), chunksById, allowedLocationChunks, criticCallSites);
+            TimingDetailLog.info("任务 {} Critic 证据包已构建：type={}，primaryChunk={}，verifiedChunks={}，"
+                            + "semanticChunks={}，reviewContextChunks={}，reviewContextTruncated={}，"
+                            + "locationCandidates={}，evidenceChars={}，evidenceBuildElapsedMs={}",
+                    taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
+                    allowedLocationChunks.size(), independentEvidence.evidenceChunkIds().size(),
+                    reviewContext.chunkCount(), reviewContext.truncated(),
+                    locationCandidates.size(), criticEvidence.length(),
+                    ExecutionTiming.elapsedMillis(reviewStarted));
             // Critic 只接收确定性技术栈，不携带 Recon 模型生成的架构意见。
             LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("",
                     recon == null ? null : recon.technologyProfile());
+            long modelStarted = ExecutionTiming.start();
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
                     taskId, candidate.sourceAgent(), candidate.proposal(), criticEvidence,
-                    independentEvidence.text(), criticRecon, originalPrimary.getChangeType().name(),
+                    independentEvidence.text() + reviewContext.text(), criticRecon,
+                    originalPrimary.getChangeType().name(),
                     originalPrimary.getAnalysisScope().name(), originalPrimary.getBaseContent(),
                     locationCandidates));
+            long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
+            TimingDetailLog.info("模型阶段结束：taskId={}，stage=CRITIC_MODEL，type={}，primaryChunk={}，elapsedMs={}，reviewElapsedMs={}",
+                    taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
+                    modelElapsedMs, ExecutionTiming.elapsedMillis(reviewStarted));
+            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
+                    "Critic 模型调用完成，耗时 " + modelElapsedMs + " ms");
+            LinkedHashSet<Long> allowedCounterEvidenceIds = new LinkedHashSet<>(allowedLocationChunks);
+            allowedCounterEvidenceIds.addAll(reviewContext.chunkIds());
+            if (!validDecisionEnvelope(decision, allowedCounterEvidenceIds)) {
+                return markInsufficient(taskId, candidate, run, AgentEventType.FORMAT_ERROR,
+                        "Critic 返回字段不完整、状态矛盾或引用了未验证反证，未执行漏洞否决");
+            }
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
                     safe(decision.reason()));
             candidate.hypothesis().setCriticReason(decision.reason());
             candidate.hypothesis().setUpdatedAt(Instant.now());
-            if (!decision.confirmed()) {
+            TimingDetailLog.info("任务 {} Critic 判定完成：type={}，primaryChunk={}，verdict={}，confirmed={}，reasonChars={}",
+                    taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
+                    decision.verdict(), decision.confirmed(), decision.reason().length());
+            if (decision.verdict() == LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE) {
+                return markInsufficient(taskId, candidate, run, AgentEventType.INSUFFICIENT_EVIDENCE,
+                        "Critic 证据不足：" + decision.reason());
+            }
+            if (decision.verdict() == LlmGateway.CriticVerdict.REJECTED) {
                 // 发现反证时保留被拒假设和原因，但不创建最终漏洞。
                 candidate.hypothesis().setStatus(HypothesisStatus.REJECTED);
                 hypothesisMapper.update(candidate.hypothesis());
@@ -138,6 +177,12 @@ public class CriticAgentService {
             run.complete("Critic Agent 已确认漏洞证据链");
             traceService.update(run);
             return Optional.of(finding);
+        } catch (AiResponseFormatException exception) {
+            log.warn("任务 {} Critic 响应在纠正后仍不完整，候选保留为证据不足：type={}，primaryChunk={}，原因={}",
+                    taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
+                    compactError(exception.getMessage()));
+            return markInsufficient(taskId, candidate, run, AgentEventType.FORMAT_ERROR,
+                    "Critic 响应格式异常，未执行漏洞否决：" + compactError(exception.getMessage()));
         } catch (RuntimeException exception) {
             run.fail(exception.getMessage());
             traceService.update(run);
@@ -173,7 +218,7 @@ public class CriticAgentService {
             Map<Long, CodeChunk> chunks, Set<Long> allowed,
             List<LlmGateway.LocationCandidate> candidates) {
         if (!hasIncrementalAnchor(allowed, chunks)) {
-            return Correction.unresolved("证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
+            return Correction.unresolved("证据链中没有 CHANGED 变更因果锚点");
         }
         FindingLocationResolver.LocationResolution resolution =
                 FindingLocationResolver.resolveCriticLocation(original, decision, chunks, allowed, candidates);
@@ -205,7 +250,7 @@ public class CriticAgentService {
             if (resolved.isEmpty()) return Correction.unresolved(
                     failureReason + "；定位修复未选择合法候选 ID");
             if (!hasIncrementalAnchor(allowed, chunks)) {
-                return Correction.unresolved("定位已修复，但证据链中没有 CHANGED 或 IMPACTED 变更因果锚点");
+                return Correction.unresolved("定位已修复，但证据链中没有 CHANGED 变更因果锚点");
             }
             Long primaryChunkId = resolved.orElseThrow().chunkId();
             FindingLocationResolver.Location location = resolved.orElseThrow().location();
@@ -235,6 +280,37 @@ public class CriticAgentService {
                 .filter(allowed::contains)
                 .forEach(evidenceIds::add);
         return List.copyOf(evidenceIds);
+    }
+
+    private boolean validDecisionEnvelope(LlmGateway.CriticDecision decision,
+                                          Set<Long> allowedCounterEvidenceIds) {
+        if (decision == null || decision.verdict() == null || decision.confirmed() == null
+                || decision.confidence() == null || decision.reason() == null
+                || decision.reason().isBlank()) return false;
+        if (Boolean.TRUE.equals(decision.confirmed())
+                != (decision.verdict() == LlmGateway.CriticVerdict.CONFIRMED)) return false;
+        if (decision.verdict() != LlmGateway.CriticVerdict.REJECTED) return true;
+        return !decision.counterEvidenceChunkIds().isEmpty()
+                && decision.counterEvidenceChunkIds().stream().allMatch(allowedCounterEvidenceIds::contains);
+    }
+
+    private Optional<Finding> markInsufficient(UUID taskId, AgentCandidate candidate, AgentRun run,
+                                               AgentEventType eventType, String reason) {
+        String message = reason == null || reason.isBlank() ? "Critic 证据不足，未执行漏洞否决" : reason.strip();
+        candidate.hypothesis().setStatus(HypothesisStatus.INSUFFICIENT_EVIDENCE);
+        candidate.hypothesis().setCriticReason(message);
+        candidate.hypothesis().setUpdatedAt(Instant.now());
+        hypothesisMapper.update(candidate.hypothesis());
+        traceService.event(taskId, run.getId(), AgentType.CRITIC, eventType, message);
+        run.complete("Critic Agent 未形成可执行的确认或反证结论");
+        traceService.update(run);
+        return Optional.empty();
+    }
+
+    private String compactError(String value) {
+        if (value == null || value.isBlank()) return "未知响应错误";
+        String compact = value.replaceAll("[\\r\\n\\t]", " ").strip();
+        return compact.substring(0, Math.min(compact.length(), 500));
     }
 
     /**
@@ -285,8 +361,61 @@ public class CriticAgentService {
 
     private boolean hasIncrementalAnchor(Set<Long> allowed, Map<Long, CodeChunk> chunks) {
         return allowed.stream().map(chunks::get).filter(java.util.Objects::nonNull).anyMatch(chunk ->
-                chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED
-                        || chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED);
+                chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED);
+    }
+
+    private ReviewContext buildReviewContext(LlmGateway.FindingProposal proposal,
+                                             Map<Long, CodeChunk> chunks,
+                                             Set<Long> evidenceIds, Set<Long> relatedIds) {
+        LinkedHashSet<Long> selected = new LinkedHashSet<>(relatedIds);
+        chunks.values().stream()
+                .filter(chunk -> relevantGlobalContext(proposal.type(), chunk))
+                .map(CodeChunk::getId).forEach(selected::add);
+        selected.removeAll(evidenceIds);
+        int maxChars = 24_000;
+        StringBuilder text = new StringBuilder();
+        LinkedHashSet<Long> includedIds = new LinkedHashSet<>();
+        int included = 0;
+        boolean truncated = false;
+        for (Long id : selected) {
+            CodeChunk chunk = chunks.get(id);
+            if (chunk == null) continue;
+            String content = safeText(chunk.getContent());
+            String excerpt = content.substring(0, Math.min(content.length(), 2_400));
+            String item = "\n\n[CRITIC_REVIEW_CONTEXT_ONLY] CHUNK_ID=" + id + " | "
+                    + safeText(chunk.getFilePath()) + ":" + chunk.getStartLine() + " | "
+                    + safeText(chunk.getSymbolName()) + "\n<UNTRUSTED_CODE>\n" + excerpt
+                    + "\n</UNTRUSTED_CODE>";
+            if (text.length() + item.length() > maxChars) {
+                truncated = true;
+                break;
+            }
+            text.append(item);
+            includedIds.add(id);
+            included++;
+        }
+        return new ReviewContext(text.toString(), included, truncated, Set.copyOf(includedIds));
+    }
+
+    private boolean relevantGlobalContext(com.deepaudit.domain.VulnerabilityType type, CodeChunk chunk) {
+        String value = (safeText(chunk.getAnnotations()) + " " + safeText(chunk.getContent()))
+                .toLowerCase(java.util.Locale.ROOT);
+        if (type == com.deepaudit.domain.VulnerabilityType.AUTHORIZATION
+                || type == com.deepaudit.domain.VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE) {
+            return containsAny(value, "preauthorize", "secured", "rolesallowed", "securityfilterchain",
+                    "requestmatchers", "authorizehttprequests", "permitall", "authenticated",
+                    "enablemethodsecurity", "enableglobalmethodsecurity", "handlerinterceptor");
+        }
+        if (type == com.deepaudit.domain.VulnerabilityType.STORED_XSS) {
+            return containsAny(value, "v-html", "innerhtml", "th:utext", "text/html",
+                    "mediatype.text_html", "document.write", "dangerouslysetinnerhtml");
+        }
+        return false;
+    }
+
+    private boolean containsAny(String value, String... tokens) {
+        for (String token : tokens) if (value.contains(token)) return true;
+        return false;
     }
 
     // 执行 CriticAgentService 中的 affectedEndpoint 处理。
@@ -300,5 +429,8 @@ public class CriticAgentService {
         private static Correction unresolved(String reason) {
             return new Correction(Optional.empty(), reason == null ? "未知定位错误" : reason);
         }
+    }
+
+    private record ReviewContext(String text, int chunkCount, boolean truncated, Set<Long> chunkIds) {
     }
 }

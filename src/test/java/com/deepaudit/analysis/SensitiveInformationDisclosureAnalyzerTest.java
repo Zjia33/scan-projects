@@ -61,7 +61,7 @@ class SensitiveInformationDisclosureAnalyzerTest {
     }
 
     @Test
-    void keepsPublicSensitiveResponseAsDisclosureWithoutRoutingItToAuthorization() {
+    void doesNotCreateIndependentHintForImpactedSensitiveResponse() {
         UUID taskId = UUID.randomUUID();
         GitFileChangeMapper mapper = mock(GitFileChangeMapper.class);
         when(mapper.findByTaskId(taskId)).thenReturn(List.of());
@@ -74,9 +74,7 @@ class SensitiveInformationDisclosureAnalyzerTest {
         List<FindingDraft> findings = new SensitiveInformationDisclosureAnalyzer(mapper)
                 .analyze(new AnalysisContext(taskId, Path.of("."), List.of(chunk)));
 
-        assertThat(findings).singleElement()
-                .extracting(FindingDraft::type)
-                .isEqualTo(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
+        assertThat(findings).isEmpty();
     }
 
     private GitFileChange change(UUID taskId, String newRanges) {

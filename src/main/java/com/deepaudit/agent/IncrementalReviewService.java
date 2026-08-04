@@ -2,6 +2,7 @@ package com.deepaudit.agent;
 
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.SecurityFlow;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.SemanticChangeKind;
@@ -13,8 +14,11 @@ import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -25,7 +29,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 为增量扫描构建不带漏洞预判的变更审查单元。覆盖集合只由 CHANGED/IMPACTED 决定。
+ * 为增量扫描构建 CHANGED 审查单元，并在分流决定需要时按需附加相关 IMPACTED 代码。
  */
 @Service
 @RequiredArgsConstructor
@@ -53,7 +57,7 @@ public class IncrementalReviewService {
     private final SemanticCallEdgeMapper edgeMapper;
     private final SemanticMethodChangeMapper semanticChangeMapper;
 
-    // 为每个增量深度范围代码块创建一个审查单元，不依赖安全关键词决定是否覆盖。
+    // 每个 CHANGED 代码块都是审查目标；IMPACTED 代码块只作为对应目标的影响证据。
     public List<IncrementalReviewUnit> build(UUID taskId, List<CodeChunk> chunks,
                                              Map<Long, Set<VulnerabilityType>> hints,
                                              Map<Long, String> hintDescriptions) {
@@ -77,7 +81,7 @@ public class IncrementalReviewService {
                     flowSummary(relatedFlows));
             result.add(new IncrementalReviewUnit("change-" + chunk.getId(), chunk.getId(),
                     chunk.getFilePath(), chunk.getSymbolName(), chunk.getEndpoint(), chunk.getChunkType(),
-                    chunk.getChangeType().name(), chunk.getAnalysisScope().name(), allowedTypes,
+                    chunk.getChangeType().name(), allowedTypes,
                     mandatoryTypes.stream().sorted().toList(), List.copyOf(facts), chunk.getParameters(),
                     chunk.getAnnotations(), chunk.getCalledSymbols(), excerpt(chunk.getBaseContent()),
                     excerpt(chunk.getContent()), changeSummary(relatedChanges), edgeSummary(relatedEdges),
@@ -86,44 +90,66 @@ public class IncrementalReviewService {
         return List.copyOf(result);
     }
 
-    // NEED_CONTEXT 后仅补充与当前变更直接相连的代码块，避免扩张为项目级源码采样。
+    // NEED_CONTEXT 后补充对应 IMPACTED 和少量直接相关 CONTEXT，再进行唯一一次复判。
     public List<IncrementalReviewUnit> enrich(UUID taskId, List<IncrementalReviewUnit> units,
                                               List<CodeChunk> chunks) {
+        return enrichRelated(taskId, units, chunks, true);
+    }
+
+    // 只有已经决定 INVESTIGATE 的单元才在进入专业 Agent 前补充 IMPACTED 依据。
+    public List<IncrementalReviewUnit> enrichImpact(UUID taskId, List<IncrementalReviewUnit> units,
+                                                    List<CodeChunk> chunks) {
+        return enrichRelated(taskId, units, chunks, false);
+    }
+
+    private List<IncrementalReviewUnit> enrichRelated(UUID taskId, List<IncrementalReviewUnit> units,
+                                                      List<CodeChunk> chunks, boolean includeContext) {
         Map<Long, CodeChunk> chunksById = chunks.stream().filter(chunk -> chunk.getId() != null)
                 .collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
         List<SemanticCallEdge> edges = safeList(edgeMapper.findByTaskId(taskId));
         List<SecurityFlow> flows = safeList(flowMapper.findByTaskId(taskId));
         return units.stream().map(unit -> {
             List<SemanticCallEdge> related = relatedEdges(unit.primaryChunkId(), edges);
+            Set<Long> impactedIds = impactedIds(unit.primaryChunkId(), edges, chunksById);
+            List<CodeChunk> impactedChunks = impactedIds.stream().map(chunksById::get)
+                    .filter(java.util.Objects::nonNull)
+                    .sorted(Comparator.comparing(CodeChunk::getFilePath, Comparator.nullsLast(String::compareTo))
+                            .thenComparingInt(CodeChunk::getStartLine))
+                    .toList();
+            Set<Long> impactScopeIds = new LinkedHashSet<>(impactedIds);
+            impactScopeIds.add(unit.primaryChunkId());
+            List<SecurityFlow> impactFlows = flows.stream()
+                    .filter(flow -> flow.getPrimaryChunkId() != null
+                            && impactScopeIds.contains(flow.getPrimaryChunkId()))
+                    .toList();
             Set<Long> relatedIds = new LinkedHashSet<>();
             for (SemanticCallEdge edge : related) {
                 if (edge.getCallerChunkId() != null) relatedIds.add(edge.getCallerChunkId());
                 if (edge.getCalleeChunkId() != null) relatedIds.add(edge.getCalleeChunkId());
             }
             relatedIds.remove(unit.primaryChunkId());
-            String codeContext = relatedIds.stream().limit(8).map(chunksById::get)
+            String codeContext = relatedIds.stream().map(chunksById::get)
                     .filter(java.util.Objects::nonNull)
-                    .map(chunk -> "CHUNK " + chunk.getId() + " " + safe(chunk.getFilePath()) + ":"
-                            + chunk.getStartLine() + " " + safe(chunk.getSymbolName()) + "\n"
-                            + excerpt(chunk.getContent(), 1_200))
+                    .filter(chunk -> includeContext && chunk.getAnalysisScope() == AnalysisScope.CONTEXT)
+                    .limit(8)
+                    .map(chunk -> "[CONTEXT CHUNK_ID=" + chunk.getId() + "] "
+                            + safe(chunk.getFilePath()) + ":" + chunk.getStartLine() + " "
+                            + safe(chunk.getSymbolName()) + "\n<UNTRUSTED_CODE>\n"
+                            + excerpt(chunk.getContent(), 1_200) + "\n</UNTRUSTED_CODE>")
                     .collect(Collectors.joining("\n\n"));
-            String flowContext = flowSummary(flows.stream()
-                    .filter(flow -> flow.getPrimaryChunkId() != null
-                            && flow.getPrimaryChunkId().equals(unit.primaryChunkId())).toList());
             return unit.withRelatedContext(truncate(joinNonBlank(unit.relatedContext(),
-                    edgeSummary(related), codeContext, flowContext), MAX_CONTEXT_CHARS));
+                    impactedCodeContext(impactedChunks), flowSummary(impactFlows), codeContext), MAX_CONTEXT_CHARS));
         }).toList();
     }
 
     private boolean insideIncrementalScope(CodeChunk chunk) {
-        return chunk.getAnalysisScope() == AnalysisScope.CHANGED
-                || chunk.getAnalysisScope() == AnalysisScope.IMPACTED;
+        return chunk.getAnalysisScope() == AnalysisScope.CHANGED;
     }
 
     private Set<String> facts(CodeChunk chunk, List<SemanticCallEdge> edges, List<SecurityFlow> flows,
                               List<SemanticMethodChange> changes, Set<VulnerabilityType> hints) {
         Set<String> facts = new LinkedHashSet<>();
-        facts.add(chunk.getAnalysisScope() == AnalysisScope.CHANGED ? "DIRECT_CHANGE" : "IMPACTED_BY_CHANGE");
+        facts.add("DIRECT_CHANGE");
         if (chunk.getEndpoint() != null && !chunk.getEndpoint().isBlank()) facts.add("HAS_EXTERNAL_ENDPOINT");
         String searchable = searchable(chunk);
         if (containsAny(searchable, SECURITY_ANNOTATIONS)) facts.add("HAS_SECURITY_ANNOTATION");
@@ -133,8 +159,10 @@ public class IncrementalReviewService {
         if (containsAny(searchable, VALIDATION)) facts.add("HAS_VALIDATION_OPERATION");
         if (containsAny(searchable, SENSITIVE_INFORMATION)) facts.add("HAS_SENSITIVE_INFORMATION");
         if (!edges.isEmpty()) facts.add("HAS_CALL_RELATIONS");
-        if (edges.stream().anyMatch(edge -> edge.getCalleeChunkId() == null
-                || "UNRESOLVED".equals(edge.getEdgeType()))) facts.add("HAS_UNRESOLVED_CALL");
+        if (edges.stream().anyMatch(edge -> "CODEGRAPH_CALL".equals(edge.getEdgeType())
+                && edge.getConfidence() == com.deepaudit.domain.Confidence.MEDIUM)) {
+            facts.add("HAS_CONSERVATIVE_ARGUMENT_MAPPING");
+        }
         if (!flows.isEmpty()) facts.add("HAS_SEMANTIC_FLOW");
         if (!hints.isEmpty()) facts.add("HAS_DETERMINISTIC_HINT");
         changes.stream().map(SemanticMethodChange::getChangeKind).filter(java.util.Objects::nonNull)
@@ -154,6 +182,46 @@ public class IncrementalReviewService {
             result.add(VulnerabilityType.VALIDATION_BYPASS);
         }
         return result;
+    }
+
+    private Set<Long> impactedIds(long changedChunkId, List<SemanticCallEdge> edges,
+                                  Map<Long, CodeChunk> chunksById) {
+        Map<Long, Set<Long>> adjacency = new LinkedHashMap<>();
+        for (SemanticCallEdge edge : edges) {
+            Long caller = edge.getCallerChunkId();
+            Long callee = edge.getCalleeChunkId();
+            if (caller == null || callee == null || edge.getConfidence() == Confidence.LOW) continue;
+            adjacency.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
+            adjacency.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
+        }
+        Set<Long> visited = new LinkedHashSet<>();
+        Set<Long> result = new LinkedHashSet<>();
+        ArrayDeque<Long> queue = new ArrayDeque<>();
+        visited.add(changedChunkId);
+        queue.add(changedChunkId);
+        while (!queue.isEmpty()) {
+            Long current = queue.removeFirst();
+            for (Long candidateId : adjacency.getOrDefault(current, Set.of())) {
+                if (!visited.add(candidateId)) continue;
+                CodeChunk candidate = chunksById.get(candidateId);
+                if (candidate == null || candidate.getAnalysisScope() != AnalysisScope.IMPACTED) continue;
+                result.add(candidateId);
+                queue.addLast(candidateId);
+            }
+        }
+        return result;
+    }
+
+    private String impactedCodeContext(List<CodeChunk> impactedChunks) {
+        if (impactedChunks.isEmpty()) return "";
+        String chunks = impactedChunks.stream().map(chunk -> "[IMPACTED CHUNK_ID=" + chunk.getId() + "] "
+                        + safe(chunk.getFilePath()) + ":" + chunk.getStartLine() + "-" + chunk.getEndLine()
+                        + " | " + safe(chunk.getSymbolName()) + " | endpoint=" + safe(chunk.getEndpoint())
+                        + "\n<UNTRUSTED_CODE>\n" + excerpt(chunk.getContent(), 1_200)
+                        + "\n</UNTRUSTED_CODE>")
+                .collect(Collectors.joining("\n\n"));
+        return "[IMPACTED_CONTEXT] 以下未变更代码块受当前 CHANGED 代码影响，"
+                + "仅作为本次变更的判断依据，不是独立审查目标。\n" + chunks;
     }
 
     private List<SemanticMethodChange> relatedChanges(CodeChunk chunk, List<SemanticMethodChange> changes,

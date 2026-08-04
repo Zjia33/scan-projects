@@ -10,6 +10,8 @@ import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import com.deepaudit.util.ExecutionTiming;
+import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -60,14 +62,18 @@ public class AgentRuntime {
                         task.ruleHint(), semanticEvidence.text(), recon,
                         promptObservations(observations), iteration);
                 String observationContext = observations.isEmpty()
-                        ? "结合 Recon 技术栈和语义调用链进行安全判断"
-                        : "结合 Recon 技术栈、语义调用链和 " + observations.size()
+                        ? "结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断"
+                        : "结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 " + observations.size()
                         + " 条工具观察进行安全判断";
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
                         "第 " + iteration + " 轮：" + observationContext);
+                long modelStarted = ExecutionTiming.start();
                 LlmGateway.AgentDecision decision = llmGateway.decide(turn);
+                long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
+                TimingDetailLog.info("模型阶段结束：taskId={}，stage=PROFESSIONAL_AGENT_MODEL，agentType={}，chunkId={}，iteration={}，elapsedMs={}",
+                        taskId, task.agentType(), task.chunkId(), iteration, modelElapsedMs);
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REASONING,
-                        safe(decision.summary()));
+                        "模型调用完成，耗时 " + modelElapsedMs + " ms；" + safe(decision.summary()));
                 traceService.update(run);
                 String action = decision.action() == null ? "" : decision.action().toUpperCase();
                 if ("TOOL".equals(action)) {
@@ -151,6 +157,7 @@ public class AgentRuntime {
         if (proposal.evidenceChunkIds().stream().anyMatch(id -> !allowedEvidence.contains(id))) return null;
         List<Long> ids = new ArrayList<>(proposal.evidenceChunkIds());
         if (!ids.contains(proposal.primaryChunkId())) ids.add(0, proposal.primaryChunkId());
+        if (!ids.contains(task.chunkId())) ids.add(task.chunkId());
         Severity severity = proposal.severity() == null ? Severity.HIGH : proposal.severity();
         Confidence confidence = proposal.confidence() == null ? Confidence.MEDIUM : proposal.confidence();
         CodeChunk primary = chunks.get(proposal.primaryChunkId());
@@ -158,11 +165,10 @@ public class AgentRuntime {
         CodeChunk investigationTarget = chunks.get(task.chunkId());
         if (investigationTarget == null) return null;
         boolean incrementalTarget = investigationTarget.getAnalysisScope()
-                == com.deepaudit.domain.AnalysisScope.CHANGED
-                || investigationTarget.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED;
+                == com.deepaudit.domain.AnalysisScope.CHANGED;
         boolean incrementalPrimary = primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED
                 || primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED;
-        if (incrementalTarget && !incrementalPrimary) return null;
+        if (!incrementalTarget || !incrementalPrimary) return null;
         FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
         return new LlmGateway.FindingProposal(proposal.type(), severity, confidence,
                 proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids,

@@ -2,7 +2,7 @@ package com.deepaudit;
 
 import com.deepaudit.ai.AiProperties;
 import com.deepaudit.ai.LlmGateway;
-import com.deepaudit.agent.AuditUnit;
+import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.VulnerabilityType;
@@ -53,12 +53,13 @@ class ModelApiManualIT {
     void conversationModelRecognizesSqlInjectionAndReturnsAgentJson() throws Exception {
         requireConfigured("对话模型", aiProperties.getBaseUrl(), aiProperties.getApiKey(), aiProperties.getModel());
         UUID taskId = UUID.randomUUID();
-        AuditUnit auditUnit = new AuditUnit("chunk-" + TARGET_CHUNK_ID, TARGET_CHUNK_ID,
+        IncrementalReviewUnit reviewUnit = new IncrementalReviewUnit(
+                "change-" + TARGET_CHUNK_ID, TARGET_CHUNK_ID,
                 "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
-                "EXTERNAL_ENTRY", "MODIFIED", "CHANGED", List.of(VulnerabilityType.SQL_INJECTION),
-                List.of("EXTERNAL_ENTRY", "DANGEROUS_DATA_ACCESS", "DIRECT_CHANGE"), "String name",
-                "@GetMapping(\"/search\")", "queryForList -> DATABASE", "用户输入进入动态 SQL",
-                VULNERABLE_CODE);
+                "JAVA_METHOD", "ADDED", List.of(VulnerabilityType.SQL_INJECTION), List.of(),
+                List.of("DIRECT_CHANGE", "HAS_EXTERNAL_ENDPOINT", "HAS_DATA_ACCESS"), "String name",
+                "@GetMapping(\"/search\")", "queryForList", "", VULNERABLE_CODE,
+                "METHOD_ADDED", "", "");
         LlmGateway.Target target = new LlmGateway.Target(TARGET_CHUNK_ID,
                 "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
                 "JAVA_METHOD", "String name", "@GetMapping(\"/search\")", "queryForList",
@@ -68,7 +69,7 @@ class ModelApiManualIT {
                 "Spring MVC 接口直接使用 JdbcTemplate 访问数据库",
                 com.deepaudit.recon.TechnologyProfile.empty());
 
-        LlmGateway.TriagePlan plan = llmGateway.triage(taskId, recon, List.of(auditUnit));
+        LlmGateway.TriagePlan plan = llmGateway.triageIncremental(taskId, recon, List.of(reviewUnit));
         printJson("对话模型配置", new ModelConfiguration(aiProperties.getBaseUrl(), aiProperties.getModel()));
         printJson("Triage Orchestrator 返回", plan);
         assertThat(plan.decisions())

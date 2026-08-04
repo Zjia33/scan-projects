@@ -84,14 +84,14 @@ class LightweightSemanticAnalyzerTest {
 
         SemanticAnalysisProperties properties = new SemanticAnalysisProperties();
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(properties)
-                .analyze(taskId, root, chunks, Set.of(1L, 2L, 3L, 4L, 5L), List.of(
-                        new CodeGraphIntegrationService.ScopedRelation(1L, 3L, 9,
+                .enrich(taskId, root, chunks, Set.of(1L, 2L, 3L, 4L, 5L), List.of(
+                        new CodeGraphIntegrationService.ScopedRelation(1L, 3L,
                                 "getById", "CODEGRAPH_CALLEE"),
-                        new CodeGraphIntegrationService.ScopedRelation(3L, 4L, 8,
+                        new CodeGraphIntegrationService.ScopedRelation(3L, 4L,
                                 "selectById", "CODEGRAPH_CALLEE")));
 
         assertThat(result.edges()).extracting(edge -> edge.getEdgeType())
-                .contains("CODEGRAPH_VERIFIED", "MYBATIS_XML");
+                .contains("CODEGRAPH_CALL", "MYBATIS_XML");
         assertThat(result.edges()).anySatisfy(edge -> {
             if ("MYBATIS_XML".equals(edge.getEdgeType())) {
                 assertThat(edge.getConfidence().name()).isEqualTo("HIGH");
@@ -128,7 +128,7 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "Long id");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(chunk), Set.of(10L), List.of());
+                .enrich(taskId, root, List.of(chunk), Set.of(10L), List.of());
 
         assertThat(result.flows()).noneMatch(flow -> flow.getType() == VulnerabilityType.AUTHORIZATION);
     }
@@ -152,7 +152,7 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "Long id");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(endpoint), Set.of(15L), List.of());
+                .enrich(taskId, root, List.of(endpoint), Set.of(15L), List.of());
 
         List<SecurityFlow> authorizationFlows = result.flows().stream()
                 .filter(flow -> flow.getType() == VulnerabilityType.AUTHORIZATION)
@@ -184,7 +184,7 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(endpoint, security), Set.of(20L, 21L), List.of());
+                .enrich(taskId, root, List.of(endpoint, security), Set.of(20L, 21L), List.of());
 
         assertThat(result.flows()).noneMatch(flow -> flow.getType() == VulnerabilityType.AUTHORIZATION
                 && "HTTP 敏感业务入口".equals(flow.getSourceDescription()));
@@ -211,7 +211,7 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "Long id");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(endpoint), Set.of(30L), List.of());
+                .enrich(taskId, root, List.of(endpoint), Set.of(30L), List.of());
 
         assertThat(result.edges()).anySatisfy(edge -> {
             if ("PERSISTENCE_API".equals(edge.getEdgeType())) {
@@ -219,14 +219,14 @@ class LightweightSemanticAnalyzerTest {
                 assertThat(edge.getResolutionReason()).contains("持久层边界");
             }
         });
-        assertThat(result.coverage().frameworkResolvedCallSites()).isEqualTo(1);
-        assertThat(result.coverage().unresolvedCallSites()).isZero();
+        assertThat(result.coverage().frameworkEdges()).isEqualTo(1);
+        assertThat(result.coverage().unenrichedCodeGraphRelations()).isZero();
         assertThat(result.flows()).anyMatch(flow -> flow.getType() == VulnerabilityType.AUTHORIZATION
                 && flow.getPathText().contains("PERSISTENCE_API"));
     }
 
     @Test
-    void verifiesCodeGraphRelationAtTheLocalCallSiteWithoutGlobalCandidateScoring() throws Exception {
+    void enrichesCodeGraphRelationAtTheLocalCallSiteWithoutRebuildingGlobalTopology() throws Exception {
         write("src/main/java/demo/LegacyController.java", """
                 package demo;
                 class LegacyController {
@@ -253,18 +253,18 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "Long id");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(caller, callee), Set.of(40L, 41L), List.of(
-                        new CodeGraphIntegrationService.ScopedRelation(40L, 41L, 4,
+                .enrich(taskId, root, List.of(caller, callee), Set.of(40L, 41L), List.of(
+                        new CodeGraphIntegrationService.ScopedRelation(40L, 41L,
                                 "load", "CODEGRAPH_CALLEE")));
 
         assertThat(result.edges()).anySatisfy(edge -> {
             if ("load".equals(edge.getCalledName())) {
-                assertThat(edge.getEdgeType()).isEqualTo("CODEGRAPH_VERIFIED");
+                assertThat(edge.getEdgeType()).isEqualTo("CODEGRAPH_CALL");
                 assertThat(edge.getCalleeChunkId()).isEqualTo(41L);
                 assertThat(edge.getResolutionReason()).contains("局部 AST");
             }
         });
-        assertThat(result.coverage().exactResolvedCallSites()).isEqualTo(1);
+        assertThat(result.coverage().enrichedCodeGraphRelations()).isEqualTo(1);
     }
 
     @Test
@@ -317,8 +317,8 @@ class LightweightSemanticAnalyzerTest {
                         "TEXT_HTML", ""));
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, chunks, Set.of(50L, 51L, 52L, 53L), List.of(
-                        new CodeGraphIntegrationService.ScopedRelation(50L, 51L, 9,
+                .enrich(taskId, root, chunks, Set.of(50L, 51L, 52L, 53L), List.of(
+                        new CodeGraphIntegrationService.ScopedRelation(50L, 51L,
                                 "save", "CODEGRAPH_CALLEE")));
 
         SecurityFlow flow = result.flows().stream()
@@ -359,7 +359,7 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "CommentCreated event");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(publisher, consumer), Set.of(60L, 61L), List.of());
+                .enrich(taskId, root, List.of(publisher, consumer), Set.of(60L, 61L), List.of());
 
         assertThat(result.edges()).anySatisfy(edge -> {
             if ("SPRING_EVENT".equals(edge.getEdgeType())) {
@@ -368,8 +368,8 @@ class LightweightSemanticAnalyzerTest {
                 assertThat(edge.getArgumentMapping()).contains("0<-0");
             }
         });
-        assertThat(result.edges()).noneMatch(edge -> "publishEvent".equals(edge.getCalledName())
-                && "UNRESOLVED".equals(edge.getEdgeType()));
+        assertThat(result.edges()).filteredOn(edge -> "publishEvent".equals(edge.getCalledName()))
+                .allMatch(edge -> edge.getCalleeChunkId() != null);
     }
 
     @Test
@@ -392,7 +392,7 @@ class LightweightSemanticAnalyzerTest {
                 "void submit() { repository.save(); }", "JAVA_METHOD", "");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(production), Set.of(70L), List.of());
+                .enrich(taskId, root, List.of(production), Set.of(70L), List.of());
 
         assertThat(result.symbols()).extracting(symbol -> symbol.getFilePath())
                 .contains("src/main/java/demo/OrderService.java")
@@ -402,7 +402,7 @@ class LightweightSemanticAnalyzerTest {
     }
 
     @Test
-    void parsesOnlyScopedMethodsAndKeepsUnverifiedCodeGraphRelationsAsCandidates() throws Exception {
+    void parsesOnlyScopedMethodsAndKeepsCodeGraphRelationWhenLocalCallNameDiffers() throws Exception {
         write("src/main/java/demo/EntryController.java", """
                 package demo;
                 class EntryController {
@@ -436,15 +436,15 @@ class LightweightSemanticAnalyzerTest {
                 "JAVA_METHOD", "");
 
         LightweightSemanticAnalyzer.Result result = new LightweightSemanticAnalyzer(new SemanticAnalysisProperties())
-                .analyze(taskId, root, List.of(entry, danger, unrelated), Set.of(80L, 81L), List.of(
-                        new CodeGraphIntegrationService.ScopedRelation(80L, 81L, 3,
+                .enrich(taskId, root, List.of(entry, danger, unrelated), Set.of(80L, 81L), List.of(
+                        new CodeGraphIntegrationService.ScopedRelation(80L, 81L,
                                 "load", "CODEGRAPH_CALLEE")));
 
         assertThat(result.symbols()).extracting(symbol -> symbol.getChunkId()).doesNotContain(82L);
-        assertThat(result.edges()).anyMatch(edge -> "CODEGRAPH_CANDIDATE".equals(edge.getEdgeType())
+        assertThat(result.edges()).anyMatch(edge -> "CODEGRAPH_CALL".equals(edge.getEdgeType())
                 && edge.getCallerChunkId().equals(80L) && edge.getCalleeChunkId().equals(81L));
-        assertThat(result.edges()).noneMatch(edge -> "CODEGRAPH_VERIFIED".equals(edge.getEdgeType()));
-        assertThat(result.flows()).noneMatch(flow -> flow.getEvidenceChunkIds().contains("81"));
+        assertThat(result.coverage().unenrichedCodeGraphRelations()).isEqualTo(1);
+        assertThat(result.flows()).anyMatch(flow -> flow.getEvidenceChunkIds().contains("81"));
     }
 
     private CodeChunk chunk(Long id, UUID taskId, String file, String symbol, String endpoint,

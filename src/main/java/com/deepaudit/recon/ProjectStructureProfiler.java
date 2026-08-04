@@ -29,7 +29,15 @@ final class ProjectStructureProfiler {
 
     // 执行 ProjectStructureProfiler 中的 profile 处理。
     ProjectStructureProfile profile(Path root, List<CodeChunk> chunks) {
-        List<Path> files = inspectableFiles(root);
+        return profile(root, chunks, inspectableFiles(root));
+    }
+
+    ProjectStructureProfile profile(Path root, List<CodeChunk> chunks, List<Path> selectedFiles) {
+        List<Path> files = selectedFiles.stream().filter(Files::isRegularFile)
+                .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                .filter(this::isInspectable).distinct()
+                .sorted(Comparator.comparing(path -> normalize(root.relativize(path).toString())))
+                .toList();
         List<String> moduleRoots = discoverModuleRoots(root, files);
         Map<String, ModuleAccumulator> modules = new TreeMap<>();
         moduleRoots.forEach(module -> modules.put(module, new ModuleAccumulator(module)));

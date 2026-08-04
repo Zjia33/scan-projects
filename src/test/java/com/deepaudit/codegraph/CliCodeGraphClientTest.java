@@ -122,6 +122,23 @@ class CliCodeGraphClientTest {
         verify(runner, times(2)).run(eq(target.toRealPath()), anyList(), anyMap());
     }
 
+    @Test
+    void acceptsACommitScopedCacheWorkspace() throws Exception {
+        UUID taskId = UUID.randomUUID();
+        Path cache = Files.createDirectory(temporaryDirectory.resolve("commit-cache"));
+        Path root = Files.createDirectory(cache.resolve("0123456789abcdef0123456789abcdef01234567"));
+        CodeGraphProperties properties = new CodeGraphProperties();
+        CodeGraphCommandRunner runner = mock(CodeGraphCommandRunner.class);
+        when(runner.run(eq(root.toRealPath()), anyList(), anyMap())).thenReturn(
+                output(0, "", ""),
+                output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""));
+        CliCodeGraphClient cached = new CliCodeGraphClient(properties, runner, new ObjectMapper());
+
+        cached.prepare(taskId, CodeGraphSnapshot.TARGET, root);
+
+        verify(runner, times(2)).run(eq(root.toRealPath()), anyList(), anyMap());
+    }
+
     private CodeGraphCommandRunner.CommandOutput output(int exitCode, String stdout, String stderr) {
         return new CodeGraphCommandRunner.CommandOutput(exitCode, stdout, stderr, Duration.ZERO);
     }

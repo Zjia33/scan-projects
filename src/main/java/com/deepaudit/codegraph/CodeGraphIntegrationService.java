@@ -3,6 +3,7 @@ package com.deepaudit.codegraph;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
+import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -40,13 +41,17 @@ public class CodeGraphIntegrationService {
 
     private boolean prepareSnapshot(UUID taskId, CodeGraphSnapshot snapshot, Path root) {
         if (!properties.enabled()) return false;
-        log.info("任务 {} 开始准备 CodeGraph {} 索引：workspace={}",
+        if (prepared(taskId, snapshot)) {
+            log.debug("任务 {} CodeGraph {} 索引已绑定，跳过重复准备", taskId, snapshot);
+            return true;
+        }
+        TimingDetailLog.info("任务 {} 开始准备 CodeGraph {} 索引：workspace={}",
                 taskId, snapshot, root == null ? "-" : root.getFileName());
         try {
             client.prepare(taskId, snapshot, root);
             preparedSnapshots.computeIfAbsent(taskId,
                     ignored -> ConcurrentHashMap.newKeySet()).add(snapshot);
-            log.info("任务 {} CodeGraph {} 索引已就绪", taskId, snapshot);
+            TimingDetailLog.info("任务 {} CodeGraph {} 索引已就绪", taskId, snapshot);
             return true;
         } catch (RuntimeException exception) {
             preparedSnapshots.computeIfPresent(taskId, (ignored, values) -> {
@@ -65,7 +70,7 @@ public class CodeGraphIntegrationService {
                                        List<SemanticMethodChange> methodChanges) {
         Set<Long> contextualIds = new LinkedHashSet<>(contextualImpactedChunkIds);
         if (!prepared(taskId, CodeGraphSnapshot.TARGET)) {
-            return new ImpactDecision(Set.copyOf(contextualIds), Set.of(), 0, 0);
+            return new ImpactDecision(Set.copyOf(contextualIds), Set.of(), List.of(), 0, 0);
         }
 
         List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
@@ -100,18 +105,33 @@ public class CodeGraphIntegrationService {
                     + " 个增量影响查询失败，不能将失败解释为无影响");
         }
 
+        return mapImpact(taskId, chunks, changedChunkIds, contextualIds, locations,
+                queried.size(), failedQueries[0]);
+    }
+
+    public ImpactDecision mapImpact(UUID taskId, List<CodeChunk> chunks, Set<Long> changedChunkIds,
+                                    Set<Long> contextualImpactedChunkIds,
+                                    List<CodeGraphClient.CodeGraphLocation> locations) {
+        return mapImpact(taskId, chunks, changedChunkIds, contextualImpactedChunkIds,
+                locations, 0, 0);
+    }
+
+    private ImpactDecision mapImpact(UUID taskId, List<CodeChunk> chunks, Set<Long> changedChunkIds,
+                                     Set<Long> contextualImpactedChunkIds,
+                                     List<CodeGraphClient.CodeGraphLocation> locations,
+                                     int queryCount, int failedQueries) {
         CodeGraphResultMapper.MappingResult mapping = resultMapper.map(chunks, locations);
         Set<Long> codeGraphIds = new LinkedHashSet<>(mapping.chunkIds());
         codeGraphIds.removeAll(changedChunkIds);
-        Set<Long> effective = new LinkedHashSet<>(contextualIds);
+        Set<Long> effective = new LinkedHashSet<>(contextualImpactedChunkIds);
         effective.addAll(codeGraphIds);
 
-        log.info("任务 {} CodeGraph 双快照影响范围：context={}，codegraph={}，queries={}，"
+        TimingDetailLog.info("任务 {} CodeGraph 影响映射完成：context={}，codegraph={}，queries={}，"
                         + "locations={}，unmapped={}，failed={}",
-                taskId, contextualIds.size(), codeGraphIds.size(), queried.size(),
-                locations.size(), mapping.unmappedLocations(), failedQueries[0]);
-        return new ImpactDecision(Set.copyOf(effective), Set.copyOf(codeGraphIds),
-                mapping.unmappedLocations(), failedQueries[0]);
+                taskId, contextualImpactedChunkIds.size(), codeGraphIds.size(), queryCount,
+                locations.size(), mapping.unmappedLocations(), failedQueries);
+        return new ImpactDecision(Set.copyOf(effective), Set.copyOf(codeGraphIds), List.copyOf(locations),
+                mapping.unmappedLocations(), failedQueries);
     }
 
     private void queryImpact(UUID taskId, CodeGraphSnapshot snapshot, String symbol,
@@ -142,7 +162,7 @@ public class CodeGraphIntegrationService {
         }
     }
 
-    // 查询作用域内的直接 callers/callees，生成供 JavaParser 局部验证的候选拓扑。
+    // 查询作用域内的直接 callers/callees，形成跨方法分析的权威拓扑输入。
     public ScopedTopology scopedTopology(UUID taskId, List<CodeChunk> chunks, Set<Long> primaryScopeIds) {
         if (!prepared(taskId, CodeGraphSnapshot.TARGET) || primaryScopeIds.isEmpty()) {
             return ScopedTopology.empty();
@@ -152,6 +172,7 @@ public class CodeGraphIntegrationService {
                         (left, right) -> left, LinkedHashMap::new));
         Map<String, ScopedRelation> relations = new LinkedHashMap<>();
         Set<Long> contextIds = new LinkedHashSet<>();
+        List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
         int unmapped = 0;
         int failed = 0;
         Set<String> queried = new LinkedHashSet<>();
@@ -165,22 +186,24 @@ public class CodeGraphIntegrationService {
                 CodeGraphClient.RelatedLocations related = client.related(taskId, CodeGraphSnapshot.TARGET,
                         symbol, safeRelationLimit());
                 for (CodeGraphClient.CodeGraphLocation callerLocation : related.callers()) {
+                    locations.add(callerLocation);
                     CodeChunk caller = resultMapper.mapLocation(chunks, callerLocation);
                     if (caller == null || caller.getId() == null || caller.getId().equals(id)) {
                         unmapped++;
                         continue;
                     }
                     contextIds.add(caller.getId());
-                    addRelation(relations, caller, current, callerLocation, "CODEGRAPH_CALLER");
+                    addRelation(relations, caller, current, "CODEGRAPH_CALLER");
                 }
                 for (CodeGraphClient.CodeGraphLocation calleeLocation : related.callees()) {
+                    locations.add(calleeLocation);
                     CodeChunk callee = resultMapper.mapLocation(chunks, calleeLocation);
                     if (callee == null || callee.getId() == null || callee.getId().equals(id)) {
                         unmapped++;
                         continue;
                     }
                     contextIds.add(callee.getId());
-                    addRelation(relations, current, callee, calleeLocation, "CODEGRAPH_CALLEE");
+                    addRelation(relations, current, callee, "CODEGRAPH_CALLEE");
                 }
             } catch (RuntimeException exception) {
                 failed++;
@@ -192,27 +215,27 @@ public class CodeGraphIntegrationService {
         if (failed > 0) {
             throw new CodeGraphException("CodeGraph 有 " + failed + " 个作用域关系查询失败");
         }
-        return new ScopedTopology(List.copyOf(relations.values()), Set.copyOf(contextIds), unmapped, failed);
+        return new ScopedTopology(List.copyOf(relations.values()), Set.copyOf(contextIds),
+                List.copyOf(locations), unmapped, failed);
     }
 
     private void addRelation(Map<String, ScopedRelation> relations, CodeChunk caller, CodeChunk callee,
-                             CodeGraphClient.CodeGraphLocation location, String reason) {
+                             String reason) {
         String key = caller.getId() + "->" + callee.getId();
         relations.putIfAbsent(key, new ScopedRelation(caller.getId(), callee.getId(),
-                Math.max(0, location.startLine() == null ? 0 : location.startLine()),
                 simpleSymbol(callee.getSymbolName()), reason));
     }
 
-    public CandidateContext candidateContext(UUID taskId, CodeChunk current,
-                                             List<CodeChunk> chunks, int requestedLimit) {
+    public RelationContext relationContext(UUID taskId, CodeChunk current,
+                                           List<CodeChunk> chunks, int requestedLimit) {
         if (!prepared(taskId, CodeGraphSnapshot.TARGET)
                 || current == null || !"JAVA_METHOD".equals(current.getChunkType())) {
-            return CandidateContext.empty();
+            return RelationContext.empty();
         }
         int limit = Math.max(1, Math.min(requestedLimit <= 0
                 ? properties.getAgentContextLimit() : requestedLimit, properties.getAgentContextLimit()));
         String symbol = codeGraphSymbol(current.getSymbolName());
-        if (symbol.isBlank()) return CandidateContext.empty();
+        if (symbol.isBlank()) return RelationContext.empty();
         try {
             CodeGraphClient.RelatedLocations related = client.related(taskId, CodeGraphSnapshot.TARGET,
                     symbol, limit);
@@ -222,7 +245,7 @@ public class CodeGraphIntegrationService {
             CodeGraphResultMapper.MappingResult mapping = resultMapper.map(chunks, locations);
             Set<Long> ids = new LinkedHashSet<>(mapping.chunkIds());
             ids.remove(current.getId());
-            if (ids.isEmpty()) return CandidateContext.empty();
+            if (ids.isEmpty()) return RelationContext.empty();
 
             Map<Long, CodeChunk> byId = chunks.stream().filter(chunk -> chunk.getId() != null)
                     .collect(Collectors.toMap(CodeChunk::getId, chunk -> chunk,
@@ -232,23 +255,56 @@ public class CodeGraphIntegrationService {
                     .limit(limit).toList();
             Set<Long> selectedIds = selected.stream().map(CodeChunk::getId)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
-            String text = "[CODEGRAPH_CANDIDATE] 以下调用关系只用于补充上下文；引用为漏洞证据前必须调用 "
-                    + "verify_relation 验证。\n" + selected.stream()
+            String text = "[VERIFIED_EVIDENCE][CODEGRAPH_RELATIONS] CodeGraph Target 索引确认以下方法与当前方法存在直接调用关系。\n"
+                    + selected.stream()
                     .map(chunk -> "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":"
                             + chunk.getStartLine() + " | " + chunk.getSymbolName())
                     .collect(Collectors.joining("\n"));
-            return new CandidateContext(text, Set.copyOf(selectedIds), mapping.unmappedLocations());
+            return new RelationContext(text, Set.copyOf(selectedIds), mapping.unmappedLocations());
         } catch (RuntimeException exception) {
             log.warn("任务 {} CodeGraph Agent 上下文查询失败，symbol={}：{}",
                     taskId, symbol, exception.getMessage());
-            return CandidateContext.empty();
+            return RelationContext.empty();
+        }
+    }
+
+    // 使用 CodeGraph 对其它搜索工具发现的候选执行直接关系验证。
+    public RelationCheck verifyDirectRelation(UUID taskId, CodeChunk current, CodeChunk candidate,
+                                              List<CodeChunk> chunks) {
+        if (!prepared(taskId, CodeGraphSnapshot.TARGET) || current == null || candidate == null
+                || !"JAVA_METHOD".equals(current.getChunkType())
+                || !"JAVA_METHOD".equals(candidate.getChunkType())) {
+            return RelationCheck.unverified("CodeGraph Target 索引未就绪或待验证对象不是 Java 方法");
+        }
+        String symbol = codeGraphSymbol(current.getSymbolName());
+        if (symbol.isBlank()) return RelationCheck.unverified("当前代码块没有可查询的 CodeGraph 符号");
+        try {
+            CodeGraphClient.RelatedLocations related = client.related(
+                    taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
+            List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
+            locations.addAll(related.callers());
+            locations.addAll(related.callees());
+            Set<Long> mapped = new LinkedHashSet<>(resultMapper.map(chunks, locations).chunkIds());
+            boolean verified = candidate.getId() != null && mapped.contains(candidate.getId());
+            if (verified) {
+                TimingDetailLog.info("任务 {} CodeGraph 直接关系复验通过：{} <-> {}",
+                        taskId, current.getId(), candidate.getId());
+                return new RelationCheck(true, "CodeGraph Target 索引确认两个方法存在直接调用关系");
+            }
+            TimingDetailLog.info("任务 {} CodeGraph 直接关系复验未命中：{} <-> {}，mapped={}",
+                    taskId, current.getId(), candidate.getId(), mapped.size());
+            return RelationCheck.unverified("CodeGraph 未确认当前方法与待验证方法存在直接调用关系");
+        } catch (RuntimeException exception) {
+            log.warn("任务 {} CodeGraph 直接关系复验失败：{} <-> {}，原因={}",
+                    taskId, current.getId(), candidate.getId(), exception.getMessage());
+            return RelationCheck.unverified("CodeGraph 关系验证失败，可继续检查其它确定性关系");
         }
     }
 
     public void release(UUID taskId) {
         boolean prepared = preparedSnapshots.remove(taskId) != null;
         safeClientRelease(taskId);
-        if (prepared) log.info("任务 {} CodeGraph Base/Target 任务状态已释放", taskId);
+        if (prepared) TimingDetailLog.info("任务 {} CodeGraph Base/Target 任务状态已释放", taskId);
     }
 
     private boolean prepared(UUID taskId, CodeGraphSnapshot snapshot) {
@@ -283,33 +339,41 @@ public class CodeGraphIntegrationService {
 
     public record ImpactDecision(Set<Long> effectiveImpactedChunkIds,
                                  Set<Long> codeGraphImpactedChunkIds,
+                                 List<CodeGraphClient.CodeGraphLocation> locations,
                                  int unmappedLocations, int failedQueries) {
     }
 
-    public record ScopedRelation(Long callerChunkId, Long calleeChunkId, int reportedLine,
-                                 String calledName, String source) {
+    public record ScopedRelation(Long callerChunkId, Long calleeChunkId, String calledName, String source) {
     }
 
     public record ScopedTopology(List<ScopedRelation> relations, Set<Long> contextChunkIds,
+                                 List<CodeGraphClient.CodeGraphLocation> locations,
                                  int unmappedLocations, int failedQueries) {
         public ScopedTopology {
             relations = relations == null ? List.of() : List.copyOf(relations);
             contextChunkIds = contextChunkIds == null ? Set.of() : Set.copyOf(contextChunkIds);
+            locations = locations == null ? List.of() : List.copyOf(locations);
         }
 
         public static ScopedTopology empty() {
-            return new ScopedTopology(List.of(), Set.of(), 0, 0);
+            return new ScopedTopology(List.of(), Set.of(), List.of(), 0, 0);
         }
     }
 
-    public record CandidateContext(String text, Set<Long> candidateChunkIds, int unmappedLocations) {
-        public CandidateContext {
+    public record RelationContext(String text, Set<Long> relatedChunkIds, int unmappedLocations) {
+        public RelationContext {
             text = text == null ? "" : text;
-            candidateChunkIds = candidateChunkIds == null ? Set.of() : Set.copyOf(candidateChunkIds);
+            relatedChunkIds = relatedChunkIds == null ? Set.of() : Set.copyOf(relatedChunkIds);
         }
 
-        public static CandidateContext empty() {
-            return new CandidateContext("", Set.of(), 0);
+        public static RelationContext empty() {
+            return new RelationContext("", Set.of(), 0);
+        }
+    }
+
+    public record RelationCheck(boolean verified, String reason) {
+        private static RelationCheck unverified(String reason) {
+            return new RelationCheck(false, reason);
         }
     }
 }

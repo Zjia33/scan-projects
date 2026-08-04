@@ -59,7 +59,7 @@ public class AuditToolService {
                     anchor.getTaskId(), anchor, chunks, arguments, limit);
             case AgentToolCatalog.SEARCH_CODE -> professionalToolService.searchCode(
                     anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> addCodeGraphCandidates(
+            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> addCodeGraphRelations(
                     professionalToolService.exploreCallGraph(anchor.getTaskId(), anchor, chunks,
                             arguments, limit), anchor, chunks, limit);
             case AgentToolCatalog.GET_CHANGE_CONTEXT -> professionalToolService.getChangeContext(
@@ -98,18 +98,19 @@ public class AuditToolService {
         return new AnchorResolution(anchor, null);
     }
 
-    // CodeGraph 关系只作为候选上下文返回，不能绕过 verify_relation 进入允许证据集合。
-    private ToolResult addCodeGraphCandidates(ToolResult base, CodeChunk current,
-                                              List<CodeChunk> chunks, int limit) {
+    // CodeGraph 直接关系与持久化语义图具有相同证据级别，不再要求 JavaParser 或本地名称匹配重复证明。
+    private ToolResult addCodeGraphRelations(ToolResult base, CodeChunk current,
+                                             List<CodeChunk> chunks, int limit) {
         if (codeGraphIntegrationService == null) return base;
-        CodeGraphIntegrationService.CandidateContext context = codeGraphIntegrationService.candidateContext(
+        CodeGraphIntegrationService.RelationContext context = codeGraphIntegrationService.relationContext(
                 current.getTaskId(), current, chunks, limit);
-        if (context.candidateChunkIds().isEmpty()) return base;
+        if (context.relatedChunkIds().isEmpty()) return base;
+        Set<Long> evidence = new LinkedHashSet<>(base.evidenceChunkIds());
+        evidence.addAll(context.relatedChunkIds());
         Set<Long> candidates = new LinkedHashSet<>(base.candidateChunkIds());
-        candidates.addAll(context.candidateChunkIds());
-        candidates.removeAll(base.evidenceChunkIds());
+        candidates.removeAll(evidence);
         String text = base.text() + "\n\n" + context.text();
-        return new ToolResult(base.status(), base.code(), text, base.evidenceChunkIds(), candidates,
+        return new ToolResult(base.status(), base.code(), text, evidence, candidates,
                 base.truncated(), base.nextCursor());
     }
 
@@ -191,15 +192,24 @@ public class AuditToolService {
         }
         SemanticEvidenceService.RelationVerification semantic = semanticEvidenceService.verifyRelation(
                 current.getTaskId(), current.getId(), candidateId);
+        CodeGraphIntegrationService.RelationCheck codeGraph = codeGraphIntegrationService == null
+                ? null : codeGraphIntegrationService.verifyDirectRelation(
+                current.getTaskId(), current, candidate, chunks);
         RelationAssessment structural = structuralRelation(current, candidate, chunks);
         if (semantic != null && semantic.verified()) {
             return new ToolResult("[VERIFIED_EVIDENCE][SEMANTIC_RELATION] " + semantic.reason() + "\n"
                     + format(candidate, "语义关系验证通过"), Set.of(candidateId), Set.of());
         }
+        if (codeGraph != null && codeGraph.verified()) {
+            return new ToolResult("[VERIFIED_EVIDENCE][CODEGRAPH_RELATION] " + codeGraph.reason() + "\n"
+                    + format(candidate, "CodeGraph 直接关系复验通过"), Set.of(candidateId), Set.of());
+        }
         if (!structural.verified()) {
             String semanticReason = semantic == null || semantic.reason() == null ? "" : semantic.reason() + "；";
+            String codeGraphReason = codeGraph == null || codeGraph.reason() == null
+                    ? "" : codeGraph.reason() + "；";
             return new ToolResult(ToolResult.Status.DENIED, "RELATION_REJECTED",
-                    "[RELATION_REJECTED][" + structural.code() + "] " + semanticReason
+                    "[RELATION_REJECTED][" + structural.code() + "] " + semanticReason + codeGraphReason
                             + structural.reason() + "。该候选仍只能作为上下文，不能作为漏洞证据。",
                     Set.of(), Set.of(candidateId), false, null);
         }

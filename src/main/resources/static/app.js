@@ -861,7 +861,8 @@ function appendAgentEvent(taskId, event) {
         if (nearBottom) feed.scrollTop = feed.scrollHeight;
     }
     setText('#task-event-count', events.length);
-    if (['STARTED', 'COMPLETED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED', 'REJECTED'].includes(event.eventType)) {
+    if (['STARTED', 'COMPLETED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED',
+        'INSUFFICIENT_EVIDENCE', 'FORMAT_ERROR', 'REJECTED'].includes(event.eventType)) {
         scheduleAgentRefresh(taskId);
     }
 }
@@ -899,8 +900,8 @@ function buildEventRow(event, animate) {
 
 function summarizeModelCall(value) {
     return String(value || '').replace(
-        /结合 Recon 技术栈、语义调用链和 0 条工具观察进行安全判断/g,
-        '结合 Recon 技术栈和语义调用链进行安全判断'
+        /结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 0 条工具观察进行安全判断/g,
+        '结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断'
     );
 }
 
@@ -1255,7 +1256,8 @@ function eventTypeText(type) {
     return ({
         STARTED: '启动', MODEL_CALL: '模型调用', REASONING: '推理摘要', PLAN: '审计计划',
         TOOL_CALL: '工具调用', OBSERVATION: '工具观察', HYPOTHESIS: '漏洞假设',
-        FINDING: '确认问题', LOCATION_UNRESOLVED: '定位待复核', REJECTED: '否决', COMPLETED: '完成', ERROR: '错误'
+        FINDING: '确认问题', LOCATION_UNRESOLVED: '定位待复核', INSUFFICIENT_EVIDENCE: '证据不足',
+        FORMAT_ERROR: '响应异常', REJECTED: '否决', COMPLETED: '完成', ERROR: '错误'
     })[type] || type || '事件';
 }
 

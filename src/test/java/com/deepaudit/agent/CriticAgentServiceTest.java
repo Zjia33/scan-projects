@@ -1,5 +1,6 @@
 package com.deepaudit.agent;
 
+import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
@@ -59,7 +60,8 @@ class CriticAgentServiceTest {
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, chunk.getId(), "search"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.NEW,
-                null, null, null, null, null, null));
+                null, null, null, null, null, null,
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
 
         chunk.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
         service.review(taskId, candidate, recon(), List.of(chunk));
@@ -301,6 +303,156 @@ class CriticAgentServiceTest {
             assertThat(finding.getDeltaStatus()).isEqualTo(FindingDeltaStatus.NEW);
         });
         assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(contextOperation.getId());
+    }
+
+    @Test
+    void keepsHypothesisAsInsufficientWhenCriticCannotReachAConclusion() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk operation = customOperation(taskId);
+        operation.setAnalysisScope(AnalysisScope.CHANGED);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.MEDIUM,
+                "未验证指令被提交", "当前证据尚未覆盖完整调用入口", "补充调用链",
+                operation.getId(), List.of(operation.getId()), 41, 41);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                proposal.type(), proposal.title(), operation.getId(), String.valueOf(operation.getId()),
+                Confidence.MEDIUM);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                false, Confidence.LOW, "缺少入口到危险操作的完整关系", FindingDeltaStatus.NEW,
+                null, null, null, null, null, null,
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
+
+        assertThat(result).isEmpty();
+        assertThat(hypothesis.getStatus())
+                .isEqualTo(com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE);
+        assertThat(hypothesis.getCriticReason()).contains("证据不足", "完整关系");
+        verify(hypothesisMapper).update(hypothesis);
+    }
+
+    @Test
+    void rejectsOnlyWhenCriticCitesVerifiedCounterEvidenceChunk() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk operation = customOperation(taskId);
+        operation.setAnalysisScope(AnalysisScope.CHANGED);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.MEDIUM,
+                "指令可能缺少验证", "需要核对账本调用前的验证逻辑", "增加验证",
+                operation.getId(), List.of(operation.getId()), 41, 41);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                proposal.type(), proposal.title(), operation.getId(), String.valueOf(operation.getId()),
+                Confidence.MEDIUM);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                false, Confidence.HIGH, "主证据代码块中已经执行完整服务端验证", FindingDeltaStatus.NEW,
+                null, null, null, null, null, null, LlmGateway.CriticVerdict.REJECTED,
+                List.of(operation.getId())));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
+
+        assertThat(result).isEmpty();
+        assertThat(hypothesis.getStatus()).isEqualTo(com.deepaudit.domain.HypothesisStatus.REJECTED);
+        assertThat(hypothesis.getCriticReason()).contains("服务端验证");
+    }
+
+    @Test
+    void doesNotRejectHypothesisWhenCriticResponseFormatRemainsInvalid() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk operation = customOperation(taskId);
+        operation.setAnalysisScope(AnalysisScope.CHANGED);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.MEDIUM,
+                "未验证指令被提交", "外部指令进入账本操作", "增加验证",
+                operation.getId(), List.of(operation.getId()), 41, 41);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
+                proposal.type(), proposal.title(), operation.getId(), String.valueOf(operation.getId()),
+                Confidence.MEDIUM);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(operation.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
+        when(gateway.critique(any())).thenThrow(
+                new AiResponseFormatException("缺少 confirmed 和 reason", null));
+
+        Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
+
+        assertThat(result).isEmpty();
+        assertThat(hypothesis.getStatus())
+                .isEqualTo(com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE);
+        assertThat(hypothesis.getCriticReason()).contains("响应格式异常", "未执行漏洞否决");
+        verify(traceService).event(eq(taskId), any(), eq(AgentType.CRITIC),
+                eq(com.deepaudit.domain.AgentEventType.FORMAT_ERROR), any());
+    }
+
+    @Test
+    void addsGlobalSecurityConfigurationAsReadOnlyCriticContext() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk endpoint = controller(taskId);
+        endpoint.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk security = new CodeChunk(taskId, "SecurityConfig.java", "SecurityConfig#filterChain",
+                null, 20, 25, """
+                SecurityFilterChain filterChain(HttpSecurity http) {
+                    return http.authorizeHttpRequests(auth -> auth
+                            .requestMatchers("/payments/**").authenticated()).build();
+                }
+                """, "JAVA_METHOD", "HttpSecurity http", "", "requestMatchers,authenticated");
+        security.setId(2200L);
+        security.setAnalysisScope(AnalysisScope.CONTEXT);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.AUTHORIZATION, Severity.HIGH, Confidence.MEDIUM,
+                "对象级授权缺失", "入口认证后可能未校验资源归属", "增加对象归属校验",
+                endpoint.getId(), List.of(endpoint.getId()), 84, 84);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(), proposal.type(),
+                proposal.title(), endpoint.getId(), String.valueOf(endpoint.getId()), Confidence.MEDIUM);
+        AgentCandidate candidate = new AgentCandidate(AgentType.AUTHORIZATION, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(endpoint.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, endpoint.getId(), "purchase"));
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                false, Confidence.LOW, "认证配置不能证明对象级授权", FindingDeltaStatus.NEW,
+                null, null, null, null, null, null,
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
+
+        service.review(taskId, candidate, recon(), List.of(endpoint, security));
+
+        ArgumentCaptor<LlmGateway.CriticRequest> request =
+                ArgumentCaptor.forClass(LlmGateway.CriticRequest.class);
+        verify(gateway).critique(request.capture());
+        assertThat(request.getValue().independentSemanticEvidence())
+                .contains("CRITIC_REVIEW_CONTEXT_ONLY", "SecurityConfig.java", "requestMatchers");
+        assertThat(request.getValue().locationCandidates())
+                .noneMatch(location -> location.chunkId() == security.getId());
     }
 
     private CodeChunk controller(UUID taskId) {

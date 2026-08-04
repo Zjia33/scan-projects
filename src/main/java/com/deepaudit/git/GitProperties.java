@@ -21,5 +21,6 @@ public class GitProperties {
     private int maxFilesPerSnapshot = 100_000;
     private long maxFileBytes = 10L * 1024L * 1024L;
     private long maxSnapshotBytes = 512L * 1024L * 1024L;
+    private int maxCachedSnapshots = 6;
 
 }

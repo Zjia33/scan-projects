@@ -26,6 +26,8 @@ import com.deepaudit.semantic.SemanticAnalysisService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import com.deepaudit.semantic.IncrementalScopeService;
 import com.deepaudit.recon.ReconService;
+import com.deepaudit.util.ExecutionTiming;
+import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -62,71 +64,134 @@ public class AnalysisService {
     private final SemanticMethodChangeMapper semanticMethodChangeMapper;
 
     // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
-    public AnalysisResult analyze(UUID taskId, Path projectRoot, Path baseRoot, ReconSummary reconSummary,
+    public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
                                   String projectName, AuditTask task) {
+        long analysisStarted = ExecutionTiming.start();
+        long stageStarted = ExecutionTiming.start();
         // 清理旧发现和 Agent 轨迹，保证重跑结果不混入历史数据。
         findingMapper.deleteByTaskId(taskId);
         traceService.reset(taskId);
-        // 加载 Recon 已持久化的全部代码块作为本次分析的事实边界。
+        // 初始只加载直接变更块，CodeGraph 命中的影响与上下文块在后续按需补入。
         List<CodeChunk> chunks = chunkMapper.findByTaskId(taskId);
-        if (chunks.isEmpty()) throw new IllegalStateException("项目中没有可供 Agent 审查的代码块");
+        logTiming(taskId, "ANALYSIS_RESET_AND_LOAD", stageStarted, analysisStarted,
+                "initialChunks=" + chunks.size());
+        stageStarted = ExecutionTiming.start();
         IncrementalScopeService.ScopeResult incrementalScope;
         Set<Long> primaryScopeIds = new LinkedHashSet<>();
-        codeGraphIntegrationService.prepare(taskId, baseRoot, projectRoot);
         incrementalScope = incrementalScopeService.determine(taskId, chunks);
+        boolean deletedMethodExists = semanticMethodChangeMapper.findByTaskId(taskId).stream()
+                .anyMatch(change -> change.getChangeKind()
+                        == com.deepaudit.domain.SemanticChangeKind.METHOD_DELETED);
+        if (incrementalScope.globalConfigurationChanged() || (chunks.isEmpty() && deletedMethodExists)) {
+            reconService.materializeGlobalSecurityContext(taskId, projectRoot);
+            chunks = chunkMapper.findByTaskId(taskId);
+            incrementalScope = incrementalScopeService.determine(taskId, chunks);
+        }
         CodeGraphIntegrationService.ImpactDecision codeGraphImpact = codeGraphIntegrationService.decideImpact(
                 taskId, chunks, incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds(),
                 semanticMethodChangeMapper.findByTaskId(taskId));
+        if (!codeGraphImpact.locations().isEmpty()) {
+            reconService.materializeCodeGraphLocations(taskId, projectRoot, codeGraphImpact.locations());
+            chunks = chunkMapper.findByTaskId(taskId);
+            incrementalScope = incrementalScopeService.determine(taskId, chunks);
+            codeGraphImpact = codeGraphIntegrationService.mapImpact(taskId, chunks,
+                    incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds(),
+                    codeGraphImpact.locations());
+        }
+        if (chunks.isEmpty()) {
+            throw new IllegalStateException("变更与 CodeGraph 影响范围中没有可供 Agent 审查的代码块");
+        }
         incrementalScope = new IncrementalScopeService.ScopeResult(incrementalScope.changedChunkIds(),
                 codeGraphImpact.effectiveImpactedChunkIds(), incrementalScope.globalConfigurationChanged(),
                 incrementalScope.semanticChangeCounts());
         reconService.promoteImpactScope(taskId, incrementalScope.impactedChunkIds());
         reconcileIncrementalScope(chunks, incrementalScope);
+        chunks = chunkMapper.findByTaskId(taskId);
         primaryScopeIds.addAll(incrementalScope.changedChunkIds());
         primaryScopeIds.addAll(incrementalScope.impactedChunkIds());
-        log.info("任务 {} 增量范围：{} 个直接变更块、{} 个最终影响块、{} 个 CodeGraph 候选，"
+        TimingDetailLog.info("任务 {} 增量范围：{} 个 CHANGED 审查目标、{} 个 IMPACTED 上下文块、{} 个 CodeGraph 影响块，"
                         + "全局配置变化={}",
                 taskId, incrementalScope.changedChunkIds().size(),
                 incrementalScope.impactedChunkIds().size(), codeGraphImpact.codeGraphImpactedChunkIds().size(),
                 incrementalScope.globalConfigurationChanged());
-        log.info("任务 {} 方法级语义变化：{}", taskId, incrementalScope.semanticChangeSummary());
+        TimingDetailLog.info("任务 {} 方法级语义变化：{}", taskId, incrementalScope.semanticChangeSummary());
+        logTiming(taskId, "IMPACT_SCOPE", stageStarted, analysisStarted,
+                "changed=" + incrementalScope.changedChunkIds().size()
+                        + ",impacted=" + incrementalScope.impactedChunkIds().size()
+                        + ",codeGraphImpacted=" + codeGraphImpact.codeGraphImpactedChunkIds().size());
 
-        // 只把审计作用域及其直接 CodeGraph 上下文交给 JavaParser 做局部安全语义验证。
+        // CodeGraph 决定作用域内跨方法关系；JavaParser 只补充局部参数、Guard、Sink 和框架语义。
+        stageStarted = ExecutionTiming.start();
         CodeGraphIntegrationService.ScopedTopology topology = codeGraphIntegrationService.scopedTopology(
                 taskId, chunks, primaryScopeIds);
+        if (!topology.locations().isEmpty() && topology.unmappedLocations() > 0) {
+            int materialized = reconService.materializeCodeGraphLocations(taskId, projectRoot,
+                    topology.locations());
+            if (materialized > 0) {
+                chunks = chunkMapper.findByTaskId(taskId);
+                topology = codeGraphIntegrationService.scopedTopology(taskId, chunks, primaryScopeIds);
+            }
+        }
         Set<Long> localSemanticScope = new LinkedHashSet<>(primaryScopeIds);
         localSemanticScope.addAll(topology.contextChunkIds());
         SemanticAnalysisService.Summary semanticSummary = semanticAnalysisService.rebuild(
                 taskId, projectRoot, chunks, localSemanticScope, topology.relations());
-        HintIndex hintIndex = collectHints(taskId, projectRoot, chunks);
-        mergeSemanticHints(taskId, hintIndex);
-        log.info("任务 {} 生成 {} 个规则调查目标，类型分布: {}", taskId,
+        logTiming(taskId, "SCOPED_SEMANTIC_ANALYSIS", stageStarted, analysisStarted,
+                "scopeChunks=" + localSemanticScope.size() + ",relations=" + semanticSummary.callEdgeCount()
+                        + ",securityFlows=" + semanticSummary.securityFlowCount());
+        stageStarted = ExecutionTiming.start();
+        Set<Long> changedChunkIds = incrementalScope.changedChunkIds();
+        HintIndex hintIndex = collectHints(taskId, projectRoot, chunks, changedChunkIds);
+        mergeSemanticHints(taskId, hintIndex, changedChunkIds);
+        TimingDetailLog.info("任务 {} 生成 {} 个规则调查目标，类型分布: {}", taskId,
                 hintIndex.typesByChunk().size(), hintIndex.typesByChunk());
-        log.info("任务 {} 语义索引：{} 个符号、{} 条调用边、{} 条安全数据流；调用点 {}，未解析 {}",
+        TimingDetailLog.info("任务 {} 检测索引：{} 个符号、{} 条关系边、{} 条安全数据流；"
+                        + "CodeGraph关系 {}，局部补充 {}，保守映射 {}，框架语义桥 {}",
                 taskId, semanticSummary.symbolCount(), semanticSummary.callEdgeCount(),
-                semanticSummary.securityFlowCount(), semanticSummary.totalCallSites(),
-                semanticSummary.unresolvedCallSites());
-        // Recon Agent 先理解项目，再由 Orchestrator 对全部安全相关审计单元做轻量三态分流。
+                semanticSummary.securityFlowCount(), semanticSummary.codeGraphRelationCount(),
+                semanticSummary.enrichedCodeGraphRelationCount(), semanticSummary.conservativeMappingCount(),
+                semanticSummary.frameworkEdgeCount());
+        logTiming(taskId, "DETERMINISTIC_HINTS", stageStarted, analysisStarted,
+                "changed=" + changedChunkIds.size() + ",hintTargets=" + hintIndex.typesByChunk().size());
+        log.info("阶段耗时：taskId={}，阶段=影响范围与语义分析，耗时={}ms，说明=计算CHANGED/IMPACTED范围并补充局部语义、安全流和确定性线索，变更块={}，影响块={}",
+                taskId, ExecutionTiming.elapsedMillis(analysisStarted), changedChunkIds.size(),
+                incrementalScope.impactedChunkIds().size());
+        // Recon Agent 先理解项目，再由 Orchestrator 只对 CHANGED 单元做轻量三态分流。
+        long reconAndTriageStarted = ExecutionTiming.start();
+        stageStarted = ExecutionTiming.start();
         LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary);
+        logTiming(taskId, "RECON_AGENT", stageStarted, analysisStarted,
+                "sourceFiles=" + reconSummary.sourceFileCount()
+                        + ",frameworkFiles=" + reconSummary.frameworkFiles().size());
+        stageStarted = ExecutionTiming.start();
         List<AgentTask> plan = orchestratorAgent.plan(taskId, recon, chunks,
                 hintIndex.typesByChunk(), hintIndex.descriptionsByChunk());
+        logTiming(taskId, "TRIAGE_ORCHESTRATOR", stageStarted, analysisStarted,
+                "changed=" + changedChunkIds.size() + ",plannedTasks=" + plan.size());
+        log.info("阶段耗时：taskId={}，阶段=架构理解与增量分诊，耗时={}ms，说明=Recon归纳项目架构，Triage仅审查CHANGED并规划专业调查，专业任务数={}",
+                taskId, ExecutionTiming.elapsedMillis(reconAndTriageStarted), plan.size());
 
         // 专业 Agent 并行调查并且只有证据充分时才形成候选假设。
+        stageStarted = ExecutionTiming.start();
         ProfessionalAgentRunner.BatchResult investigation = professionalAgentRunner.investigate(
                 taskId, plan, recon, chunks);
         List<AgentCandidate> candidates = investigation.candidates();
         if (!plan.isEmpty() && investigation.formatFailures() == plan.size()) {
             throw new AiUnavailableException("所有专业 Agent 都未能返回合法结构化响应，无法形成可信审计结果");
         }
+        logTiming(taskId, "PROFESSIONAL_AGENTS", stageStarted, analysisStarted,
+                "plannedTasks=" + plan.size() + ",candidates=" + candidates.size()
+                        + ",formatFailures=" + investigation.formatFailures());
 
         // Critic 前只合并同一主代码块、同一类型且建议行范围重叠的明确重复候选，
         // 减少重复模型调用；最终权威去重仍以 Critic 重定位后的真实位置为准。
         List<AgentCandidate> criticCandidates = AgentCandidateConsolidator.consolidate(candidates);
         if (criticCandidates.size() < candidates.size()) {
-            log.info("任务 {} 在 Critic 前合并了 {} 个位置完全重叠的专业 Agent 候选",
+            TimingDetailLog.info("任务 {} 在 Critic 前合并了 {} 个位置完全重叠的专业 Agent 候选",
                     taskId, candidates.size() - criticCandidates.size());
         }
         List<Finding> reviewedFindings = new ArrayList<>();
+        stageStarted = ExecutionTiming.start();
         for (AgentCandidate candidate : criticCandidates) {
             try {
                 criticAgent.review(taskId, candidate, recon, chunks)
@@ -137,11 +202,16 @@ public class AnalysisService {
                         taskId, candidate.proposal().primaryChunkId());
             }
         }
+        logTiming(taskId, "CRITIC_REVIEW", stageStarted, analysisStarted,
+                "candidates=" + criticCandidates.size() + ",reviewedFindings=" + reviewedFindings.size());
+        log.info("阶段耗时：taskId={}，阶段=Critic独立复核，耗时={}ms，说明=验证漏洞因果、反证和精确位置，候选数={}，通过定位审查数={}",
+                taskId, ExecutionTiming.elapsedMillis(stageStarted), criticCandidates.size(),
+                reviewedFindings.size());
         // 不使用标题、endpoint 或证据链顺序判断身份。相同漏洞类型、文件、方法且最终
         // 行范围重叠的结果会合并，并基于合并后的真实源码锚点重新生成稳定指纹。
         List<Finding> confirmed = FindingConsolidator.consolidate(reviewedFindings, chunks);
         if (confirmed.size() < reviewedFindings.size()) {
-            log.info("任务 {} 在 Critic 后合并了 {} 个定位到同一代码位置的确认漏洞",
+            TimingDetailLog.info("任务 {} 在 Critic 后合并了 {} 个定位到同一代码位置的确认漏洞",
                     taskId, reviewedFindings.size() - confirmed.size());
         }
         // 批量持久化确认结果，最终报告只接收这一组经过证据门禁的发现。
@@ -156,7 +226,9 @@ public class AnalysisService {
         String auditContext = "分支变更扫描 " + shortSha(comparisonBaseSha) + " → "
                 + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
                 + selectedBaseContext
-                + "；深度范围 " + incrementalScope.totalDeepTargets() + " 个代码块"
+                + "；深度范围 "
+                + (incrementalScope.changedChunkIds().size() + incrementalScope.impactedChunkIds().size())
+                + " 个代码块"
                 + "；方法变化 " + incrementalScope.semanticChangeSummary();
         long confirmedUnlocated = candidates.stream()
                 .filter(candidate -> candidate.hypothesis().getStatus()
@@ -165,13 +237,31 @@ public class AnalysisService {
         if (confirmedUnlocated > 0) {
             auditContext += "；另有 " + confirmedUnlocated + " 个漏洞已由 Critic 确认但精确位置待复核";
         }
+        long insufficientEvidence = candidates.stream()
+                .filter(candidate -> candidate.hypothesis().getStatus()
+                        == com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE)
+                .count();
+        if (insufficientEvidence > 0) {
+            auditContext += "；另有 " + insufficientEvidence + " 个漏洞假设因 Critic 证据不足或响应异常保留待复核";
+        }
         int rejectedHypotheses = (int) candidates.stream()
                 .filter(candidate -> candidate.hypothesis().getStatus()
                         == com.deepaudit.domain.HypothesisStatus.REJECTED)
                 .count();
+        stageStarted = ExecutionTiming.start();
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
                 rejectedHypotheses, auditContext);
+        logTiming(taskId, "REPORT_AGENT", stageStarted, analysisStarted,
+                "confirmed=" + confirmed.size() + ",rejected=" + rejectedHypotheses);
+        TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、Critic和报告，专业任务数={}，候选数={}，正式漏洞数={}",
+                taskId, ExecutionTiming.elapsedMillis(analysisStarted), plan.size(), candidates.size(), confirmed.size());
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
+    }
+
+    private void logTiming(UUID taskId, String stage, long stageStarted, long analysisStarted, String details) {
+        TimingDetailLog.info("执行耗时：taskId={}，stage={}，elapsedMs={}，analysisElapsedMs={}，details={}",
+                taskId, stage, ExecutionTiming.elapsedMillis(stageStarted),
+                ExecutionTiming.elapsedMillis(analysisStarted), details);
     }
 
     // 运行所有确定性分析器并按代码块聚合“待调查”类型和证据说明。
@@ -188,8 +278,12 @@ public class AnalysisService {
         }
     }
 
-    private HintIndex collectHints(UUID taskId, Path root, List<CodeChunk> chunks) {
-        AnalysisContext context = new AnalysisContext(taskId, root, chunks);
+    private HintIndex collectHints(UUID taskId, Path root, List<CodeChunk> chunks,
+                                   Set<Long> changedChunkIds) {
+        List<CodeChunk> changedChunks = chunks.stream()
+                .filter(chunk -> chunk.getId() != null && changedChunkIds.contains(chunk.getId()))
+                .toList();
+        AnalysisContext context = new AnalysisContext(taskId, root, changedChunks);
         Map<Long, Set<VulnerabilityType>> types = new LinkedHashMap<>();
         Map<Long, String> descriptions = new LinkedHashMap<>();
         for (VulnerabilityAnalyzer provider : hintProviders) {
@@ -197,7 +291,7 @@ public class AnalysisService {
             try {
                 // 每个分析器只生成线索草稿，不能绕过专业 Agent 和 Critic 直接形成发现。
                 for (FindingDraft draft : provider.analyze(context)) {
-                    findChunk(chunks, draft).ifPresent(chunk -> {
+                    findChunk(changedChunks, draft).ifPresent(chunk -> {
                         types.computeIfAbsent(chunk.getId(), ignored -> new LinkedHashSet<>()).add(draft.type());
                         descriptions.merge(chunk.getId(), draft.title() + "：" + draft.description()
                                         + "\n规则定位到的代码证据：\n" + draft.evidence(),
@@ -212,13 +306,19 @@ public class AnalysisService {
     }
 
     // 将跨过程安全流作为额外线索并入规则索引，而不是直接提升为漏洞。
-    private void mergeSemanticHints(UUID taskId, HintIndex hints) {
+    private void mergeSemanticHints(UUID taskId, HintIndex hints, Set<Long> changedChunkIds) {
         SemanticEvidenceService.SemanticHints semantic = semanticEvidenceService.hints(taskId);
-        semantic.typesByChunk().forEach((chunkId, types) ->
-                hints.typesByChunk().computeIfAbsent(chunkId, ignored -> new LinkedHashSet<>()).addAll(types));
-        semantic.descriptionsByChunk().forEach((chunkId, description) ->
+        semantic.typesByChunk().forEach((chunkId, types) -> {
+            if (changedChunkIds.contains(chunkId)) {
+                hints.typesByChunk().computeIfAbsent(chunkId, ignored -> new LinkedHashSet<>()).addAll(types);
+            }
+        });
+        semantic.descriptionsByChunk().forEach((chunkId, description) -> {
+            if (changedChunkIds.contains(chunkId)) {
                 hints.descriptionsByChunk().merge(chunkId, description,
-                        (left, right) -> left + "\n\n" + right));
+                        (left, right) -> left + "\n\n" + right);
+            }
+        });
     }
 
     // 按文件与行号把规则草稿映射回模型可引用的真实代码块。

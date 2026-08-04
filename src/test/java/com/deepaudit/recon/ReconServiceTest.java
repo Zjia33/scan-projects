@@ -1,7 +1,9 @@
 package com.deepaudit.recon;
 
+import com.deepaudit.codegraph.CodeGraphClient;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.AnalysisScope;
+import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.mapper.CodeChunkMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,6 +27,75 @@ class ReconServiceTest {
     Path projectRoot;
 
     @Test
+    void incrementalIndexOnlyPersistsChunksOverlappingChangedLines() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        UUID taskId = UUID.randomUUID();
+        Path changed = projectRoot.resolve("src/main/java/demo/Changed.java");
+        Path unchanged = projectRoot.resolve("src/main/java/demo/Unchanged.java");
+        Files.createDirectories(changed.getParent());
+        Files.writeString(changed, "class Changed {\n  void changed() { run(); }\n  void context() { stay(); }\n}");
+        Files.writeString(unchanged, "class Unchanged { void untouched() {} }");
+        GitFileChange change = new GitFileChange(taskId, "src/main/java/demo/Changed.java",
+                "src/main/java/demo/Changed.java", "MODIFY", 1, 1, "2:2", "2:2", "diff", false);
+
+        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getFilePath()).isEqualTo("src/main/java/demo/Changed.java");
+            assertThat(chunk.getSymbolName()).endsWith("#changed");
+            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
+        });
+    }
+
+    @Test
+    void materializesOnlyMethodsReportedByCodeGraph() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        when(mapper.findByTaskId(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        UUID taskId = UUID.randomUUID();
+        Path source = projectRoot.resolve("src/main/java/demo/Service.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class Service {\n  void impacted() { sink(); }\n  void unrelated() { noop(); }\n}");
+        CodeGraphClient.CodeGraphLocation location = new CodeGraphClient.CodeGraphLocation(
+                "demo.Service.impacted", "method", "src/main/java/demo/Service.java", 2);
+
+        int materialized = new ReconService(mapper).materializeCodeGraphLocations(
+                taskId, projectRoot, List.of(location));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(materialized).isEqualTo(1);
+        assertThat(captor.getValue()).singleElement()
+                .satisfies(chunk -> assertThat(chunk.getSymbolName()).endsWith("#impacted"));
+    }
+
+    @Test
+    void preservesChangedJavaLinesOutsideMethodsAsDirectEvidence() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        UUID taskId = UUID.randomUUID();
+        Path source = projectRoot.resolve("src/main/java/demo/SecurityConfig.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class SecurityConfig {\n  String password = \"changed\";\n  void configure() {}\n}");
+        GitFileChange change = new GitFileChange(taskId, "src/main/java/demo/SecurityConfig.java",
+                "src/main/java/demo/SecurityConfig.java", "MODIFY", 1, 1,
+                "2:2", "2:2", "field diff", false);
+
+        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getChunkType()).isEqualTo("JAVA_CHANGE");
+            assertThat(chunk.getContent()).contains("password");
+            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
+        });
+    }
+
+    @Test
     void indexesLargeTemplateAsBoundedLineAwareChunks() throws Exception {
         CodeChunkMapper mapper = mock(CodeChunkMapper.class);
 
@@ -36,8 +107,7 @@ class ReconServiceTest {
         Files.createDirectories(template.getParent());
         Files.writeString(template, String.join("\n", lines));
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(
-                UUID.randomUUID(), projectRoot, projectRoot, List.of());
+        ReconSummary summary = buildIncremental(new ReconService(mapper));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
@@ -73,8 +143,7 @@ class ReconServiceTest {
                 }
                 """);
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(
-                UUID.randomUUID(), projectRoot, projectRoot, List.of());
+        ReconSummary summary = buildIncremental(new ReconService(mapper));
 
         assertThat(summary.technologyProfile().buildTools()).contains("Maven");
         assertThat(summary.technologyProfile().frameworks()).contains("Spring MVC");
@@ -127,8 +196,7 @@ class ReconServiceTest {
                 }
                 """);
 
-        ReconSummary summary = new ReconService(mapper).buildIndex(
-                UUID.randomUUID(), projectRoot, projectRoot, List.of());
+        ReconSummary summary = buildIncremental(new ReconService(mapper));
         ProjectStructureProfile profile = summary.projectStructure();
 
         assertThat(profile.modules()).singleElement().satisfies(module -> {
@@ -203,8 +271,7 @@ class ReconServiceTest {
                 "package demo; class Generated { void unsafe() { statement.execute(input); } }");
         write("node_modules/example/index.js", "element.innerHTML = input;");
 
-        ReconSummary summary = new ReconService(mapper)
-                .buildIndex(UUID.randomUUID(), projectRoot, projectRoot, List.of());
+        ReconSummary summary = buildIncremental(new ReconService(mapper));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
@@ -212,7 +279,7 @@ class ReconServiceTest {
         List<CodeChunk> indexed = captor.getValue();
         assertThat(summary.sourceFileCount()).isEqualTo(2);
         assertThat(indexed).extracting(CodeChunk::getFilePath)
-                .containsExactlyInAnyOrder(
+                .containsOnly(
                         "src/main/java/demo/OrderService.java",
                         "src/main/resources/application.yml");
         assertThat(indexed).extracting(CodeChunk::getSymbolName)
@@ -229,8 +296,7 @@ class ReconServiceTest {
                 class OrderService { void submit() { repository.save(); } }
                 """);
 
-        new ReconService(mapper)
-                .buildIndex(UUID.randomUUID(), projectRoot, projectRoot, List.of());
+        buildIncremental(new ReconService(mapper));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
@@ -253,6 +319,20 @@ class ReconServiceTest {
 
         assertThat(impacted.getAnalysisScope()).isEqualTo(AnalysisScope.IMPACTED);
         verify(mapper).updateIncrementalMetadata(impacted);
+    }
+
+    private ReconSummary buildIncremental(ReconService service) throws Exception {
+        UUID taskId = UUID.randomUUID();
+        List<GitFileChange> changes = new ArrayList<>();
+        try (var paths = Files.walk(projectRoot)) {
+            for (Path file : paths.filter(Files::isRegularFile).toList()) {
+                String relative = projectRoot.relativize(file).toString().replace('\\', '/');
+                int lines = Math.max(1, Files.readString(file).split("\\R", -1).length);
+                changes.add(new GitFileChange(taskId, null, relative, "ADD", lines, 0,
+                        "", "1:" + lines, "added test source", false));
+            }
+        }
+        return service.buildIndex(taskId, projectRoot, projectRoot, changes);
     }
 
     private void write(String relative, String content) throws Exception {

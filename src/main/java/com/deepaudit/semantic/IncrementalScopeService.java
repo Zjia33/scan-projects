@@ -110,11 +110,6 @@ public class IncrementalScopeService {
     public record ScopeResult(Set<Long> changedChunkIds, Set<Long> impactedChunkIds,
                               boolean globalConfigurationChanged,
                               Map<SemanticChangeKind, Long> semanticChangeCounts) {
-        // 转换并返回 totalDeepTargets 对应的数据表示。
-        public int totalDeepTargets() {
-            return changedChunkIds.size() + impactedChunkIds.size();
-        }
-
         // 执行 ScopeResult 中的 semanticChangeSummary 处理。
         public String semanticChangeSummary() {
             if (semanticChangeCounts.isEmpty()) return "无方法级语义变化";

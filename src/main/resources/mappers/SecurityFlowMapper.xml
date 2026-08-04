@@ -14,8 +14,8 @@
         <result column="path_text" property="pathText"/>
         <result column="evidence_chunk_ids" property="evidenceChunkIds"/>
         <result column="confidence" property="confidence"/>
-        <result column="resolved_edges" property="resolvedEdges"/>
-        <result column="unresolved_edges" property="unresolvedEdges"/>
+        <result column="confirmed_relation_edges" property="confirmedRelationEdges"/>
+        <result column="local_semantic_gaps" property="localSemanticGaps"/>
     </resultMap>
 
     <delete id="deleteByTaskId">DELETE FROM security_flow WHERE task_id = #{taskId}</delete>
@@ -24,13 +24,13 @@
         INSERT INTO security_flow
             (id, task_id, type, source_symbol_id, sink_symbol_id, primary_chunk_id,
              source_description, sink_description, guard_summary, path_text, evidence_chunk_ids,
-             confidence, resolved_edges, unresolved_edges)
+             confidence, confirmed_relation_edges, local_semantic_gaps)
         VALUES
         <foreach collection="flows" item="flow" separator=",">
             (#{flow.id}, #{flow.taskId}, #{flow.type}, #{flow.sourceSymbolId}, #{flow.sinkSymbolId},
              #{flow.primaryChunkId}, #{flow.sourceDescription}, #{flow.sinkDescription},
              #{flow.guardSummary}, #{flow.pathText}, #{flow.evidenceChunkIds}, #{flow.confidence},
-             #{flow.resolvedEdges}, #{flow.unresolvedEdges})
+             #{flow.confirmedRelationEdges}, #{flow.localSemanticGaps})
         </foreach>
     </insert>
 

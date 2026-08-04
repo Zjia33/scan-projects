@@ -1,6 +1,5 @@
 package com.deepaudit.ai;
 
-import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
@@ -22,10 +21,7 @@ public interface LlmGateway {
     // 分析并提取 inspectProject 对应的事实。
     ReconInsight inspectProject(UUID taskId, ReconSummary summary);
 
-    // 执行 LlmGateway 中的 triage 处理。
-    TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits);
-
-    // 基于真实 Base/Target 和客观影响事实分流全部增量审查位置。
+    // 首次只基于真实 Base/Target 和轻量关系事实分流全部 CHANGED 审查位置。
     TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                  List<IncrementalReviewUnit> reviewUnits);
 
@@ -74,15 +70,10 @@ public interface LlmGateway {
 
     // 封装 TriageDecision 使用的不可变结构化数据。
     record TriageDecision(String unitId, long primaryChunkId, TriageDisposition disposition,
-                          List<VulnerabilityType> vulnerabilityTypes, List<String> reasonCodes,
-                          List<String> requiredContext, String reason) {
+                          List<VulnerabilityType> vulnerabilityTypes, String reason) {
         // 校验并规范化 TriageDecision 的构造参数。
         public TriageDecision {
             vulnerabilityTypes = vulnerabilityTypes == null ? List.of() : vulnerabilityTypes.stream()
-                    .filter(java.util.Objects::nonNull).distinct().toList();
-            reasonCodes = reasonCodes == null ? List.of() : reasonCodes.stream()
-                    .filter(java.util.Objects::nonNull).distinct().toList();
-            requiredContext = requiredContext == null ? List.of() : requiredContext.stream()
                     .filter(java.util.Objects::nonNull).distinct().toList();
         }
     }
@@ -148,10 +139,39 @@ public interface LlmGateway {
     }
 
     // 封装 CriticDecision 使用的不可变结构化数据。
-    record CriticDecision(boolean confirmed, Confidence confidence, String reason,
+    record CriticDecision(Boolean confirmed, Confidence confidence, String reason,
                           FindingDeltaStatus deltaStatus, Long primaryChunkId,
                           Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
-                          String rootCauseKind, String locationRole, String locationCandidateId) {
+                          String rootCauseKind, String locationRole, String locationCandidateId,
+                          CriticVerdict verdict, List<Long> counterEvidenceChunkIds) {
+        public CriticDecision {
+            counterEvidenceChunkIds = counterEvidenceChunkIds == null
+                    ? List.of() : List.copyOf(counterEvidenceChunkIds);
+        }
+
+        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                              String rootCauseKind, String locationRole, String locationCandidateId) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
+                    locationCandidateId, Boolean.TRUE.equals(confirmed)
+                    ? CriticVerdict.CONFIRMED : CriticVerdict.REJECTED, List.of());
+        }
+
+        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                              String rootCauseKind, String locationRole, String locationCandidateId,
+                              CriticVerdict verdict) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
+                    locationCandidateId, verdict, List.of());
+        }
+    }
+
+    enum CriticVerdict {
+        CONFIRMED, REJECTED, INSUFFICIENT_EVIDENCE
     }
 
     // 由后端从真实证据源码生成的可选位置；模型只能选择 candidateId，不能创造行号。

@@ -1,5 +1,6 @@
 package com.deepaudit.codegraph;
 
+import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -89,13 +90,8 @@ class CodeGraphCommandRunner {
 
     // 执行 CodeGraphCommandRunner 中的 logStarted 处理。
     private void logStarted(String operation, Path root) {
-        if (isLifecycleCommand(operation)) {
-            log.info("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
-                    operation, root.getFileName(), properties.getTimeoutSeconds());
-        } else {
-            log.debug("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
-                    operation, root.getFileName(), properties.getTimeoutSeconds());
-        }
+        TimingDetailLog.info("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
+                operation, root.getFileName(), properties.getTimeoutSeconds());
     }
 
     // 执行 CodeGraphCommandRunner 中的 logCompleted 处理。
@@ -106,18 +102,10 @@ class CodeGraphCommandRunner {
             log.warn("CodeGraph 命令结束：operation={}，workspace={}，exitCode={}，elapsedMs={}，"
                             + "stdoutBytes={}，stderrBytes={}", operation, root.getFileName(),
                     output.exitCode(), elapsedMs, stdoutBytes, stderrBytes);
-        } else if (isLifecycleCommand(operation)) {
-            log.info("CodeGraph 命令完成：operation={}，workspace={}，elapsedMs={}，stdoutBytes={}，stderrBytes={}",
-                    operation, root.getFileName(), elapsedMs, stdoutBytes, stderrBytes);
         } else {
-            log.debug("CodeGraph 命令完成：operation={}，workspace={}，elapsedMs={}，stdoutBytes={}，stderrBytes={}",
+            TimingDetailLog.info("CodeGraph 命令完成：operation={}，workspace={}，elapsedMs={}，stdoutBytes={}，stderrBytes={}",
                     operation, root.getFileName(), elapsedMs, stdoutBytes, stderrBytes);
         }
-    }
-
-    // 判断是否满足 isLifecycleCommand 对应的条件。
-    private boolean isLifecycleCommand(String operation) {
-        return "version".equals(operation) || "init".equals(operation) || "status".equals(operation);
     }
 
     // 执行 CodeGraphCommandRunner 中的 requireDirectory 处理。

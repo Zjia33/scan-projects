@@ -2,6 +2,8 @@ package com.deepaudit.agent;
 
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.Confidence;
+import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.domain.VulnerabilityType;
@@ -21,13 +23,16 @@ import static org.mockito.Mockito.when;
 class IncrementalReviewServiceTest {
 
     @Test
-    void coversEveryChangedAndImpactedChunkWithoutGuessingVulnerabilityTypes() {
+    void buildsOnlyChangedUnitsAndAddsImpactedCodeOnDemand() {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
         SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        SemanticCallEdge impactEdge = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
+                1L, 2L, 2, "detail", "service.detail(id)", "CODEGRAPH_CALL",
+                Confidence.HIGH, "CodeGraph confirmed", "id -> id");
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(impactEdge));
         when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
         IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
         CodeChunk changed = chunk(taskId, 1L, "Formatter#format", "return repository.findById(id);");
@@ -42,9 +47,8 @@ class IncrementalReviewServiceTest {
                 taskId, List.of(changed, impacted, context), Map.of(), Map.of());
 
         assertThat(units).extracting(IncrementalReviewUnit::primaryChunkId)
-                .containsExactly(1L, 2L);
-        assertThat(units.get(0).facts()).contains("DIRECT_CHANGE", "HAS_DATA_ACCESS");
-        assertThat(units.get(1).facts()).contains("IMPACTED_BY_CHANGE", "HAS_OUTPUT_OPERATION");
+                .containsExactly(1L);
+        assertThat(units.get(0).facts()).contains("DIRECT_CHANGE", "HAS_DATA_ACCESS", "HAS_CALL_RELATIONS");
         assertThat(units).allSatisfy(unit -> {
             assertThat(unit.allowedTypes()).containsExactlyInAnyOrderElementsOf(
                 java.util.Set.of(VulnerabilityType.values()));
@@ -52,6 +56,14 @@ class IncrementalReviewServiceTest {
         });
         assertThat(units.get(0).baseCodeExcerpt()).contains("cache.get");
         assertThat(units.get(0).targetCodeExcerpt()).contains("repository.findById");
+        assertThat(units.get(0).relatedContext()).doesNotContain("return service.detail(id)");
+
+        IncrementalReviewUnit enriched = service.enrichImpact(
+                taskId, units, List.of(changed, impacted, context)).get(0);
+
+        assertThat(enriched.relatedContext()).contains("[IMPACTED_CONTEXT]", "CHUNK_ID=2",
+                "Controller#detail", "return service.detail(id)");
+        assertThat(enriched.relatedContext()).doesNotContain("Dto#value");
     }
 
     @Test

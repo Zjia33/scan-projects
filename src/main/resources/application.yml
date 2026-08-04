@@ -28,6 +28,9 @@ spring:
 
 deepaudit:
   storage-root: ${DEEPAUDIT_STORAGE_ROOT:./data}
+  logging:
+    # 高频的模型、CodeGraph、单位置 Agent 耗时仅写入此滚动文件，不输出到控制台。
+    timing-detail-file: ${DEEPAUDIT_TIMING_DETAIL_FILE:logs/deepaudit-timing-detail.log}
   git:
     allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
     allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
@@ -36,6 +39,8 @@ deepaudit:
     max-files-per-snapshot: ${DEEPAUDIT_GIT_MAX_FILES:100000}
     max-file-bytes: ${DEEPAUDIT_GIT_MAX_FILE_BYTES:10485760}
     max-snapshot-bytes: ${DEEPAUDIT_GIT_MAX_SNAPSHOT_BYTES:536870912}
+    # Base/Target 提交快照与 CodeGraph 索引按提交复用，超出数量后清理最旧缓存。
+    max-cached-snapshots: ${DEEPAUDIT_GIT_MAX_CACHED_SNAPSHOTS:6}
   ai:
     required: true
     base-url: ${DEEPAUDIT_AI_BASE_URL:https://api.deepseek.com}
@@ -72,7 +77,7 @@ deepaudit:
     impact-depth: ${DEEPAUDIT_CODEGRAPH_IMPACT_DEPTH:2}
     relation-limit: ${DEEPAUDIT_CODEGRAPH_RELATION_LIMIT:100}
     agent-context-limit: ${DEEPAUDIT_CODEGRAPH_AGENT_CONTEXT_LIMIT:10}
-    # Base/Target 索引分别写入任务临时快照，任务结束后随快照删除。
+    # 索引保存在提交级快照缓存中，同一提交可被后续任务复用。
     index-directory: ${DEEPAUDIT_CODEGRAPH_INDEX_DIRECTORY:.codegraph-deepaudit}
 
 mybatis:

@@ -51,10 +51,7 @@ public class SensitiveInformationDisclosureAnalyzer implements VulnerabilityAnal
         Map<String, GitFileChange> changes = changesByTargetPath(changeMapper.findByTaskId(context.taskId()));
         List<FindingDraft> results = new ArrayList<>();
         for (CodeChunk chunk : context.chunks()) {
-            if (chunk.getAnalysisScope() == AnalysisScope.CHANGED
-                    || chunk.getAnalysisScope() == AnalysisScope.IMPACTED) {
-                responseDisclosure(chunk, results);
-            }
+            if (chunk.getAnalysisScope() == AnalysisScope.CHANGED) responseDisclosure(chunk, results);
             if (chunk.getAnalysisScope() != AnalysisScope.CHANGED) continue;
             GitFileChange change = changes.get(normalizePath(chunk.getFilePath()));
             if (change == null) continue;

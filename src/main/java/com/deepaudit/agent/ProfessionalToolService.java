@@ -162,7 +162,7 @@ public class ProfessionalToolService {
         if (paths.isEmpty()) {
             String target = targetId == null ? "" : "，目标代码块=" + targetId;
             return ToolResult.empty("[CALL_GRAPH] 在方向=" + direction + "、深度=" + depth + target
-                    + " 的范围内没有找到高/中可信调用路径。未解析边=" + unresolvedCount(allEdges));
+                    + " 的范围内没有找到 CodeGraph/框架关系路径。局部语义缺口=" + localSemanticGapCount(allEdges));
         }
 
         Set<Long> evidence = new LinkedHashSet<>();
@@ -170,7 +170,7 @@ public class ProfessionalToolService {
         paths.forEach(path -> path.steps().forEach(step -> evidence.add(step.to())));
         String body = paths.stream().map(this::formatPath).collect(Collectors.joining("\n\n"));
         return new ToolResult("[CALL_GRAPH] direction=" + direction + " depth=" + depth
-                + " unresolvedEdges=" + unresolvedCount(allEdges) + "\n" + body, evidence, Set.of());
+                + " localSemanticGaps=" + localSemanticGapCount(allEdges) + "\n" + body, evidence, Set.of());
     }
 
     // 读取并返回 getChangeContext 对应的信息。
@@ -440,13 +440,13 @@ public class ProfessionalToolService {
 
     // 执行 ProfessionalToolService 中的 reliable 处理。
     private boolean reliable(SemanticCallEdge edge) {
-        return edge.getConfidence() != Confidence.LOW && !"UNRESOLVED".equals(edge.getEdgeType());
+        return edge.getConfidence() != Confidence.LOW;
     }
 
-    // 执行 ProfessionalToolService 中的 unresolvedCount 处理。
-    private long unresolvedCount(List<SemanticCallEdge> edges) {
-        return edges.stream().filter(edge -> edge.getCalleeChunkId() == null
-                || "UNRESOLVED".equals(edge.getEdgeType())).count();
+    // 统计已确认 CodeGraph 关系中未由局部 AST 唯一定位调用现场的数量。
+    private long localSemanticGapCount(List<SemanticCallEdge> edges) {
+        return edges.stream().filter(edge -> "CODEGRAPH_CALL".equals(edge.getEdgeType())
+                && edge.getConfidence() == Confidence.MEDIUM).count();
     }
 
     // 执行 ProfessionalToolService 中的 changeMatches 处理。
@@ -607,7 +607,8 @@ public class ProfessionalToolService {
     // 格式化并输出 formatValueFlow 对应的展示内容。
     private String formatValueFlow(SecurityFlow flow) {
         return "[FLOW " + flow.getId() + "] type=" + flow.getType() + " confidence=" + flow.getConfidence()
-                + " resolvedEdges=" + flow.getResolvedEdges() + " unresolvedEdges=" + flow.getUnresolvedEdges()
+                + " confirmedRelationEdges=" + flow.getConfirmedRelationEdges()
+                + " localSemanticGaps=" + flow.getLocalSemanticGaps()
                 + "\nsource=" + flow.getSourceDescription() + "\nsink=" + flow.getSinkDescription()
                 + "\nguards=" + flow.getGuardSummary() + "\npath=" + flow.getPathText();
     }

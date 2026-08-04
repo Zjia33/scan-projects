@@ -7,6 +7,7 @@ import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.source.AuditSourceFilter;
+import com.deepaudit.util.TimingDetailLog;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
@@ -55,8 +56,14 @@ public class IncrementalSemanticDiffService {
     // 同时解析 Base 与 Target 的方法快照，形成稳定方法映射并把语义变化回填到 Target Chunk。
     public Summary analyze(UUID taskId, Path baseRoot, Path targetRoot, List<CodeChunk> targetChunks,
                            List<GitFileChange> fileChanges) throws IOException {
-        MethodIndex base = index(baseRoot);
-        MethodIndex target = index(targetRoot);
+        Set<String> basePaths = fileChanges.stream().map(GitFileChange::getOldPath)
+                .filter(java.util.Objects::nonNull).filter(this::javaSourcePath)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> targetPaths = fileChanges.stream().map(GitFileChange::getNewPath)
+                .filter(java.util.Objects::nonNull).filter(this::javaSourcePath)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        MethodIndex base = index(baseRoot, basePaths);
+        MethodIndex target = index(targetRoot, targetPaths);
         Map<String, String> targetPathByBasePath = targetPathMapping(fileChanges);
         Map<String, String> basePathByTargetPath = fileChanges.stream()
                 .filter(change -> change.getOldPath() != null && change.getNewPath() != null)
@@ -140,8 +147,10 @@ public class IncrementalSemanticDiffService {
             changeMapper.insertBatch(changes.subList(start, Math.min(start + 200, changes.size())));
         }
         Summary summary = Summary.from(base.methods.size(), target.methods.size(), changes);
-        log.info("任务 {} 方法语义差异完成：baseMethods={}，targetMethods={}，{}",
-                taskId, base.methods.size(), target.methods.size(), summary.description());
+        TimingDetailLog.info("任务 {} 增量方法差异完成：baseFiles={}，targetFiles={}，baseMethods={}，"
+                        + "targetMethods={}，{}",
+                taskId, base.parsedFiles.size(), target.parsedFiles.size(),
+                base.methods.size(), target.methods.size(), summary.description());
         return summary;
     }
 
@@ -217,16 +226,17 @@ public class IncrementalSemanticDiffService {
     }
 
     // 执行 IncrementalSemanticDiffService 中的 index 处理。
-    private MethodIndex index(Path root) throws IOException {
+    private MethodIndex index(Path root, Set<String> selectedPaths) throws IOException {
         JavaParser parser = new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
         List<MethodSnapshot> methods = new ArrayList<>();
         Set<String> parsedFiles = new LinkedHashSet<>();
-        try (Stream<Path> paths = Files.walk(root)) {
-            for (Path file : paths.filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".java"))
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path)).toList()) {
-                String relative = normalized(root.relativize(file));
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        for (String selectedPath : selectedPaths) {
+            Path file = normalizedRoot.resolve(selectedPath).normalize();
+            if (!file.startsWith(normalizedRoot) || !Files.isRegularFile(file)
+                    || !AuditSourceFilter.shouldAnalyze(normalizedRoot, file)) continue;
+                String relative = normalized(normalizedRoot.relativize(file));
                 try {
                     String source = Files.readString(file, StandardCharsets.UTF_8);
                     CompilationUnit unit = parser.parse(source).getResult().orElse(null);
@@ -252,10 +262,14 @@ public class IncrementalSemanticDiffService {
                 } catch (RuntimeException exception) {
                     log.warn("无法建立增量方法快照: {}", file, exception);
                 }
-            }
         }
         methods.sort(Comparator.comparing(MethodSnapshot::path).thenComparingInt(MethodSnapshot::startLine));
         return new MethodIndex(List.copyOf(methods), Set.copyOf(parsedFiles));
+    }
+
+    private boolean javaSourcePath(String value) {
+        return value != null && value.toLowerCase(Locale.ROOT).endsWith(".java")
+                && AuditSourceFilter.shouldAnalyze(value);
     }
 
     // 执行 IncrementalSemanticDiffService 中的 signatureChangeScore 处理。

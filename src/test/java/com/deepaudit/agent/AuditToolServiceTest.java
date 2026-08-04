@@ -46,6 +46,32 @@ class AuditToolServiceTest {
     }
 
     @Test
+    void verifyRelationAcceptsDirectCodeGraphProofWhenLocalSemanticGraphMissesEdge() {
+        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+        CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
+        ProfessionalToolService professional = mock(ProfessionalToolService.class);
+        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional);
+        UUID taskId = UUID.randomUUID();
+        CodeChunk current = chunk(taskId, 1L, "Controller#entry", "/orders/{id}",
+                "service.load(id)", "load");
+        CodeChunk candidate = chunk(taskId, 2L, "OrderService#load", null,
+                "return repository.findById(id)", "findById");
+        when(semantic.verifyRelation(taskId, 1L, 2L))
+                .thenReturn(new SemanticEvidenceService.RelationVerification(false, "本地语义边未解析"));
+        when(codeGraph.verifyDirectRelation(taskId, current, candidate, List.of(current, candidate)))
+                .thenReturn(new CodeGraphIntegrationService.RelationCheck(
+                        true, "CodeGraph Target 索引确认直接调用"));
+
+        ToolResult result = tools.execute("verify_relation", Map.of("candidateChunkId", 2L),
+                current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION,
+                session(Set.of(1L), Set.of(2L)));
+
+        assertThat(result.status()).isEqualTo(ToolResult.Status.OK);
+        assertThat(result.evidenceChunkIds()).containsExactly(2L);
+        assertThat(result.text()).contains("CODEGRAPH_RELATION", "CodeGraph Target 索引确认直接调用");
+    }
+
+    @Test
     void relationRejectsUndiscoveredAndAmbiguousCandidates() {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         AuditToolService tools = tools(semantic);
@@ -97,7 +123,7 @@ class AuditToolServiceTest {
     }
 
     @Test
-    void dispatchesCallGraphAndAddsCodeGraphCandidates() {
+    void dispatchesCallGraphAndAddsVerifiedCodeGraphRelations() {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
         ProfessionalToolService professional = mock(ProfessionalToolService.class);
@@ -107,17 +133,17 @@ class AuditToolServiceTest {
         when(professional.exploreCallGraph(eq(current.getTaskId()), eq(current), eq(List.of(current, candidate)),
                 any(ToolArguments.class), eq(5)))
                 .thenReturn(new ToolResult("[CALL_GRAPH]", Set.of(1L), Set.of()));
-        when(codeGraph.candidateContext(current.getTaskId(), current, List.of(current, candidate), 5))
-                .thenReturn(new CodeGraphIntegrationService.CandidateContext(
-                        "[CODEGRAPH_CANDIDATE] CHUNK_ID=2", Set.of(2L), 0));
+        when(codeGraph.relationContext(current.getTaskId(), current, List.of(current, candidate), 5))
+                .thenReturn(new CodeGraphIntegrationService.RelationContext(
+                        "[VERIFIED_EVIDENCE][CODEGRAPH_RELATIONS] CHUNK_ID=2", Set.of(2L), 0));
 
         ToolResult result = tools.execute("explore_call_graph", Map.of("limit", 5),
                 current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION,
                 session(Set.of(1L), Set.of()));
 
-        assertThat(result.evidenceChunkIds()).containsExactly(1L);
-        assertThat(result.candidateChunkIds()).containsExactly(2L);
-        assertThat(result.text()).contains("CALL_GRAPH", "CODEGRAPH_CANDIDATE");
+        assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(result.candidateChunkIds()).isEmpty();
+        assertThat(result.text()).contains("CALL_GRAPH", "CODEGRAPH_RELATIONS");
     }
 
     @Test
@@ -150,7 +176,11 @@ class AuditToolServiceTest {
     }
 
     private CodeChunk chunk(long id, String symbol, String endpoint, String content, String calls) {
-        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "demo/Source.java", symbol, endpoint,
+        return chunk(UUID.randomUUID(), id, symbol, endpoint, content, calls);
+    }
+
+    private CodeChunk chunk(UUID taskId, long id, String symbol, String endpoint, String content, String calls) {
+        CodeChunk chunk = new CodeChunk(taskId, "demo/Source.java", symbol, endpoint,
                 1, 5, content, "JAVA_METHOD", "Long id", "", calls);
         chunk.setId(id);
         return chunk;

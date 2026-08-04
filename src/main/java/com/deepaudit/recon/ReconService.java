@@ -1,5 +1,6 @@
 package com.deepaudit.recon;
 
+import com.deepaudit.codegraph.CodeGraphClient;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.ChunkChangeType;
@@ -7,6 +8,7 @@ import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.mapper.CodeChunkMapper;
 import com.deepaudit.source.AuditSourceFilter;
 import com.deepaudit.semantic.IncrementalSemanticDiffService;
+import com.deepaudit.util.TimingDetailLog;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParseProblemException;
 import com.github.javaparser.StaticJavaParser;
@@ -78,10 +80,18 @@ public class ReconService {
     public ReconSummary buildIndex(UUID taskId, Path root, Path baseRoot,
                                    List<GitFileChange> changes) throws IOException {
         // 重建前清空旧代码块，确保同一任务的索引可重复生成。
+        if (changes == null || changes.isEmpty()) {
+            throw new IllegalArgumentException("增量索引必须提供 Git 变更清单");
+        }
         chunkMapper.deleteByTaskId(taskId);
+        long startedAt = System.nanoTime();
         List<CodeChunk> chunks = new ArrayList<>();
         int[] counters = new int[3];
-        try (Stream<Path> paths = Files.walk(root)) {
+        List<Path> frameworkPaths = frameworkFilePaths(root);
+        Stream<Path> changedFileStream = changes.stream().map(GitFileChange::getNewPath)
+                .filter(java.util.Objects::nonNull).map(path -> safeResolve(root, path))
+                .filter(java.util.Objects::nonNull).distinct();
+        try (Stream<Path> paths = changedFileStream) {
             // 只遍历受支持的文本源码，二进制和未知文件不进入模型上下文。
             paths.filter(Files::isRegularFile)
                     .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
@@ -93,15 +103,24 @@ public class ReconService {
         if (incrementalSemanticDiffService != null) {
             incrementalSemanticDiffService.analyze(taskId, baseRoot, root, chunks, changes);
         }
+        addUncoveredChangedRanges(taskId, root, chunks, changes);
+        chunks.removeIf(chunk -> chunk.getAnalysisScope() != AnalysisScope.CHANGED);
         for (int start = 0; start < chunks.size(); start += 500) {
             chunkMapper.insertBatch(chunks.subList(start, Math.min(start + 500, chunks.size())));
         }
         // 独立识别构建工具、框架和安全组件，供 Recon Agent 理解项目背景。
-        TechnologyProfile technologyProfile = technologyDetector.detect(root);
-        // 所有代码块都参与结构化画像；仅输出模块、分层和事实计数，不携带具体位置或业务源码。
-        ProjectStructureProfile projectStructure = structureProfiler.profile(root, chunks);
+        List<Path> reconFiles = new ArrayList<>(frameworkPaths);
+        changes.stream().map(GitFileChange::getNewPath).filter(java.util.Objects::nonNull)
+                .map(path -> safeResolve(root, path)).filter(java.util.Objects::nonNull)
+                .forEach(reconFiles::add);
+        TechnologyProfile technologyProfile = technologyDetector.detect(root, reconFiles);
+        // 结构画像只消费变更代码和框架配置，避免 Recon 重复遍历全部业务源码。
+        ProjectStructureProfile projectStructure = structureProfiler.profile(root, chunks, reconFiles);
+        TimingDetailLog.info("任务 {} 增量初始索引完成：changedFiles={}，changedChunks={}，frameworkFiles={}，"
+                        + "elapsedMs={}", taskId, counters[0], chunks.size(), frameworkPaths.size(),
+                (System.nanoTime() - startedAt) / 1_000_000);
         return new ReconSummary(counters[0], counters[1], counters[2], chunks.size(),
-                technologyProfile, projectStructure, frameworkFiles(root));
+                technologyProfile, projectStructure, frameworkFiles(root, frameworkPaths));
     }
 
     // 将调用图扩展得到的代码块提升为深度分析范围。
@@ -118,6 +137,113 @@ public class ReconService {
         promoted.forEach(chunkMapper::updateIncrementalMetadata);
     }
 
+    @Transactional
+    public int materializeCodeGraphLocations(UUID taskId, Path root,
+                                             List<CodeGraphClient.CodeGraphLocation> locations) {
+        if (locations == null || locations.isEmpty()) return 0;
+        Map<String, List<CodeGraphClient.CodeGraphLocation>> byPath = locations.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(location -> location.filePath() != null && !location.filePath().isBlank())
+                .collect(java.util.stream.Collectors.groupingBy(
+                        location -> normalizePath(location.filePath()), LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()));
+        List<CodeChunk> existing = chunkMapper.findByTaskId(taskId);
+        Set<String> keys = existing.stream().map(this::chunkKey)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<CodeChunk> additions = new ArrayList<>();
+        for (Map.Entry<String, List<CodeGraphClient.CodeGraphLocation>> entry : byPath.entrySet()) {
+            Path file = safeResolve(root, entry.getKey());
+            if (file == null || !Files.isRegularFile(file) || !isSupportedTextFile(file)
+                    || !AuditSourceFilter.shouldAnalyze(root, file)) continue;
+            List<CodeChunk> candidates = new ArrayList<>();
+            indexFile(taskId, root, file, candidates, new int[3]);
+            for (CodeChunk candidate : candidates) {
+                if (!matchesAnyLocation(candidate, entry.getValue()) || !keys.add(chunkKey(candidate))) continue;
+                candidate.setAnalysisScope(AnalysisScope.CONTEXT);
+                candidate.setChangeType(ChunkChangeType.UNCHANGED);
+                candidate.setBaseContent("");
+                additions.add(candidate);
+            }
+        }
+        insertChunks(additions);
+        TimingDetailLog.info("任务 {} CodeGraph 位置按需物化完成：locations={}，files={}，newChunks={}",
+                taskId, locations.size(), byPath.size(), additions.size());
+        return additions.size();
+    }
+
+    @Transactional
+    public int materializeGlobalSecurityContext(UUID taskId, Path root) {
+        List<CodeChunk> existing = chunkMapper.findByTaskId(taskId);
+        Set<String> keys = existing.stream().map(this::chunkKey)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<CodeChunk> additions = new ArrayList<>();
+        int selectedFiles = 0;
+        try (Stream<Path> paths = Files.walk(root)) {
+            for (Path file : paths.filter(Files::isRegularFile)
+                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(this::globalContextFile).toList()) {
+                selectedFiles++;
+                List<CodeChunk> candidates = new ArrayList<>();
+                indexFile(taskId, root, file, candidates, new int[3]);
+                for (CodeChunk candidate : candidates) {
+                    if (!keys.add(chunkKey(candidate))) continue;
+                    candidate.setAnalysisScope(AnalysisScope.CONTEXT);
+                    candidate.setChangeType(ChunkChangeType.UNCHANGED);
+                    candidate.setBaseContent("");
+                    additions.add(candidate);
+                }
+            }
+        } catch (IOException exception) {
+            log.warn("任务 {} 全局安全上下文候选文件收集未完整执行", taskId, exception);
+        }
+        insertChunks(additions);
+        TimingDetailLog.info("任务 {} 全局配置变化上下文按需物化：selectedFiles={}，newChunks={}",
+                taskId, selectedFiles, additions.size());
+        return additions.size();
+    }
+
+    private void insertChunks(List<CodeChunk> chunks) {
+        for (int start = 0; start < chunks.size(); start += 500) {
+            chunkMapper.insertBatch(chunks.subList(start, Math.min(start + 500, chunks.size())));
+        }
+    }
+
+    private boolean matchesAnyLocation(CodeChunk chunk,
+                                       List<CodeGraphClient.CodeGraphLocation> locations) {
+        for (CodeGraphClient.CodeGraphLocation location : locations) {
+            if (location.startLine() != null && location.startLine() > 0
+                    && location.startLine() >= chunk.getStartLine()
+                    && location.startLine() <= chunk.getEndLine()) return true;
+            String expected = simpleName(location.name());
+            if (!expected.isBlank() && expected.equals(simpleName(chunk.getSymbolName()))) return true;
+        }
+        return false;
+    }
+
+    private String simpleName(String value) {
+        if (value == null) return "";
+        String name = value.strip();
+        int parameters = name.indexOf('(');
+        if (parameters >= 0) name = name.substring(0, parameters);
+        int separator = Math.max(name.lastIndexOf('#'), Math.max(name.lastIndexOf('.'), name.lastIndexOf(':')));
+        return (separator < 0 ? name : name.substring(separator + 1)).toLowerCase(Locale.ROOT);
+    }
+
+    private String chunkKey(CodeChunk chunk) {
+        return normalizePath(chunk.getFilePath()) + ":" + chunk.getStartLine() + ":" + chunk.getEndLine()
+                + ":" + (chunk.getSymbolName() == null ? "" : chunk.getSymbolName());
+    }
+
+    private boolean globalContextFile(Path file) {
+        if (!isSupportedTextFile(file)) return false;
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        String path = normalizePath(file.toString()).toLowerCase(Locale.ROOT);
+        return isFrameworkFile(file) || name.contains("security") || name.contains("controller")
+                || name.contains("filter") || name.contains("interceptor") || name.contains("mapper")
+                || path.contains("/security/") || path.contains("/controller/")
+                || path.contains("/filter/") || path.contains("/interceptor/");
+    }
+
     // 执行 ReconService 中的 applyIncrementalMetadata 处理。
     private void applyIncrementalMetadata(List<CodeChunk> chunks,
                                           List<GitFileChange> changes) {
@@ -131,7 +257,7 @@ public class ReconService {
             chunk.setBaseContent("");
             GitFileChange change = byPath.get(normalizePath(chunk.getFilePath()));
             if (change == null) continue;
-            boolean direct = change.isConfigurationChange() || "ADD".equals(change.getChangeType())
+            boolean direct = "ADD".equals(change.getChangeType())
                     || overlaps(chunk.getStartLine(), chunk.getEndLine(), change.getNewRanges());
             if (!direct) continue;
             chunk.setChangeType(switch (change.getChangeType()) {
@@ -142,6 +268,92 @@ public class ReconService {
             chunk.setAnalysisScope(AnalysisScope.CHANGED);
             chunk.setBaseContent(truncateBase(change.getContextText()));
         }
+    }
+
+    private void addUncoveredChangedRanges(UUID taskId, Path root, List<CodeChunk> chunks,
+                                           List<GitFileChange> changes) {
+        for (GitFileChange change : changes) {
+            if (change.getNewPath() == null || change.getNewRanges() == null
+                    || change.getNewRanges().isBlank()) continue;
+            String relativePath = normalizePath(change.getNewPath());
+            Path file = safeResolve(root, relativePath);
+            if (file == null || !Files.isRegularFile(file) || !isSupportedTextFile(file)
+                    || !AuditSourceFilter.shouldAnalyze(root, file)) continue;
+            String content;
+            try {
+                if (Files.size(file) > MAX_SOURCE_FILE_BYTES) continue;
+                content = Files.readString(file, StandardCharsets.UTF_8);
+            } catch (IOException exception) {
+                log.warn("无法读取未被方法块覆盖的变更行: {}", file, exception);
+                continue;
+            }
+            List<LineRange> uncovered = parseRanges(change.getNewRanges());
+            if (relativePath.toLowerCase(Locale.ROOT).endsWith(".java")) {
+                try {
+                    CompilationUnit unit = StaticJavaParser.parse(content);
+                    for (MethodDeclaration method : unit.findAll(MethodDeclaration.class).stream()
+                            .filter(candidate -> candidate.getAnnotations().stream()
+                                    .map(AnnotationExpr::getNameAsString)
+                                    .anyMatch(AuditSourceFilter::isTestMethodAnnotation)).toList()) {
+                        int start = method.getBegin().map(position -> position.line).orElse(1);
+                        int end = method.getEnd().map(position -> position.line).orElse(start);
+                        uncovered = subtract(uncovered, start, end);
+                    }
+                } catch (ParseProblemException ignored) {
+                }
+            }
+            for (CodeChunk chunk : chunks.stream()
+                    .filter(candidate -> relativePath.equals(normalizePath(candidate.getFilePath())))
+                    .filter(candidate -> candidate.getAnalysisScope() == AnalysisScope.CHANGED).toList()) {
+                uncovered = subtract(uncovered, chunk.getStartLine(), chunk.getEndLine());
+            }
+            for (LineRange range : uncovered) {
+                String source = sourceLines(content, range.start(), range.end());
+                if (source.isBlank()) continue;
+                CodeChunk fallback = new CodeChunk(taskId, relativePath,
+                        file.getFileName() + "#changed-lines-" + range.start() + "-" + range.end(), null,
+                        range.start(), range.end(), truncate(source), "JAVA_CHANGE", "", "", "");
+                fallback.setAnalysisScope(AnalysisScope.CHANGED);
+                fallback.setChangeType("ADD".equals(change.getChangeType())
+                        ? ChunkChangeType.ADDED : "RENAME".equals(change.getChangeType())
+                        || "COPY".equals(change.getChangeType())
+                        ? ChunkChangeType.RENAMED : ChunkChangeType.MODIFIED);
+                fallback.setBaseContent(truncateBase(change.getContextText()));
+                chunks.add(fallback);
+            }
+        }
+    }
+
+    private List<LineRange> parseRanges(String ranges) {
+        List<LineRange> result = new ArrayList<>();
+        for (String value : ranges.split(",")) {
+            String[] parts = value.split(":");
+            if (parts.length != 2) continue;
+            try {
+                int start = Math.max(1, Integer.parseInt(parts[0]));
+                int end = Math.max(start, Integer.parseInt(parts[1]));
+                result.add(new LineRange(start, end));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return result;
+    }
+
+    private List<LineRange> subtract(List<LineRange> ranges, int coveredStart, int coveredEnd) {
+        List<LineRange> result = new ArrayList<>();
+        for (LineRange range : ranges) {
+            if (coveredEnd < range.start() || coveredStart > range.end()) {
+                result.add(range);
+                continue;
+            }
+            if (coveredStart > range.start()) {
+                result.add(new LineRange(range.start(), coveredStart - 1));
+            }
+            if (coveredEnd < range.end()) {
+                result.add(new LineRange(coveredEnd + 1, range.end()));
+            }
+        }
+        return result;
     }
 
     // 执行 ReconService 中的 overlaps 处理。
@@ -338,7 +550,7 @@ public class ReconService {
     }
 
     // Recon 只读取构建描述和 Spring 应用配置原文；普通业务源码仍由本地画像和后续专业 Agent 处理。
-    private List<ReconFrameworkFile> frameworkFiles(Path root) {
+    private List<Path> frameworkFilePaths(Path root) {
         List<Path> candidates;
         try (Stream<Path> paths = Files.walk(root)) {
             candidates = paths.filter(Files::isRegularFile)
@@ -346,16 +558,19 @@ public class ReconService {
                     .filter(this::isFrameworkFile)
                     .sorted(Comparator.comparingInt(this::frameworkPriority)
                             .thenComparing(path -> normalizePath(root.relativize(path).toString())))
-                    .limit(MAX_FRAMEWORK_FILES)
                     .toList();
         } catch (IOException exception) {
             log.warn("无法完整收集 Recon 框架配置文件: {}", root, exception);
             return List.of();
         }
+        return List.copyOf(candidates);
+    }
+
+    private List<ReconFrameworkFile> frameworkFiles(Path root, List<Path> candidates) {
         List<ReconFrameworkFile> result = new ArrayList<>();
         int remaining = MAX_FRAMEWORK_CONTEXT_CHARS;
         for (Path file : candidates) {
-            if (remaining <= 0) break;
+            if (remaining <= 0 || result.size() >= MAX_FRAMEWORK_FILES) break;
             try {
                 String content = Files.readString(file, StandardCharsets.UTF_8);
                 int length = Math.min(Math.min(content.length(), MAX_FRAMEWORK_FILE_CHARS), remaining);
@@ -367,6 +582,13 @@ public class ReconService {
             }
         }
         return List.copyOf(result);
+    }
+
+    private Path safeResolve(Path root, String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) return null;
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path resolved = normalizedRoot.resolve(relativePath).normalize();
+        return resolved.startsWith(normalizedRoot) ? resolved : null;
     }
 
     private boolean isFrameworkFile(Path file) {
@@ -404,5 +626,8 @@ public class ReconService {
         int from = Math.max(0, startLine - 1);
         int to = Math.min(lines.length, Math.max(from, endLine));
         return String.join("\n", java.util.Arrays.copyOfRange(lines, from, to));
+    }
+
+    private record LineRange(int start, int end) {
     }
 }

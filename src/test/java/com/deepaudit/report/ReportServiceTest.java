@@ -58,7 +58,9 @@ class ReportServiceTest {
         FindingMapper findingMapper = mock(FindingMapper.class);
         AuditTask task = new AuditTask(projectId, "base-commit", "target-commit", "base-commit");
         task.setId(taskId);
-        Project project = new Project(projectId, "示例项目", null, "data/example");
+        Project project = new Project(projectId, "示例项目", "https://example.test/repository.git",
+                "data/example", com.deepaudit.domain.ProjectSourceType.GIT,
+                "https://example.test/repository.git", "main");
         Finding finding = new Finding(taskId, VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
                 "动态 SQL 注入", "demo/UserService.java", 73, 73, null,
                 "外部输入直接进入动态 SQL。\n\nCritic Agent 复核：外部输入直接进入动态 SQL。",
@@ -93,7 +95,9 @@ class ReportServiceTest {
         GitFileChangeMapper changeMapper = mock(GitFileChangeMapper.class);
         AuditTask task = new AuditTask(projectId, "base-commit", "target-commit", "base-commit");
         task.setId(taskId);
-        Project project = new Project(projectId, "示例项目", null, "data/example");
+        Project project = new Project(projectId, "示例项目", "https://example.test/repository.git",
+                "data/example", com.deepaudit.domain.ProjectSourceType.GIT,
+                "https://example.test/repository.git", "main");
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
                 VulnerabilityType.VALIDATION_BYPASS, "未验证指令可以执行", 2100L,
                 "2100", Confidence.HIGH);

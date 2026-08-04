@@ -24,32 +24,22 @@ final class AgentPrompts {
             + "不得输出文件中的密码、Token、密钥或其他具体配置值；不得评估风险、确认漏洞、给出审计建议，"
             + "也不得推测未出现的组件。只返回 architectureSummary。";
 
-    private static final String TRIAGE_ORCHESTRATOR = "你是轻量 Triage Orchestrator。"
-            + "输入是结构化审计单元摘要，不是完整源码；必须为每个 auditUnit 恰好返回一个决定。"
-            + "disposition 只能是 INVESTIGATE、NEED_CONTEXT、SKIP。"
-            + "只有结构化事实表明代码涉及外部入口、危险操作、安全边界、变更影响或未解析调用时才选择 INVESTIGATE；"
-            + "明显只是普通数据搬运、样板逻辑且没有安全相关事实时选择 SKIP。"
-            + "当入口、危险操作或安全控制存在但调用链、Mapper XML、全局安全配置等关键上下文不足时选择 NEED_CONTEXT。"
-            + "vulnerabilityTypes 只能从当前 auditUnit.candidateTypes 中选择；SKIP 时必须返回空数组。"
-            + "reasonCodes 应优先复用输入中的固定代码，requiredContext 只能描述需要补充的调用链、"
-            + "安全流、Mapper、框架安全配置或相关代码位置。不得创造输入之外的 unitId 或 primaryChunkId，"
-            + "不得把线索直接描述成已确认漏洞。";
-
-    private static final String INCREMENTAL_TRIAGE = "你是增量代码安全审查分流 Agent。reviewUnits 覆盖全部 "
-            + "CHANGED 和 IMPACTED 代码位置，每个单元都包含真实 targetCodeExcerpt，并在存在基线时包含 "
-            + "baseCodeExcerpt。facts、changeSummary 和 relatedContext 是客观变更与调用事实，不是漏洞结论。"
-            + "必须逐个比较 Base/Target，结合调用影响判断该位置是否需要针对某种具体漏洞深入调查，并为每个 reviewUnit "
+    private static final String INCREMENTAL_TRIAGE = "你是增量代码安全审查分流 Agent。reviewUnits 只包含全部 "
+            + "CHANGED 代码位置，每个单元都包含真实 targetCodeExcerpt，并在存在基线时包含 "
+            + "baseCodeExcerpt。首次分流不提供 IMPACTED 代码正文；facts、changeSummary 和 relatedContext 是轻量的客观变更与调用事实，"
+            + "不是漏洞结论。必须逐个比较 Base/Target，判断该变更是否需要针对某种具体漏洞深入调查，并为每个 reviewUnit "
             + "恰好返回一个决定。disposition 只能是 INVESTIGATE、NEED_CONTEXT、SKIP。只有实际代码差异或影响路径支持"
             + "具体安全假设时才选择 INVESTIGATE；vulnerabilityTypes 可以从 allowedTypes 中选择，不得仅凭文件名、方法名、"
-            + "框架、存在 Repository 调用、普通 return 或 IMPACTED 标签推断漏洞。关键调用方、被调用方、配置或 Guard 上下文"
-            + "不足时选择 NEED_CONTEXT；能够根据真实差异排除安全影响时选择 SKIP。不得创造 unitId、primaryChunkId、事实、"
+            + "框架、存在 Repository 调用或普通 return 推断漏洞。关键 IMPACTED 调用方、被调用方、配置或 Guard 代码"
+            + "不足以判断时选择 NEED_CONTEXT；选择 INVESTIGATE 后系统会在专业调查前补入对应 IMPACTED 依据；"
+            + "能够根据真实差异排除安全影响时选择 SKIP。不得创造 unitId、primaryChunkId、事实、"
             + "代码或漏洞类型，不得把变更相关性描述成已确认漏洞。";
 
     private static final String INCREMENTAL_TRIAGE_FINAL = "你是增量代码安全审查分流 Agent，正在对一个此前未能"
             + "明确分类的位置进行唯一一次补充上下文复判。输入只包含一个 reviewUnit，并已完成受控上下文补充。"
             + "必须原样返回该 reviewUnit 的 unitId 和 primaryChunkId，且恰好返回一个决定。"
             + "disposition 只能是 INVESTIGATE 或 SKIP，不得再次返回 NEED_CONTEXT。"
-            + "只有真实 Base/Target 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
+            + "relatedContext 已补入对应 IMPACTED 代码和受控上下文。只有真实 Base/Target 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
             + "并从 allowedTypes 中返回至少一个具体漏洞类型；否则必须选择 SKIP 且 vulnerabilityTypes 返回空数组。"
             + "不得为了避免 SKIP 而猜测漏洞，不得创造代码、位置、事实、类型或调用关系。";
 
@@ -60,8 +50,10 @@ final class AgentPrompts {
             + "每轮只能返回一种 action: TOOL、FINDING、REJECT。证据不足时必须先调用工具；";
 
     private static final String PROFESSIONAL_AGENT_COMMON_RULES = "候选结果只是发现线索，禁止直接作为漏洞证据；"
-            + "必须继续调用 verify_relation，只有 VERIFIED_EVIDENCE、语义调用链或当前目标才能进入 FINDING 的 evidenceChunkIds。"
+            + "必须继续调用 verify_relation，只有 VERIFIED_EVIDENCE、CODEGRAPH_RELATIONS、SEMANTIC_EVIDENCE 或当前目标"
+            + "才能进入 FINDING 的 evidenceChunkIds。"
             + "FINDING 时 primaryChunkId 和 evidenceChunkIds 必须来自当前目标或已验证工具结果。"
+            + "增量调查的 evidenceChunkIds 必须保留当前 CHANGED 目标作为变更因果锚点；IMPACTED 可以作为漏洞位置或影响证据，但不能替代该锚点。"
             + "跨方法证据链中，primaryChunkId 必须指向漏洞实际发生的危险操作、错误安全决策或缺失关键校验后继续执行的代码块；"
             + "Controller 的路由方法、调用下游服务的转发语句以及上游已有校验通常只能作为入口或关联证据，"
             + "不能因为它是当前调查目标就固定作为 primaryChunkId。"
@@ -77,7 +69,11 @@ final class AgentPrompts {
             + "\"summary\":\"简短中文原因\",\"finding\":null}；FINDING 的 finding 必须是对象。";
 
     private static final String CRITIC_AGENT = "你是独立 Critic Agent。主动寻找全局安全配置、上游校验、"
-            + "数据归属、参数化查询等反证。只有证据链能支持漏洞时 confirmed 才能为 true。"
+            + "数据归属、参数化查询等反证。verdict 必须是 CONFIRMED、REJECTED 或 INSUFFICIENT_EVIDENCE。"
+            + "只有证据链能支持漏洞时返回 CONFIRMED 且 confirmed=true；只有输入中存在能够推翻漏洞主张的具体源码反证时"
+            + "才能返回 REJECTED 且 confirmed=false，并在 reason 中说明反证代码事实，同时将反证所属的真实 CHUNK_ID 写入"
+            + "counterEvidenceChunkIds；禁止引用输入中不存在的 ID。调用链缺失、上下文不足、无法判断或"
+            + "没有找到反证时必须返回 INSUFFICIENT_EVIDENCE 且 confirmed=false，禁止将证据不足表述为已经否决漏洞。"
             + "candidate.evidence 由服务端从已验证代码块重新构建：PRIMARY_CONTEXT 包含主证据位置前后各二十行，"
             + "RELATED_EVIDENCE、CALL_CHAIN_EVIDENCE、ENTRY_EVIDENCE 包含关联位置前后各十二行。"
             + "必须结合扩展上下文主动寻找已有 Guard、提前返回和净化逻辑，不能只依据标记为 >>> 的局部行确认漏洞。"
@@ -95,6 +91,8 @@ final class AgentPrompts {
             + "@RolesAllowed 等安全边界或对应安全配置，不能选择下游 Repository 查询、普通 return 或数据转换语句；"
             + "这些下游操作只能作为影响证据。"
             + "如果候选来自增量范围，还必须验证漏洞与 Target 直接变更或调用影响链存在因果关系。"
+            + "reason、confidence、verdict、confirmed 和 counterEvidenceChunkIds 都是必填字段，不得省略；"
+            + "非 REJECTED 结论的 counterEvidenceChunkIds 返回空数组。"
             + "deltaStatus 只能是 NEW、PERSISTING；修改直接引入、防护削弱或调用影响导致的确认问题统一使用 NEW，"
             + "只有明确的 before/after 证据证明漏洞在 Base 与 Target 中均存在时才使用 PERSISTING。";
 
@@ -116,11 +114,6 @@ final class AgentPrompts {
         return complete(RECON_AGENT);
     }
 
-    // 执行 AgentPrompts 中的 triageOrchestrator 处理。
-    static String triageOrchestrator() {
-        return complete(TRIAGE_ORCHESTRATOR);
-    }
-
     // 生成只依据真实增量差异和客观事实的分流提示词。
     static String incrementalTriage() {
         return complete(INCREMENTAL_TRIAGE);
@@ -136,7 +129,7 @@ final class AgentPrompts {
         return complete("你是专业代码安全审计 Agent，当前专注 " + vulnerabilityType + "。"
                 + typeSpecificRules(vulnerabilityType)
                 + PROFESSIONAL_AGENT_TOOLS
-                + "标记为 CODEGRAPH_CANDIDATE 或 UNVERIFIED_CANDIDATE 的结果均属于候选。"
+                + "标记为 UNVERIFIED_CANDIDATE 的结果属于候选；CODEGRAPH_RELATIONS 是 CodeGraph 已确认的直接调用证据。"
                 + PROFESSIONAL_AGENT_RULES
                 + PROFESSIONAL_AGENT_COMMON_RULES
                 + "TOOL={\"action\":\"TOOL\",\"tool\":\"explore_call_graph"
@@ -148,7 +141,7 @@ final class AgentPrompts {
         return "你只调查敏感信息泄露，不承担越权漏洞判断。重点检查配置和源码中的硬编码密码、Token、API Key、"
                 + "Client Secret、私钥及连接凭据，以及敏感字段进入响应、日志或异常输出。环境变量占位符、空值、"
                 + "公开密钥、配置开关和过期时间本身不是秘密；带非空硬编码默认值的占位符仍需调查。"
-                + "不得在 summary、title、description 或 remediation 中复述完整秘密值。";
+                + "不得在 summary、title、description 或 remediation 中复述完整密码值。";
     }
 
     // 执行 AgentPrompts 中的 criticAgent 处理。
@@ -168,7 +161,7 @@ final class AgentPrompts {
 
     // 执行 AgentPrompts 中的 jsonRepair 处理。
     static String jsonRepair(String errorLocation) {
-        return "上一条响应不是合法 JSON，错误位置为 " + errorLocation
+        return "上一条响应不是合法 JSON 或缺少必填结构，错误位置为 " + errorLocation
                 + "。不要复制或逐字修改上一条响应，请根据原始任务从头重建一个更短的 JSON 对象。"
                 + "summary、title 每项不超过 60 个汉字，description、remediation 每项不超过 180 个汉字；"
                 + "字符串中禁止源码、换行、反斜杠和双引号。不要省略字段，不要使用 Markdown，不要添加解释。";

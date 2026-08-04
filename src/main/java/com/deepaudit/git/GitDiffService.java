@@ -2,7 +2,7 @@ package com.deepaudit.git;
 
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.source.AuditSourceFilter;
-import lombok.extern.slf4j.Slf4j;
+import com.deepaudit.util.TimingDetailLog;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.diff.RawText;
@@ -27,7 +27,6 @@ import java.util.Locale;
 import java.util.UUID;
 
 // 负责 GitDiffService 对应的业务编排和处理。
-@Slf4j
 @Service
 public class GitDiffService {
     private static final int MAX_CONTEXT_CHARS = 12_000;
@@ -37,7 +36,7 @@ public class GitDiffService {
     public ChangeSet compare(Repository repository, UUID taskId,
                              String baseCommitSha, String targetCommitSha) throws IOException {
         long startedAt = System.nanoTime();
-        log.info("开始读取 Git 提交差异：taskId={}，base={}，target={}",
+        TimingDetailLog.info("开始读取 Git 提交差异：taskId={}，base={}，target={}",
                 taskId, shortSha(baseCommitSha), shortSha(targetCommitSha));
         List<GitFileChange> changes = new ArrayList<>();
         try (RevWalk walk = new RevWalk(repository);
@@ -85,7 +84,7 @@ public class GitDiffService {
         long configurations = changes.stream().filter(GitFileChange::isConfigurationChange).count();
         String summary = changes.size() + " 个文件发生变化，新增 " + additions + " 行、删除 "
                 + deletions + " 行，其中 " + configurations + " 个配置或依赖文件";
-        log.info("Git 提交差异读取完成：taskId={}，changedFiles={}，additions={}，deletions={}，"
+        TimingDetailLog.info("Git 提交差异读取完成：taskId={}，changedFiles={}，additions={}，deletions={}，"
                         + "configurationFiles={}，elapsedMs={}",
                 taskId, changes.size(), additions, deletions, configurations, elapsedMillis(startedAt));
         return new ChangeSet(List.copyOf(changes), summary, additions, deletions);

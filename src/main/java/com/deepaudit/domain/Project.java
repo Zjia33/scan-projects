@@ -26,16 +26,6 @@ public class Project {
     private Instant archivedAt; // 项目归档时间，未归档时为空
 
     // 创建 Project 实例并初始化所需依赖或状态。
-    public Project(String name, String originalFilename, String storagePath) {
-        this(UUID.randomUUID(), name, originalFilename, storagePath);
-    }
-
-    // 创建 Project 实例并初始化所需依赖或状态。
-    public Project(UUID id, String name, String originalFilename, String storagePath) {
-        this(id, name, originalFilename, storagePath, ProjectSourceType.ZIP, null, null);
-    }
-
-    // 创建 Project 实例并初始化所需依赖或状态。
     public Project(UUID id, String name, String originalFilename, String storagePath,
                    ProjectSourceType sourceType, String repositoryUrl, String defaultBranch) {
         this.id = id;

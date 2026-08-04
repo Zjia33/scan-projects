@@ -8,7 +8,6 @@ import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -72,6 +71,42 @@ public class SemanticEvidenceService {
         return new EvidenceResult(text.isBlank() ? "没有独立语义证据" : text, evidence);
     }
 
+    // 为 Critic 补充已验证调用图邻域。它只用于寻找 Guard 和反证，不会自动成为最终报告证据。
+    public Set<Long> criticReviewContextIds(UUID taskId, Set<Long> seedChunkIds, int requestedDepth) {
+        if (seedChunkIds == null || seedChunkIds.isEmpty()) return Set.of();
+        int maxDepth = Math.max(1, Math.min(requestedDepth <= 0 ? 3 : requestedDepth, 5));
+        Map<Long, Set<Long>> graph = new LinkedHashMap<>();
+        for (SemanticCallEdge edge : edgeMapper.findByTaskId(taskId)) {
+            Long caller = edge.getCallerChunkId();
+            Long callee = edge.getCalleeChunkId();
+            if (caller == null || callee == null
+                    || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW) continue;
+            graph.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
+            graph.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
+        }
+        Set<Long> visited = new LinkedHashSet<>(seedChunkIds);
+        ArrayDeque<Long> queue = new ArrayDeque<>();
+        Map<Long, Integer> depth = new LinkedHashMap<>();
+        seedChunkIds.forEach(id -> {
+            if (id != null) {
+                queue.add(id);
+                depth.put(id, 0);
+            }
+        });
+        while (!queue.isEmpty()) {
+            Long current = queue.removeFirst();
+            int currentDepth = depth.getOrDefault(current, 0);
+            if (currentDepth >= maxDepth) continue;
+            for (Long next : graph.getOrDefault(current, Set.of())) {
+                if (!visited.add(next)) continue;
+                depth.put(next, currentDepth + 1);
+                queue.addLast(next);
+            }
+        }
+        visited.removeAll(seedChunkIds);
+        return Set.copyOf(visited);
+    }
+
     // 在安全流或高/中可信调用图中验证两个代码块是否确有关系。
     public RelationVerification verifyRelation(UUID taskId, Long sourceChunkId, Long candidateChunkId) {
         if (sourceChunkId == null || candidateChunkId == null) {
@@ -92,10 +127,8 @@ public class SemanticEvidenceService {
         for (SemanticCallEdge edge : edgeMapper.findByTaskId(taskId)) {
             Long caller = edge.getCallerChunkId();
             Long callee = edge.getCalleeChunkId();
-            if (caller == null || callee == null || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW
-                    || "UNRESOLVED".equals(edge.getEdgeType())
-                    || "LOCAL_UNRESOLVED".equals(edge.getEdgeType())
-                    || "CODEGRAPH_CANDIDATE".equals(edge.getEdgeType())) continue;
+            if (caller == null || callee == null
+                    || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW) continue;
             graph.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
             graph.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
         }
@@ -128,9 +161,6 @@ public class SemanticEvidenceService {
                 .filter(edge -> evidenceChunkIds.contains(edge.getCallerChunkId())
                         && evidenceChunkIds.contains(edge.getCalleeChunkId()))
                 .filter(edge -> edge.getConfidence() != com.deepaudit.domain.Confidence.LOW)
-                .filter(edge -> !"UNRESOLVED".equals(edge.getEdgeType()))
-                .filter(edge -> !"LOCAL_UNRESOLVED".equals(edge.getEdgeType()))
-                .filter(edge -> !"CODEGRAPH_CANDIDATE".equals(edge.getEdgeType()))
                 .collect(Collectors.groupingBy(SemanticCallEdge::getCalleeChunkId,
                         LinkedHashMap::new, Collectors.toList()));
         Map<Long, Integer> callSites = new LinkedHashMap<>();
@@ -154,8 +184,8 @@ public class SemanticEvidenceService {
         StringBuilder text = new StringBuilder("[SECURITY_FLOW ").append(flow.getId()).append("]\n");
         text.append(flow.getPathText()).append('\n')
                 .append("安全控制检查: ").append(flow.getGuardSummary()).append('\n')
-                .append("覆盖情况: 已解析边=").append(flow.getResolvedEdges())
-                .append("，未解析边=").append(flow.getUnresolvedEdges());
+                .append("覆盖情况: 已确认关系边=").append(flow.getConfirmedRelationEdges())
+                .append("，局部语义缺口=").append(flow.getLocalSemanticGaps());
         return text.toString();
     }
 

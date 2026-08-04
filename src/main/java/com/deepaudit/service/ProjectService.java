@@ -104,8 +104,9 @@ public class ProjectService {
         }
         requireNoActiveTasks(projectId);
         Integer deleted = transactionTemplate.execute(status -> taskMapper.deleteByProjectId(projectId));
+        gitRepositoryService.cleanupAuditCache(project);
         return new CleanupResult(projectId, deleted == null ? 0 : deleted,
-                "扫描任务及其代码块、向量、语义关系、Agent 轨迹、漏洞和报告已清理");
+                "扫描任务及其代码块、语义关系、Agent 轨迹、漏洞、报告和 CodeGraph 缓存已清理");
     }
 
     // 执行 ProjectService 中的 commits 处理。

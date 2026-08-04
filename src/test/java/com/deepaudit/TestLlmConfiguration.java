@@ -1,6 +1,5 @@
 package com.deepaudit;
 
-import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.ai.LlmGateway;
@@ -31,24 +30,6 @@ public class TestLlmConfiguration {
             }
 
             @Override
-            public TriagePlan triage(UUID taskId, ReconInsight recon, List<AuditUnit> auditUnits) {
-                List<TriageDecision> decisions = auditUnits.stream().map(unit -> {
-                    boolean investigate = unit.reasonCodes().stream().anyMatch(code ->
-                            code.equals("RULE_HINT") || code.equals("SEMANTIC_FLOW")
-                                    || code.startsWith("DANGEROUS_")
-                                    || code.equals("AUTHORIZATION_BOUNDARY"));
-                    boolean needContext = !investigate && unit.reasonCodes().contains("UNRESOLVED_CALL");
-                    TriageDisposition disposition = investigate ? TriageDisposition.INVESTIGATE
-                            : needContext ? TriageDisposition.NEED_CONTEXT : TriageDisposition.SKIP;
-                    return new TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
-                            investigate ? unit.candidateTypes() : List.of(), unit.reasonCodes(),
-                            needContext ? List.of("CALL_CHAIN") : List.of(),
-                            investigate ? "测试模型确认安全相关事实需要调查" : "测试模型未发现深入调查必要");
-                }).toList();
-                return new TriagePlan("测试模型已完成三态轻量分流", decisions);
-            }
-
-            @Override
             public TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                                 List<IncrementalReviewUnit> reviewUnits) {
                 List<TriageDecision> decisions = reviewUnits.stream().map(unit -> {
@@ -69,7 +50,7 @@ public class TestLlmConfiguration {
                     TriageDisposition disposition = types.isEmpty()
                             ? TriageDisposition.SKIP : TriageDisposition.INVESTIGATE;
                     return new TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
-                            List.copyOf(types), unit.facts(), List.of(),
+                            List.copyOf(types),
                             types.isEmpty() ? "真实差异不支持具体安全假设" : "真实差异包含需要深入调查的安全操作");
                 }).toList();
                 return new TriagePlan("测试模型已完成真实增量差异审查", decisions);

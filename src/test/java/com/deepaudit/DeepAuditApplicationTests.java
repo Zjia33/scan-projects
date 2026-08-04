@@ -101,8 +101,6 @@ class DeepAuditApplicationTests {
                       "primaryChunkId": 10,
                       "disposition": "investigate",
                       "vulnerabilityTypes": ["敏感信息泄露"],
-                      "reasonCodes": ["EXTERNAL_ENTRY"],
-                      "requiredContext": [],
                       "reason": "未授权接口可能泄露敏感信息"
                     },
                     {
@@ -110,8 +108,6 @@ class DeepAuditApplicationTests {
                       "primaryChunkId": 11,
                       "disposition": "InventedDisposition",
                       "vulnerabilityTypes": ["InventedRisk"],
-                      "reasonCodes": [],
-                      "requiredContext": [],
                       "reason": "模型创造的未知类别"
                     }
                   ]

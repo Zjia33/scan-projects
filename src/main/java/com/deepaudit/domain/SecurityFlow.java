@@ -23,14 +23,14 @@ public class SecurityFlow {
     private String pathText; // 从来源到终点的可读调用路径
     private String evidenceChunkIds; // 路径所覆盖代码块 ID 的序列化文本
     private Confidence confidence; // 语义解析结果的置信度
-    private int resolvedEdges; // 路径中已成功解析的调用边数量
-    private int unresolvedEdges; // 路径中未能解析的调用边数量
+    private int confirmedRelationEdges; // 路径中由 CodeGraph 或确定性框架桥确认的关系边数量
+    private int localSemanticGaps; // 已确认拓扑中未能由局部 AST 精确补充的参数语义数量
 
     // 创建 SecurityFlow 实例并初始化所需依赖或状态。
     public SecurityFlow(UUID taskId, VulnerabilityType type, UUID sourceSymbolId, UUID sinkSymbolId,
                         Long primaryChunkId, String sourceDescription, String sinkDescription,
                         String guardSummary, String pathText, String evidenceChunkIds,
-                        Confidence confidence, int resolvedEdges, int unresolvedEdges) {
+                        Confidence confidence, int confirmedRelationEdges, int localSemanticGaps) {
         this.id = UUID.randomUUID();
         this.taskId = taskId;
         this.type = type;
@@ -43,8 +43,8 @@ public class SecurityFlow {
         this.pathText = pathText;
         this.evidenceChunkIds = evidenceChunkIds;
         this.confidence = confidence;
-        this.resolvedEdges = resolvedEdges;
-        this.unresolvedEdges = unresolvedEdges;
+        this.confirmedRelationEdges = confirmedRelationEdges;
+        this.localSemanticGaps = localSemanticGaps;
     }
 
 }

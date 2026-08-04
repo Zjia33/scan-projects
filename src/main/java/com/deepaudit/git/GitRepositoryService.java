@@ -184,6 +184,17 @@ public class GitRepositoryService {
         return new FileRepositoryBuilder().setGitDir(gitDirectory.toFile()).setBare().build();
     }
 
+    public void cleanupAuditCache(Project project) {
+        Path gitDirectory = Path.of(project.getStoragePath()).toAbsolutePath().normalize();
+        requireWithinStorage(gitDirectory);
+        Path projectDirectory = gitDirectory.getParent();
+        if (projectDirectory == null) throw new IllegalArgumentException("Git 项目存储路径非法");
+        Path cache = projectDirectory.resolve("commit-cache").normalize();
+        requireWithinStorage(cache);
+        deleteTree(cache);
+        log.info("项目审计提交与 CodeGraph 缓存已清理：projectId={}", project.getId());
+    }
+
     // 执行 GitRepositoryService 中的 commits 处理。
     private List<CommitInfo> commits(Repository repository, int limit) throws Exception {
         List<CommitInfo> result = new ArrayList<>();

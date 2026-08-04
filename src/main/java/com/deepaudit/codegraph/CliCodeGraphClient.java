@@ -1,5 +1,6 @@
 package com.deepaudit.codegraph;
 
+import com.deepaudit.util.TimingDetailLog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +39,9 @@ public class CliCodeGraphClient implements CodeGraphClient {
         if (!properties.enabled()) return;
         Path root = requireTaskWorkspace(taskId, snapshot, projectRoot);
         verifyVersion(root);
+        boolean cachedIndex = Files.isDirectory(root.resolve(requireIndexDirectory(properties.getIndexDirectory())));
+        TimingDetailLog.info("任务 {} CodeGraph {} {}：workspace={}", taskId, snapshot,
+                cachedIndex ? "尝试复用提交级索引" : "建立提交级索引", root.getFileName());
         CodeGraphCommandRunner.CommandOutput init = runner.run(root,
                 List.of("init", root.toString(), "--no-color"), environment());
         requireSuccess("init", init);
@@ -160,7 +164,12 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
         Path root = value.toAbsolutePath().normalize();
         String expected = "workspace-" + taskId + "-" + snapshot.workspaceSuffix();
-        if (root.getFileName() == null || !expected.equals(root.getFileName().toString())) {
+        boolean taskWorkspace = root.getFileName() != null && expected.equals(root.getFileName().toString());
+        boolean commitCache = root.getFileName() != null
+                && root.getFileName().toString().matches("[0-9a-f]{40}")
+                && root.getParent() != null && root.getParent().getFileName() != null
+                && "commit-cache".equals(root.getParent().getFileName().toString());
+        if (!taskWorkspace && !commitCache) {
             throw new CodeGraphException("CodeGraph 只允许索引当前任务的 " + snapshot + " 快照: " + root);
         }
         if (!Files.isDirectory(root)) {
@@ -168,7 +177,13 @@ public class CliCodeGraphClient implements CodeGraphClient {
         }
         try {
             Path realRoot = root.toRealPath();
-            if (realRoot.getFileName() == null || !expected.equals(realRoot.getFileName().toString())) {
+            boolean realTaskWorkspace = realRoot.getFileName() != null
+                    && expected.equals(realRoot.getFileName().toString());
+            boolean realCommitCache = realRoot.getFileName() != null
+                    && realRoot.getFileName().toString().matches("[0-9a-f]{40}")
+                    && realRoot.getParent() != null && realRoot.getParent().getFileName() != null
+                    && "commit-cache".equals(realRoot.getParent().getFileName().toString());
+            if (!realTaskWorkspace && !realCommitCache) {
             throw new CodeGraphException("CodeGraph " + snapshot + " 快照不能通过符号链接跳出任务目录: " + root);
             }
             return realRoot;

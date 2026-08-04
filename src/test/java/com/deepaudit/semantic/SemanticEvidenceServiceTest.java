@@ -67,18 +67,18 @@ class SemanticEvidenceServiceTest {
         SemanticEvidenceService.EvidenceResult result = service.query(
                 taskId, 10L, 5, VulnerabilityType.SQL_INJECTION);
 
-        assertThat(result.text()).contains("input -> execute", "缺少参数化绑定", "已解析边=2", "未解析边=1");
+        assertThat(result.text()).contains("input -> execute", "缺少参数化绑定", "已确认关系边=2", "局部语义缺口=1");
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(10L, 20L);
     }
 
     @Test
-    void doesNotPromoteAnUnverifiedCodeGraphCandidateRelation() {
+    void doesNotPromoteALowConfidenceRelation() {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
         SemanticCallEdge candidate = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
-                10L, 20L, 0, "load", "CodeGraph candidate", "CODEGRAPH_CANDIDATE",
-                Confidence.LOW, "局部 AST 未确认", "");
+                10L, 20L, 0, "load", "framework hint", "FRAMEWORK_HINT",
+                Confidence.LOW, "只命中局部启发式", "");
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(candidate));
         SemanticEvidenceService service = new SemanticEvidenceService(flowMapper, edgeMapper);

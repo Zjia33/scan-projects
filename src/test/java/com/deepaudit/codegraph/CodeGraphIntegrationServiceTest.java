@@ -26,7 +26,7 @@ class CodeGraphIntegrationServiceTest {
     }
 
     @Test
-    void agentContextReturnsOnlyCandidateChunkIdsInAugmentMode() {
+    void agentContextReturnsVerifiedDirectRelationChunkIds() {
         Fixture fixture = fixture();
         when(fixture.client.related(fixture.taskId, CodeGraphSnapshot.TARGET,
                 "OrderController.entry", 10))
@@ -34,11 +34,11 @@ class CodeGraphIntegrationServiceTest {
                         new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
                                 "src/OrderService.java", 10)), List.of()));
 
-        CodeGraphIntegrationService.CandidateContext result = fixture.service.candidateContext(
+        CodeGraphIntegrationService.RelationContext result = fixture.service.relationContext(
                 fixture.taskId, fixture.chunks.get(0), fixture.chunks, 10);
 
-        assertThat(result.candidateChunkIds()).containsExactly(2L);
-        assertThat(result.text()).contains("CODEGRAPH_CANDIDATE", "verify_relation", "CHUNK_ID=2");
+        assertThat(result.relatedChunkIds()).containsExactly(2L);
+        assertThat(result.text()).contains("VERIFIED_EVIDENCE", "CODEGRAPH_RELATIONS", "CHUNK_ID=2");
     }
 
     @Test
@@ -93,6 +93,22 @@ class CodeGraphIntegrationServiceTest {
                 CodeGraphIntegrationService.ScopedRelation::calleeChunkId)
                 .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple(2L, 1L),
                         org.assertj.core.groups.Tuple.tuple(1L, 3L));
+    }
+
+    @Test
+    void verifiesDirectRelationFromTargetIndexWithoutLocalSemanticEdge() {
+        Fixture fixture = fixture();
+        when(fixture.client.related(fixture.taskId, CodeGraphSnapshot.TARGET,
+                "OrderController.entry", 100))
+                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(), List.of(
+                        new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
+                                "src/OrderService.java", 10))));
+
+        CodeGraphIntegrationService.RelationCheck result = fixture.service.verifyDirectRelation(
+                fixture.taskId, fixture.chunks.get(0), fixture.chunks.get(1), fixture.chunks);
+
+        assertThat(result.verified()).isTrue();
+        assertThat(result.reason()).contains("CodeGraph Target 索引确认");
     }
 
     private Fixture fixture() {

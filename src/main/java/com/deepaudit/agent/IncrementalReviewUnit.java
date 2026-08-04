@@ -9,7 +9,7 @@ import java.util.List;
  */
 public record IncrementalReviewUnit(String unitId, long primaryChunkId, String filePath,
                                     String symbolName, String endpoint, String chunkType,
-                                    String changeType, String analysisScope,
+                                    String changeType,
                                     List<VulnerabilityType> allowedTypes,
                                     List<VulnerabilityType> mandatoryTypes,
                                     List<String> facts, String parameters, String annotations,
@@ -34,7 +34,7 @@ public record IncrementalReviewUnit(String unitId, long primaryChunkId, String f
     // 补充一次受控的调用关系和相关代码正文，供 NEED_CONTEXT 后复判。
     public IncrementalReviewUnit withRelatedContext(String context) {
         return new IncrementalReviewUnit(unitId, primaryChunkId, filePath, symbolName, endpoint,
-                chunkType, changeType, analysisScope, allowedTypes, mandatoryTypes, facts,
+                chunkType, changeType, allowedTypes, mandatoryTypes, facts,
                 parameters, annotations, calledSymbols, baseCodeExcerpt, targetCodeExcerpt,
                 changeSummary, context, deterministicEvidence);
     }

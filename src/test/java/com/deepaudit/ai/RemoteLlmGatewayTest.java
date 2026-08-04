@@ -1,6 +1,5 @@
 package com.deepaudit.ai;
 
-import com.deepaudit.agent.AuditUnit;
 import com.deepaudit.agent.IncrementalReviewUnit;
 import com.deepaudit.agent.TriageDisposition;
 import com.deepaudit.domain.AgentType;
@@ -62,46 +61,15 @@ class RemoteLlmGatewayTest {
     }
 
     @Test
-    void sendsCompactAuditUnitsToTriageOrchestrator() {
-        AiProperties properties = properties(1);
-        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
-                {"summary":"需要调查动态查询","decisions":[{
-                  "unitId":"chunk-1001","primaryChunkId":1001,"disposition":"investigate",
-                  "vulnerabilityTypes":["sql_injection"],
-                  "reasonCodes":["DANGEROUS_DATA_ACCESS"],"requiredContext":[],
-                  "reason":"外部输入参与数据库查询"}]}
-                """);
-        AuditUnit unit = new AuditUnit("chunk-1001", 1001L, "UserController.java",
-                "UserController#search", "/search", "EXTERNAL_ENTRY", "MODIFIED", "CHANGED",
-                List.of(VulnerabilityType.SQL_INJECTION),
-                List.of("EXTERNAL_ENTRY", "DANGEROUS_DATA_ACCESS"), "String name",
-                "@GetMapping", "queryForList -> DATABASE", "", "queryForList(sql)");
-
-        LlmGateway.TriagePlan plan = gateway.triage(UUID.randomUUID(), recon(), List.of(unit));
-
-        assertThat(plan.decisions()).singleElement().satisfies(decision -> {
-            assertThat(decision.disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
-            assertThat(decision.vulnerabilityTypes()).containsExactly(VulnerabilityType.SQL_INJECTION);
-        });
-        assertThat(gateway.requests).hasSize(1);
-        assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("轻量 Triage Orchestrator", "NEED_CONTEXT", "SKIP");
-        assertThat(gateway.requests.get(0).get(1).get("content"))
-                .contains("\"auditUnits\"", "\"codeOutline\"")
-                .doesNotContain("\"baseCodeExcerpt\"");
-    }
-
-    @Test
     void sendsRealBaseTargetAndObjectiveFactsToIncrementalTriageWithoutReconOpinion() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"summary":"已检查真实差异","decisions":[{"unitId":"change-7","primaryChunkId":7,
-                 "disposition":"SKIP","vulnerabilityTypes":[],"reasonCodes":["DIRECT_CHANGE"],
-                 "requiredContext":[],"reason":"差异仅修改格式"}]}
+                 "disposition":"SKIP","vulnerabilityTypes":[],"reason":"差异仅修改格式"}]}
                 """);
         IncrementalReviewUnit unit = new IncrementalReviewUnit(
                 "change-7", 7L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
-                "MODIFIED", "CHANGED", List.of(VulnerabilityType.values()), List.of(),
+                "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
                 "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", "");
 
@@ -122,12 +90,11 @@ class RemoteLlmGatewayTest {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"summary":"终审完成","decisions":[{"unitId":"change-8","primaryChunkId":8,
-                 "disposition":"SKIP","vulnerabilityTypes":[],"reasonCodes":["DIRECT_CHANGE"],
-                 "requiredContext":[],"reason":"现有证据不支持具体安全假设"}]}
+                 "disposition":"SKIP","vulnerabilityTypes":[],"reason":"现有证据不支持具体安全假设"}]}
                 """);
         IncrementalReviewUnit unit = new IncrementalReviewUnit(
                 "change-8", 8L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
-                "MODIFIED", "CHANGED", List.of(VulnerabilityType.values()), List.of(),
+                "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
                 "return value.trim();", "return value.strip();", "METHOD_MODIFIED",
                 "已补充调用上下文", "");
@@ -143,10 +110,35 @@ class RemoteLlmGatewayTest {
     }
 
     @Test
+    void repairsFinalTriageWhenValidJsonOmitsTheOnlyRequiredDecision() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties,
+                "{\"summary\":\"未返回决定\",\"decisions\":[]}", """
+                {"summary":"复判完成","decisions":[{"unitId":"change-99","primaryChunkId":99,
+                 "disposition":"INVESTIGATE","vulnerabilityTypes":["STORED_XSS"],
+                 "reason":"HTML输出需要专业调查"}]}
+                """);
+        IncrementalReviewUnit unit = new IncrementalReviewUnit(
+                "change-99", 99L, "NoticeController.java", "NoticeController#view", "/notice",
+                "JAVA_METHOD", "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
+                List.of("HAS_OUTPUT_OPERATION"), "", "", "render", "return oldValue;",
+                "return html;", "METHOD_MODIFIED", "已补充输出上下文", "");
+
+        LlmGateway.TriagePlan result = gateway.triageIncrementalFinal(UUID.randomUUID(), recon(), unit);
+
+        assertThat(result.decisions()).singleElement().satisfies(decision -> {
+            assertThat(decision.unitId()).isEqualTo("change-99");
+            assertThat(decision.disposition())
+                    .isEqualTo(com.deepaudit.agent.TriageDisposition.INVESTIGATE);
+        });
+        assertThat(gateway.requests).hasSize(2);
+    }
+
+    @Test
     void requiresCriticToReturnCorrectedPrimaryEvidenceAndLines() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
-                {"confirmed":true,"confidence":"HIGH","reason":"实际危险操作位于服务层",
+                {"verdict":"CONFIRMED","confirmed":true,"confidence":"HIGH","reason":"实际危险操作位于服务层",
                  "deltaStatus":"NEW","primaryChunkId":1549,
                  "vulnerabilityStartLine":86,"vulnerabilityEndLine":88,
                  "rootCauseKind":"MISSING_VALIDATION","locationRole":"BUSINESS_OPERATION"}
@@ -167,12 +159,36 @@ class RemoteLlmGatewayTest {
         assertThat(decision.deltaStatus()).isEqualTo(FindingDeltaStatus.NEW);
         assertThat(decision.rootCauseKind()).isEqualTo("MISSING_VALIDATION");
         assertThat(decision.locationRole()).isEqualTo("BUSINESS_OPERATION");
+        assertThat(decision.verdict()).isEqualTo(LlmGateway.CriticVerdict.CONFIRMED);
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("负责最终漏洞定位", "Controller 入口", "最多标记连续 5 行",
                         "INEFFECTIVE_SECURITY_CONTROL", "安全边界");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
                         "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"");
+    }
+
+    @Test
+    void repairsSyntacticallyValidCriticResponseWhenRequiredFieldsAreMissing() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, "{}", """
+                {"verdict":"INSUFFICIENT_EVIDENCE","confirmed":false,"confidence":"LOW",
+                 "reason":"当前证据缺少完整入口到危险操作的调用关系"}
+                """);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.AUTHORIZATION, Severity.HIGH, Confidence.MEDIUM,
+                "资源归属待验证", "删除操作可能缺少对象级授权", "增加归属校验",
+                1001L, List.of(1001L));
+
+        LlmGateway.CriticDecision decision = gateway.critique(new LlmGateway.CriticRequest(
+                UUID.randomUUID(), AgentType.AUTHORIZATION, proposal, "局部证据", "没有独立语义证据",
+                recon(), "MODIFIED", "CHANGED", "", List.of()));
+
+        assertThat(decision.verdict()).isEqualTo(LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE);
+        assertThat(decision.confirmed()).isFalse();
+        assertThat(gateway.requests).hasSize(2);
+        assertThat(gateway.requests.get(1).get(gateway.requests.get(1).size() - 1).get("content"))
+                .contains("不要省略字段");
     }
 
     @Test
@@ -264,7 +280,7 @@ class RemoteLlmGatewayTest {
 
         assertThatThrownBy(() -> gateway.decide(turn()))
                 .isInstanceOf(AiResponseFormatException.class)
-                .hasMessageContaining("2 次响应后仍未返回合法 JSON");
+                .hasMessageContaining("2 次响应后仍未返回合法结构化结果");
         assertThat(gateway.requests).hasSize(2);
     }
 

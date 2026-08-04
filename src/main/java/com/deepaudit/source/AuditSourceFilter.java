@@ -9,7 +9,7 @@ import java.util.Set;
  */
 public final class AuditSourceFilter {
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
-            ".git", ".github", ".idea", ".vscode", ".gradle",
+            ".git", ".github", ".idea", ".vscode", ".gradle", ".codegraph-deepaudit",
             "target", "build", "out", "dist", "coverage",
             "node_modules", "bower_components", "vendor", "third_party", "third-party",
             "generated", "generated-sources", "generated-test-sources",
