@@ -12,22 +12,18 @@ import com.deepaudit.agent.ReportAgentService;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
-import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.AuditTask;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.CodeChunkMapper;
 import com.deepaudit.mapper.AiReportSummaryMapper;
 import com.deepaudit.mapper.FindingMapper;
-import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.orchestrator.AuditCancellationService;
 import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.semantic.SemanticAnalysisService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import com.deepaudit.semantic.IncrementalScopeService;
-import com.deepaudit.recon.ReconService;
 import com.deepaudit.util.ExecutionTiming;
 import com.deepaudit.util.TimingDetailLog;
 import lombok.RequiredArgsConstructor;
@@ -60,9 +56,6 @@ public class AnalysisService {
     private final SemanticAnalysisService semanticAnalysisService;
     private final SemanticEvidenceService semanticEvidenceService;
     private final IncrementalScopeService incrementalScopeService;
-    private final ReconService reconService;
-    private final CodeGraphIntegrationService codeGraphIntegrationService;
-    private final SemanticMethodChangeMapper semanticMethodChangeMapper;
     private final AiReportSummaryMapper reportSummaryMapper;
     private final AuditCancellationService cancellationService;
 
@@ -81,90 +74,42 @@ public class AnalysisService {
         logTiming(taskId, "ANALYSIS_RESET_AND_LOAD", stageStarted, analysisStarted,
                 "initialChunks=" + chunks.size());
         stageStarted = ExecutionTiming.start();
-        IncrementalScopeService.ScopeResult incrementalScope;
-        Set<Long> primaryScopeIds = new LinkedHashSet<>();
-        incrementalScope = incrementalScopeService.determine(taskId, chunks);
-        boolean deletedMethodExists = semanticMethodChangeMapper.findByTaskId(taskId).stream()
-                .anyMatch(change -> change.getChangeKind()
-                        == com.deepaudit.domain.SemanticChangeKind.METHOD_DELETED);
-        if (incrementalScope.globalConfigurationChanged() || (chunks.isEmpty() && deletedMethodExists)) {
-            reconService.materializeGlobalSecurityContext(taskId, projectRoot);
-            chunks = chunkMapper.findByTaskId(taskId);
-            incrementalScope = incrementalScopeService.determine(taskId, chunks);
+        IncrementalScopeService.ScopeResult incrementalScope = incrementalScopeService.determine(taskId, chunks);
+        Set<Long> changedChunkIds = incrementalScope.changedChunkIds();
+        if (changedChunkIds.isEmpty()) {
+            throw new IllegalStateException("两次提交之间没有可供 Agent 审查的 CHANGED 代码块");
         }
-        CodeGraphIntegrationService.ImpactDecision codeGraphImpact = codeGraphIntegrationService.decideImpact(
-                taskId, chunks, incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds(),
-                semanticMethodChangeMapper.findByTaskId(taskId));
-        cancellationService.throwIfCancellationRequested(taskId);
-        if (!codeGraphImpact.locations().isEmpty()) {
-            reconService.materializeCodeGraphLocations(taskId, projectRoot, codeGraphImpact.locations());
-            chunks = chunkMapper.findByTaskId(taskId);
-            incrementalScope = incrementalScopeService.determine(taskId, chunks);
-            codeGraphImpact = codeGraphIntegrationService.mapImpact(taskId, chunks,
-                    incrementalScope.changedChunkIds(), incrementalScope.impactedChunkIds(),
-                    codeGraphImpact.locations());
-        }
-        if (chunks.isEmpty()) {
-            throw new IllegalStateException("变更与 CodeGraph 影响范围中没有可供 Agent 审查的代码块");
-        }
-        incrementalScope = new IncrementalScopeService.ScopeResult(incrementalScope.changedChunkIds(),
-                codeGraphImpact.effectiveImpactedChunkIds(), incrementalScope.globalConfigurationChanged(),
-                incrementalScope.semanticChangeCounts());
-        reconService.promoteImpactScope(taskId, incrementalScope.impactedChunkIds());
-        reconcileIncrementalScope(chunks, incrementalScope);
-        chunks = chunkMapper.findByTaskId(taskId);
-        primaryScopeIds.addAll(incrementalScope.changedChunkIds());
-        primaryScopeIds.addAll(incrementalScope.impactedChunkIds());
-        TimingDetailLog.info("任务 {} 增量范围：{} 个 CHANGED 审查目标、{} 个 IMPACTED 上下文块、{} 个 CodeGraph 影响块，"
-                        + "全局配置变化={}",
-                taskId, incrementalScope.changedChunkIds().size(),
-                incrementalScope.impactedChunkIds().size(), codeGraphImpact.codeGraphImpactedChunkIds().size(),
+        TimingDetailLog.info("任务 {} 增量范围：{} 个 CHANGED 审查目标；IMPACTED 源码将在专业调查时按需选择，"
+                        + "全局配置变化={}", taskId, changedChunkIds.size(),
                 incrementalScope.globalConfigurationChanged());
         TimingDetailLog.info("任务 {} 方法级语义变化：{}", taskId, incrementalScope.semanticChangeSummary());
         logTiming(taskId, "IMPACT_SCOPE", stageStarted, analysisStarted,
-                "changed=" + incrementalScope.changedChunkIds().size()
-                        + ",impacted=" + incrementalScope.impactedChunkIds().size()
-                        + ",codeGraphImpacted=" + codeGraphImpact.codeGraphImpactedChunkIds().size());
+                "changed=" + changedChunkIds.size() + ",preloadedImpacted=0");
 
-        // CodeGraph 决定作用域内跨方法关系；JavaParser 只补充局部参数、Guard、Sink 和框架语义。
+        // 轻量语义只分析 CHANGED，用于局部参数、Guard、Sink 和确定性提示；不扩张调用图。
         stageStarted = ExecutionTiming.start();
-        CodeGraphIntegrationService.ScopedTopology topology = codeGraphIntegrationService.scopedTopology(
-                taskId, chunks, primaryScopeIds);
-        if (!topology.locations().isEmpty() && topology.unmappedLocations() > 0) {
-            int materialized = reconService.materializeCodeGraphLocations(taskId, projectRoot,
-                    topology.locations());
-            if (materialized > 0) {
-                chunks = chunkMapper.findByTaskId(taskId);
-                topology = codeGraphIntegrationService.scopedTopology(taskId, chunks, primaryScopeIds);
-            }
-        }
-        Set<Long> localSemanticScope = new LinkedHashSet<>(primaryScopeIds);
-        localSemanticScope.addAll(topology.contextChunkIds());
         SemanticAnalysisService.Summary semanticSummary = semanticAnalysisService.rebuild(
-                taskId, projectRoot, chunks, localSemanticScope, topology.relations());
+                taskId, projectRoot, chunks, changedChunkIds);
         cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "SCOPED_SEMANTIC_ANALYSIS", stageStarted, analysisStarted,
-                "scopeChunks=" + localSemanticScope.size() + ",relations=" + semanticSummary.callEdgeCount()
+                "scopeChunks=" + changedChunkIds.size() + ",relations=" + semanticSummary.callEdgeCount()
                         + ",securityFlows=" + semanticSummary.securityFlowCount());
         stageStarted = ExecutionTiming.start();
-        Set<Long> changedChunkIds = incrementalScope.changedChunkIds();
         HintIndex hintIndex = collectHints(taskId, projectRoot, chunks, changedChunkIds);
         mergeSemanticHints(taskId, hintIndex, changedChunkIds);
         cancellationService.throwIfCancellationRequested(taskId);
         TimingDetailLog.info("任务 {} 生成 {} 个规则调查目标，类型分布: {}", taskId,
                 hintIndex.typesByChunk().size(), hintIndex.typesByChunk());
-        TimingDetailLog.info("任务 {} 检测索引：{} 个符号、{} 条关系边、{} 条安全数据流；"
-                        + "CodeGraph关系 {}，局部补充 {}，保守映射 {}，框架语义桥 {}",
+        TimingDetailLog.info("任务 {} CHANGED 检测索引：{} 个符号、{} 条局部关系边、{} 条安全数据流；"
+                        + "框架语义边 {}，局部调用点 {}",
                 taskId, semanticSummary.symbolCount(), semanticSummary.callEdgeCount(),
-                semanticSummary.securityFlowCount(), semanticSummary.codeGraphRelationCount(),
-                semanticSummary.enrichedCodeGraphRelationCount(), semanticSummary.conservativeMappingCount(),
-                semanticSummary.frameworkEdgeCount());
+                semanticSummary.securityFlowCount(), semanticSummary.frameworkEdgeCount(),
+                semanticSummary.localCallSiteCount());
         logTiming(taskId, "DETERMINISTIC_HINTS", stageStarted, analysisStarted,
                 "changed=" + changedChunkIds.size() + ",hintTargets=" + hintIndex.typesByChunk().size());
-        log.info("阶段耗时：taskId={}，阶段=影响范围与语义分析，耗时={}ms，说明=计算CHANGED/IMPACTED范围并补充局部语义、安全流和确定性线索，变更块={}，影响块={}",
-                taskId, ExecutionTiming.elapsedMillis(analysisStarted), changedChunkIds.size(),
-                incrementalScope.impactedChunkIds().size());
-        // Recon Agent 先理解项目，再由 Orchestrator 只对 CHANGED 单元做轻量三态分流。
+        log.info("阶段耗时：taskId={}，阶段=变更范围与轻量语义分析，耗时={}ms，说明=只分析CHANGED并生成局部语义、安全流和确定性线索，变更块={}",
+                taskId, ExecutionTiming.elapsedMillis(analysisStarted), changedChunkIds.size());
+        // Recon Agent 先理解项目，再由 Orchestrator 只对 CHANGED 单元做二态分流。
         long reconAndTriageStarted = ExecutionTiming.start();
         stageStarted = ExecutionTiming.start();
         LlmGateway.ReconInsight recon = reconAgent.inspect(taskId, reconSummary);
@@ -186,13 +131,22 @@ public class AnalysisService {
         ProfessionalAgentRunner.BatchResult investigation = professionalAgentRunner.investigate(
                 taskId, plan, recon, chunks);
         cancellationService.throwIfCancellationRequested(taskId);
+        // 专业 Agent 可能按需物化了 IMPACTED/CONTEXT，Critic 必须读取最新证据集合。
+        chunks = chunkMapper.findByTaskId(taskId);
+        int impactedCount = (int) chunks.stream()
+                .filter(chunk -> chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED)
+                .count();
         List<AgentCandidate> candidates = investigation.candidates();
         if (!plan.isEmpty() && investigation.formatFailures() == plan.size()) {
             throw new AiUnavailableException("所有专业 Agent 都未能返回合法结构化响应，无法形成可信审计结果");
         }
+        if (!plan.isEmpty() && investigation.incompleteInvestigations() == plan.size()) {
+            throw new AiUnavailableException("所有专业 Agent 调查均因响应、工具或覆盖限制未完成，不能生成误导性的空报告");
+        }
         logTiming(taskId, "PROFESSIONAL_AGENTS", stageStarted, analysisStarted,
                 "plannedTasks=" + plan.size() + ",candidates=" + candidates.size()
-                        + ",formatFailures=" + investigation.formatFailures());
+                        + ",formatFailures=" + investigation.formatFailures()
+                        + ",incomplete=" + investigation.incompleteInvestigations());
 
         // Critic 前只合并同一主代码块、同一类型且建议行范围重叠的明确重复候选，
         // 减少重复模型调用；最终权威去重仍以 Critic 重定位后的真实位置为准。
@@ -240,9 +194,14 @@ public class AnalysisService {
                 + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
                 + selectedBaseContext
                 + "；深度范围 "
-                + (incrementalScope.changedChunkIds().size() + incrementalScope.impactedChunkIds().size())
+                + (incrementalScope.changedChunkIds().size() + impactedCount)
                 + " 个代码块"
+                + "（按需影响上下文 " + impactedCount + " 个）"
                 + "；方法变化 " + incrementalScope.semanticChangeSummary();
+        if (investigation.incompleteInvestigations() > 0) {
+            auditContext += "；有 " + investigation.incompleteInvestigations()
+                    + " 个专业调查因模型响应、工具错误、覆盖上限或预算耗尽未完成，结果覆盖不完整";
+        }
         long confirmedUnlocated = candidates.stream()
                 .filter(candidate -> candidate.hypothesis().getStatus()
                         == com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED)
@@ -283,20 +242,6 @@ public class AnalysisService {
         TimingDetailLog.info("执行耗时：taskId={}，stage={}，elapsedMs={}，analysisElapsedMs={}，details={}",
                 taskId, stage, ExecutionTiming.elapsedMillis(stageStarted),
                 ExecutionTiming.elapsedMillis(analysisStarted), details);
-    }
-
-    // 运行所有确定性分析器并按代码块聚合“待调查”类型和证据说明。
-    private void reconcileIncrementalScope(List<CodeChunk> chunks,
-                                           IncrementalScopeService.ScopeResult scope) {
-        for (CodeChunk chunk : chunks) {
-            if (chunk.getId() == null) continue;
-            AnalysisScope expected = scope.changedChunkIds().contains(chunk.getId())
-                    ? AnalysisScope.CHANGED
-                    : scope.impactedChunkIds().contains(chunk.getId()) ? AnalysisScope.IMPACTED : null;
-            if (expected == null || chunk.getAnalysisScope() == expected) continue;
-            chunk.setAnalysisScope(expected);
-            chunkMapper.updateIncrementalMetadata(chunk);
-        }
     }
 
     private HintIndex collectHints(UUID taskId, Path root, List<CodeChunk> chunks,

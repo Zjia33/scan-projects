@@ -67,22 +67,10 @@ public class RemoteLlmGateway implements LlmGateway {
         String userPrompt = json(Map.of("taskId", taskId,
                 "projectTechnology", recon.technologyProfile(), "reviewUnits", reviewUnits,
                 "outputSchema", Map.of("summary", "string", "decisions",
-                        "[{unitId,primaryChunkId,disposition:INVESTIGATE|NEED_CONTEXT|SKIP,"
-                                + "vulnerabilityTypes:[],reason}]")));
-        return call(taskId, "TRIAGE_INITIAL", systemPrompt, userPrompt, TriagePlan.class);
-    }
-
-    @Override
-    public TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
-                                             IncrementalReviewUnit reviewUnit) {
-        String systemPrompt = AgentPrompts.incrementalTriageFinal();
-        String userPrompt = json(Map.of("taskId", taskId,
-                "projectTechnology", recon.technologyProfile(), "reviewUnit", reviewUnit,
-                "outputSchema", Map.of("summary", "string", "decisions",
                         "[{unitId,primaryChunkId,disposition:INVESTIGATE|SKIP,"
-                                + "vulnerabilityTypes:[],reason}]")));
-        return call(taskId, "TRIAGE_FINAL:" + reviewUnit.unitId(), systemPrompt, userPrompt, TriagePlan.class,
-                plan -> validateFinalTriagePlan(plan, reviewUnit));
+                                + "vulnerabilityTypes:[],reason,"
+                                + "focusRanges:[{startLine,endLine}],investigationQuestions:[]}]")));
+        return call(taskId, "TRIAGE_CHANGED", systemPrompt, userPrompt, TriagePlan.class);
     }
 
     // 请求专业 Agent 在 TOOL、FINDING 和 REJECT 三类受控动作中选择下一步。
@@ -211,30 +199,6 @@ public class RemoteLlmGateway implements LlmGateway {
         throw new AiResponseFormatException("必需的大模型调用失败: 模型在 " + (repairAttempts + 1)
                 + " 次响应后仍未返回合法结构化结果，最后错误位置: " + formatLocation(lastParsingException),
                 lastParsingException);
-    }
-
-    private String validateFinalTriagePlan(TriagePlan plan, IncrementalReviewUnit reviewUnit) {
-        if (plan == null) return "增量单位置复判返回空计划";
-        if (plan.decisions().size() != 1) {
-            return "增量单位置复判必须恰好返回一个决定，实际为 " + plan.decisions().size();
-        }
-        TriageDecision decision = plan.decisions().get(0);
-        if (decision == null) return "增量单位置复判返回 null 决定";
-        if (!reviewUnit.unitId().equals(decision.unitId())) {
-            return "增量单位置复判 unitId 不匹配";
-        }
-        if (reviewUnit.primaryChunkId() != decision.primaryChunkId()) {
-            return "增量单位置复判 primaryChunkId 不匹配";
-        }
-        if (decision.disposition() != com.deepaudit.agent.TriageDisposition.INVESTIGATE
-                && decision.disposition() != com.deepaudit.agent.TriageDisposition.SKIP) {
-            return "增量单位置复判 disposition 必须为 INVESTIGATE 或 SKIP";
-        }
-        if (decision.disposition() == com.deepaudit.agent.TriageDisposition.INVESTIGATE
-                && decision.vulnerabilityTypes().stream().noneMatch(reviewUnit.allowedTypes()::contains)) {
-            return "增量单位置复判 INVESTIGATE 缺少允许范围内的漏洞类型";
-        }
-        return null;
     }
 
     // JSON 语法正确不代表业务结构完整；关键字段缺失必须进入格式纠正，不能由 Java 默认值改变审计结论。

@@ -1,13 +1,10 @@
 package com.deepaudit.codegraph;
 
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.domain.SemanticChangeKind;
-import com.deepaudit.domain.SemanticMethodChange;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,91 +12,60 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class CodeGraphIntegrationServiceTest {
+
     @Test
-    void unionsCodeGraphAndDeterministicImpactWithoutRemovingNativeTargets() {
+    void returnsPagedSymbolCandidatesWithoutMappingOrSourceContent() {
         Fixture fixture = fixture();
-
-        CodeGraphIntegrationService.ImpactDecision result = fixture.service.decideImpact(
-                fixture.taskId, fixture.chunks, Set.of(1L), Set.of(3L), List.of());
-
-        assertThat(result.effectiveImpactedChunkIds()).containsExactlyInAnyOrder(2L, 3L);
-    }
-
-    @Test
-    void agentContextReturnsVerifiedDirectRelationChunkIds() {
-        Fixture fixture = fixture();
-        when(fixture.client.related(fixture.taskId, CodeGraphSnapshot.TARGET,
-                "OrderController.entry", 10))
-                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
-                        new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
-                                "src/OrderService.java", 10)), List.of()));
-
-        CodeGraphIntegrationService.RelationContext result = fixture.service.relationContext(
-                fixture.taskId, fixture.chunks.get(0), fixture.chunks, 10);
-
-        assertThat(result.relatedChunkIds()).containsExactly(2L);
-        assertThat(result.text()).contains("VERIFIED_EVIDENCE", "CODEGRAPH_RELATIONS", "CHUNK_ID=2");
-    }
-
-    @Test
-    void deletionUsesBaseCallersAndMapsSurvivingCallerIntoTargetScope() {
-        UUID taskId = UUID.randomUUID();
-        CodeChunk caller = chunk(taskId, 1L, "src/OrderController.java", "OrderController#load", 5, 15);
-        CodeGraphProperties properties = new CodeGraphProperties();
-        CodeGraphClient client = mock(CodeGraphClient.class);
-        when(client.impact(taskId, CodeGraphSnapshot.BASE, "demo.OrderService.removed", 2))
-                .thenReturn(List.of());
-        when(client.related(taskId, CodeGraphSnapshot.BASE, "demo.OrderService.removed", 100))
-                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
-                        new CodeGraphClient.CodeGraphLocation("OrderController.load", "method",
-                                "src/OrderController.java", 7)), List.of()));
-        CodeGraphIntegrationService service = new CodeGraphIntegrationService(
-                properties, client, new CodeGraphResultMapper());
-        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
-        SemanticMethodChange deleted = new SemanticMethodChange(taskId, SemanticChangeKind.METHOD_DELETED,
-                "removed", "src/OrderService.java", null, "demo.OrderService.removed()", null,
-                4, 8, null, null, "void removed() {}", "", "方法已删除");
-
-        CodeGraphIntegrationService.ImpactDecision result = service.decideImpact(
-                taskId, List.of(caller), Set.of(), Set.of(), List.of(deleted));
-
-        assertThat(result.effectiveImpactedChunkIds()).containsExactly(1L);
-    }
-
-    @Test
-    void buildsDirectedScopedTopologyFromTargetCallersAndCallees() {
-        UUID taskId = UUID.randomUUID();
-        CodeChunk current = chunk(taskId, 1L, "src/OrderService.java", "OrderService#load", 10, 20);
-        CodeChunk caller = chunk(taskId, 2L, "src/OrderController.java", "OrderController#show", 4, 9);
-        CodeChunk callee = chunk(taskId, 3L, "src/OrderMapper.java", "OrderMapper#find", 2, 7);
-        CodeGraphProperties properties = new CodeGraphProperties();
-        CodeGraphClient client = mock(CodeGraphClient.class);
-        when(client.related(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 100))
-                .thenReturn(new CodeGraphClient.RelatedLocations(List.of(
-                        new CodeGraphClient.CodeGraphLocation("OrderController.show", "method",
-                                "src/OrderController.java", 6)), List.of(
+        when(fixture.client.related(fixture.taskId,
+                "OrderController.entry", 100)).thenReturn(new CodeGraphClient.RelatedLocations(
+                List.of(new CodeGraphClient.CodeGraphLocation("Api.show", "method", "src/Api.java", 4)),
+                List.of(new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
+                                "src/OrderService.java", 10),
                         new CodeGraphClient.CodeGraphLocation("OrderMapper.find", "method",
-                                "src/OrderMapper.java", 4))));
-        CodeGraphIntegrationService service = new CodeGraphIntegrationService(
-                properties, client, new CodeGraphResultMapper());
-        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
+                                "src/OrderMapper.java", 6))));
 
-        CodeGraphIntegrationService.ScopedTopology topology = service.scopedTopology(
-                taskId, List.of(current, caller, callee), Set.of(1L));
+        CodeGraphIntegrationService.CandidatePage first = fixture.service.relatedCandidates(
+                fixture.taskId, fixture.chunks.get(0), CodeGraphIntegrationService.Direction.BOTH, 0, 2);
+        CodeGraphIntegrationService.CandidatePage second = fixture.service.relatedCandidates(
+                fixture.taskId, fixture.chunks.get(0), CodeGraphIntegrationService.Direction.BOTH,
+                Integer.parseInt(first.nextCursor()), 2);
 
-        assertThat(topology.contextChunkIds()).containsExactlyInAnyOrder(2L, 3L);
-        assertThat(topology.relations()).extracting(
-                CodeGraphIntegrationService.ScopedRelation::callerChunkId,
-                CodeGraphIntegrationService.ScopedRelation::calleeChunkId)
-                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple(2L, 1L),
-                        org.assertj.core.groups.Tuple.tuple(1L, 3L));
+        assertThat(first.candidates()).hasSize(2);
+        assertThat(first.truncated()).isTrue();
+        assertThat(first.total()).isEqualTo(3);
+        assertThat(second.candidates()).hasSize(1);
+        assertThat(second.truncated()).isFalse();
+        assertThat(first.candidates()).allSatisfy(candidate -> {
+            assertThat(candidate.candidateId()).isNotBlank();
+            assertThat(candidate.anchorChunkId()).isEqualTo(1L);
+        });
     }
 
     @Test
-    void verifiesDirectRelationFromTargetIndexWithoutLocalSemanticEdge() {
+    void storesCandidateForExplicitMaterializationAndMapsItStrictly() {
         Fixture fixture = fixture();
-        when(fixture.client.related(fixture.taskId, CodeGraphSnapshot.TARGET,
-                "OrderController.entry", 100))
+        var location = new CodeGraphClient.CodeGraphLocation(
+                "OrderService.load", "method", "src/OrderService.java", 10);
+        when(fixture.client.related(fixture.taskId,
+                "OrderController.entry", 100)).thenReturn(
+                new CodeGraphClient.RelatedLocations(List.of(), List.of(location)));
+
+        var page = fixture.service.relatedCandidates(fixture.taskId, fixture.chunks.get(0),
+                CodeGraphIntegrationService.Direction.CALLEES, 0, 5);
+        var selected = fixture.service.candidate(fixture.taskId,
+                page.candidates().get(0).candidateId());
+
+        assertThat(selected.location()).isEqualTo(location);
+        assertThat(fixture.service.mapCandidate(fixture.chunks, selected).getId()).isEqualTo(2L);
+        assertThat(fixture.service.targetRoot(fixture.taskId)).isEqualTo(
+                Path.of("unused-target").toAbsolutePath().normalize());
+    }
+
+    @Test
+    void verifiesDirectRelationAgainstTargetIndex() {
+        Fixture fixture = fixture();
+        when(fixture.client.related(fixture.taskId,
+                "OrderController.entry", 1000))
                 .thenReturn(new CodeGraphClient.RelatedLocations(List.of(), List.of(
                         new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
                                 "src/OrderService.java", 10))));
@@ -108,23 +74,62 @@ class CodeGraphIntegrationServiceTest {
                 fixture.taskId, fixture.chunks.get(0), fixture.chunks.get(1), fixture.chunks);
 
         assertThat(result.verified()).isTrue();
-        assertThat(result.reason()).contains("CodeGraph Target 索引确认");
+        assertThat(result.reason()).contains("CodeGraph Target 索引命中");
+    }
+
+    @Test
+    void refetchesWithLargerLimitWhenCliSignalsMoreRelations() {
+        Fixture fixture = fixture();
+        List<CodeGraphClient.CodeGraphLocation> firstHundred = java.util.stream.IntStream.range(0, 100)
+                .mapToObj(index -> new CodeGraphClient.CodeGraphLocation(
+                        "Caller" + index + ".entry", "method", "src/Caller" + index + ".java", 1))
+                .toList();
+        List<CodeGraphClient.CodeGraphLocation> all = java.util.stream.IntStream.range(0, 150)
+                .mapToObj(index -> new CodeGraphClient.CodeGraphLocation(
+                        "Caller" + index + ".entry", "method", "src/Caller" + index + ".java", 1))
+                .toList();
+        when(fixture.client.related(fixture.taskId, "OrderController.entry", 100))
+                .thenReturn(new CodeGraphClient.RelatedLocations(firstHundred, List.of(), true, false));
+        when(fixture.client.related(fixture.taskId, "OrderController.entry", 200))
+                .thenReturn(new CodeGraphClient.RelatedLocations(all, List.of(), false, false));
+
+        fixture.service.relatedCandidates(fixture.taskId, fixture.chunks.get(0),
+                CodeGraphIntegrationService.Direction.CALLERS, 0, 10);
+        CodeGraphIntegrationService.CandidatePage page = fixture.service.relatedCandidates(
+                fixture.taskId, fixture.chunks.get(0), CodeGraphIntegrationService.Direction.CALLERS,
+                100, 10);
+
+        assertThat(page.candidates()).hasSize(10);
+        assertThat(page.total()).isEqualTo(150);
+        assertThat(page.candidates().get(0).location().name()).isEqualTo("Caller100.entry");
+    }
+
+    @Test
+    void releaseClearsTaskCandidateCatalogueAndTargetRoot() {
+        Fixture fixture = fixture();
+        when(fixture.client.related(fixture.taskId,
+                "OrderController.entry", 100)).thenReturn(new CodeGraphClient.RelatedLocations(
+                List.of(), List.of(new CodeGraphClient.CodeGraphLocation(
+                "OrderService.load", "method", "src/OrderService.java", 10))));
+        var page = fixture.service.relatedCandidates(fixture.taskId, fixture.chunks.get(0),
+                CodeGraphIntegrationService.Direction.CALLEES, 0, 5);
+        String candidateId = page.candidates().get(0).candidateId();
+
+        fixture.service.release(fixture.taskId);
+
+        assertThat(fixture.service.candidate(fixture.taskId, candidateId)).isNull();
+        assertThat(fixture.service.targetRoot(fixture.taskId)).isNull();
     }
 
     private Fixture fixture() {
         UUID taskId = UUID.randomUUID();
         CodeChunk changed = chunk(taskId, 1L, "src/OrderController.java", "OrderController#entry", 1, 8);
         CodeChunk external = chunk(taskId, 2L, "src/OrderService.java", "OrderService#load", 10, 20);
-        CodeChunk nativeImpact = chunk(taskId, 3L, "src/OrderRepository.java", "OrderRepository#find", 4, 7);
-        List<CodeChunk> chunks = List.of(changed, external, nativeImpact);
-        CodeGraphProperties properties = new CodeGraphProperties();
+        List<CodeChunk> chunks = List.of(changed, external);
         CodeGraphClient client = mock(CodeGraphClient.class);
-        when(client.impact(taskId, CodeGraphSnapshot.TARGET, "OrderController.entry", 2)).thenReturn(List.of(
-                new CodeGraphClient.CodeGraphLocation("OrderService.load", "method",
-                        "src/OrderService.java", 10)));
         CodeGraphIntegrationService service = new CodeGraphIntegrationService(
-                properties, client, new CodeGraphResultMapper());
-        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
+                new CodeGraphProperties(), client, new CodeGraphResultMapper());
+        service.prepare(taskId, Path.of("unused-target"));
         return new Fixture(taskId, chunks, client, service);
     }
 

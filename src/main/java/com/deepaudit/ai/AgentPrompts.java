@@ -25,32 +25,27 @@ final class AgentPrompts {
             + "也不得推测未出现的组件。只返回 architectureSummary。";
 
     private static final String INCREMENTAL_TRIAGE = "你是增量代码安全审查分流 Agent。reviewUnits 只包含全部 "
-            + "CHANGED 代码位置，每个单元都包含真实 targetCodeExcerpt，并在存在基线时包含 "
-            + "baseCodeExcerpt。首次分流不提供 IMPACTED 代码正文；facts、changeSummary 和 relatedContext 是轻量的客观变更与调用事实，"
-            + "不是漏洞结论。必须逐个比较 Base/Target，判断该变更是否需要针对某种具体漏洞深入调查，并为每个 reviewUnit "
-            + "恰好返回一个决定。disposition 只能是 INVESTIGATE、NEED_CONTEXT、SKIP。只有实际代码差异或影响路径支持"
-            + "具体安全假设时才选择 INVESTIGATE；vulnerabilityTypes 可以从 allowedTypes 中选择，不得仅凭文件名、方法名、"
-            + "框架、存在 Repository 调用或普通 return 推断漏洞。关键 IMPACTED 调用方、被调用方、配置或 Guard 代码"
-            + "不足以判断时选择 NEED_CONTEXT；选择 INVESTIGATE 后系统会在专业调查前补入对应 IMPACTED 依据；"
-            + "能够根据真实差异排除安全影响时选择 SKIP。不得创造 unitId、primaryChunkId、事实、"
-            + "代码或漏洞类型，不得把变更相关性描述成已确认漏洞。";
-
-    private static final String INCREMENTAL_TRIAGE_FINAL = "你是增量代码安全审查分流 Agent，正在对一个此前未能"
-            + "明确分类的位置进行唯一一次补充上下文复判。输入只包含一个 reviewUnit，并已完成受控上下文补充。"
-            + "必须原样返回该 reviewUnit 的 unitId 和 primaryChunkId，且恰好返回一个决定。"
-            + "disposition 只能是 INVESTIGATE 或 SKIP，不得再次返回 NEED_CONTEXT。"
-            + "relatedContext 已补入对应 IMPACTED 代码和受控上下文。只有真实 Base/Target 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
-            + "并从 allowedTypes 中返回至少一个具体漏洞类型；否则必须选择 SKIP 且 vulnerabilityTypes 返回空数组。"
-            + "不得为了避免 SKIP 而猜测漏洞，不得创造代码、位置、事实、类型或调用关系。";
+            + "CHANGED 代码位置；普通变更包含围绕真实变化行的真实 targetCodeExcerpt，删除方法、删除文件或纯删除 hunk 的 "
+            + "targetCodeExcerpt 可以为空或只包含删除点附近仍存在的 Target 代码，并通过 changeType=DELETED 与 Base 差异表达。存在基线时包含 "
+            + "baseCodeExcerpt。Triage 不接收 IMPACTED 源码，也不负责建立完整调用链。facts 和 changeSummary 是客观变更事实，"
+            + "不是漏洞结论。必须逐行比较 Base/Target，定位新增、删除或改变安全语义的行，并为每个 reviewUnit 恰好返回一个决定。"
+            + "disposition 只能是 INVESTIGATE 或 SKIP。只要真实差异形成具体安全疑点，或结论依赖尚未查看的调用方、被调用方、"
+            + "配置、数据访问或 Guard，就选择 INVESTIGATE，并从 allowedTypes 选择类型；上下文不足不能当作安全而 SKIP。"
+            + "同时用 focusRanges 标出 Target 中最值得调查的行，用 investigationQuestions 描述专业 Agent 应验证的问题。"
+            + "仅当真实差异与所有允许漏洞类型明确无关时选择 SKIP。不得仅凭文件名、方法名、框架、Repository 调用或普通 return 推断漏洞，"
+            + "不得创造 unitId、primaryChunkId、事实、代码、漏洞类型或调用关系。";
 
     private static final String PROFESSIONAL_AGENT_TOOLS = AgentToolCatalog.prompt();
 
     private static final String PROFESSIONAL_AGENT_RULES = "turn.recon 包含 Recon Agent 结论和本地确定性 technologyProfile，"
             + "必须结合框架、安全组件与注解生效条件判断，不得孤立地把注解存在或缺失直接当成漏洞。"
-            + "每轮只能返回一种 action: TOOL、FINDING、REJECT。证据不足时必须先调用工具；";
+            + "每轮只能返回一种 action: TOOL、FINDING、REJECT。证据不足时必须先调用工具；"
+            + "工具返回 PARTIAL_SCOPE、ERROR 或没有下一页的截断结果时，不能把未找到解释为不存在。"
+            + "REJECT 的 summary 必须明确说明检查过的代码事实、排除漏洞的原因以及是否仍存在上下文限制，禁止返回空字符串；";
 
     private static final String PROFESSIONAL_AGENT_COMMON_RULES = "候选结果只是发现线索，禁止直接作为漏洞证据；"
-            + "必须继续调用 verify_relation，只有 VERIFIED_EVIDENCE、CODEGRAPH_RELATIONS、SEMANTIC_EVIDENCE 或当前目标"
+            + "explore_call_graph 只返回 CodeGraph 符号候选，不返回源码；需要时先调用 read_impact_source 精读选中的候选，"
+            + "再调用 verify_relation 验证它与当前锚点的真实调用关系。只有 VERIFIED_EVIDENCE、SEMANTIC_EVIDENCE 或当前目标"
             + "才能进入 FINDING 的 evidenceChunkIds。"
             + "FINDING 时 primaryChunkId 和 evidenceChunkIds 必须来自当前目标或已验证工具结果。"
             + "增量调查的 evidenceChunkIds 必须保留当前 CHANGED 目标作为变更因果锚点；IMPACTED 可以作为漏洞位置或影响证据，但不能替代该锚点。"
@@ -117,16 +112,11 @@ final class AgentPrompts {
         return complete(INCREMENTAL_TRIAGE);
     }
 
-    // 为补充上下文后的单个位置生成必须二选一的明确复判提示词。
-    static String incrementalTriageFinal() {
-        return complete(INCREMENTAL_TRIAGE_FINAL);
-    }
-
     static String professionalAgent(VulnerabilityType vulnerabilityType) {
         return complete("你是专业代码安全审计 Agent，当前专注 " + vulnerabilityType + "。"
                 + typeSpecificRules(vulnerabilityType)
                 + PROFESSIONAL_AGENT_TOOLS
-                + "标记为 UNVERIFIED_CANDIDATE 的结果属于候选；CODEGRAPH_RELATIONS 是 CodeGraph 已确认的直接调用证据。"
+                + "标记为 UNVERIFIED_CANDIDATE 的结果属于候选；CodeGraph 符号命中本身不是已验证证据。"
                 + PROFESSIONAL_AGENT_RULES
                 + PROFESSIONAL_AGENT_COMMON_RULES
                 + "TOOL={\"action\":\"TOOL\",\"tool\":\"explore_call_graph"

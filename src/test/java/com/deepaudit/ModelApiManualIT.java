@@ -59,7 +59,7 @@ class ModelApiManualIT {
                 "JAVA_METHOD", "ADDED", List.of(VulnerabilityType.SQL_INJECTION), List.of(),
                 List.of("DIRECT_CHANGE", "HAS_EXTERNAL_ENDPOINT", "HAS_DATA_ACCESS"), "String name",
                 "@GetMapping(\"/search\")", "queryForList", "", VULNERABLE_CODE,
-                "METHOD_ADDED", "", "");
+                "METHOD_ADDED", "", 1, 20);
         LlmGateway.Target target = new LlmGateway.Target(TARGET_CHUNK_ID,
                 "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
                 "JAVA_METHOD", "String name", "@GetMapping(\"/search\")", "queryForList",

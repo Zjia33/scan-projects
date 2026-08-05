@@ -1,6 +1,5 @@
 package com.deepaudit.semantic;
 
-import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.SecurityFlow;
@@ -64,13 +63,12 @@ public class LightweightSemanticAnalyzer {
 
     private final SemanticAnalysisProperties properties;
 
-    // CodeGraph 提供跨方法调用拓扑；JavaParser 只解析增量作用域内的局部数据与安全语义。
-    public Result enrich(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds,
-                         List<CodeGraphIntegrationService.ScopedRelation> scopedRelations) {
+    // 只解析 CHANGED 作用域内的局部数据、安全边界和框架语义，不建立第二套跨项目调用图。
+    public Result enrich(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds) {
         // 第一阶段把作用域源码和 Recon 代码块转换成统一的内存程序模型。
         Program program = parseProgram(taskId, root, chunks, scopeChunkIds);
-        // 第二阶段直接接纳 CodeGraph 调用关系，再用调用方 AST 补充调用现场和参数映射。
-        buildScopedCallGraph(taskId, program, scopedRelations);
+        // 第二阶段只提取局部持久化、安全 Guard 等框架边界。
+        buildLocalBoundaryGraph(taskId, program);
         // 第三阶段补充普通 Java 调用图无法直接表达的 Spring 事件发布到监听器关系。
         addSpringEventEdges(taskId, program);
         // 第四阶段按照 Mapper namespace 和 statement id 连接接口方法与 MyBatis XML SQL。
@@ -95,7 +93,7 @@ public class LightweightSemanticAnalyzer {
                                  Set<Long> scopeChunkIds) {
         // Program 同时保存语义节点、AST 方法模型、调用边、索引和覆盖率计数器。
         Program program = new Program(chunks);
-        // JavaParser 仅承担语法树解析；跨文件调用解析统一由 CodeGraph 负责。
+        // JavaParser 仅承担局部语法树解析；跨文件上下文由专业 Agent 通过 CodeGraph 工具按需取得。
         ParserConfiguration configuration = new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
         JavaParser parser = new JavaParser(configuration);
@@ -114,7 +112,7 @@ public class LightweightSemanticAnalyzer {
         javaFiles.forEach(file -> parseJavaFile(taskId, root, file, parser, program, scopeChunkIds));
         // Java AST 之外再从 Recon 文本块补充 MyBatis SQL 与模板 Sink。
         parseMyBatisAndTemplates(taskId, chunks, program);
-        // 为解析失败但已被 CodeGraph 映射的作用域方法建立可落库符号，避免本地 AST 否决全局拓扑。
+        // 为局部解析失败的作用域方法建立最小可落库符号，保留确定性证据定位。
         program.index(taskId, scopeChunkIds);
         return program;
     }
@@ -146,7 +144,7 @@ public class LightweightSemanticAnalyzer {
                     // 用文件和行号寻找 Recon 阶段的 JAVA_METHOD Chunk，建立语义节点到真实证据的联系。
                     CodeChunk chunk = program.findChunk(relative, line(method), "JAVA_METHOD");
                     if (chunk == null || chunk.getId() == null || !scopeChunkIds.contains(chunk.getId())) continue;
-                    // 作用域内符号使用源码声明生成稳定名称；跨文件调用身份由 CodeGraph Chunk ID 确定。
+                    // 作用域内符号使用源码声明生成稳定名称，不尝试解析项目级调用身份。
                     String qualifiedName = fallbackSignature(owner, method);
                     String parameters = method.getParameters().stream().map(parameter -> parameter.getTypeAsString())
                             .collect(Collectors.joining(","));
@@ -211,55 +209,11 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
-    // CodeGraph 关系是跨方法拓扑事实；局部 AST 只能补充调用行、表达式和实参到形参映射，不能否决关系。
-    private void buildScopedCallGraph(UUID taskId, Program program,
-                                      List<CodeGraphIntegrationService.ScopedRelation> scopedRelations) {
-        Map<Long, List<CodeGraphIntegrationService.ScopedRelation>> byCaller = scopedRelations.stream()
-                .filter(relation -> relation.callerChunkId() != null && relation.calleeChunkId() != null)
-                .collect(Collectors.groupingBy(CodeGraphIntegrationService.ScopedRelation::callerChunkId,
-                        LinkedHashMap::new, Collectors.toList()));
-        Set<MethodCallExpr> enrichedCalls = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        Set<String> persistedRelations = new LinkedHashSet<>();
-
-        // 先按 Chunk ID 固化 CodeGraph 关系。JavaParser 解析失败、同名调用或重载歧义都不会删除这条边。
-        for (CodeGraphIntegrationService.ScopedRelation relation : scopedRelations) {
-            String key = relation.callerChunkId() + "->" + relation.calleeChunkId();
-            if (!persistedRelations.add(key)) continue;
-            ProgramNode callerNode = program.byChunkId.get(relation.callerChunkId());
-            ProgramNode targetNode = program.byChunkId.get(relation.calleeChunkId());
-            if (callerNode == null || targetNode == null) {
-                program.unmappedCodeGraphRelations++;
-                continue;
-            }
-            program.codeGraphRelations++;
-            MethodCallExpr call = uniqueLocalCall(callerNode, relation, byCaller);
-            Map<Integer, Set<Integer>> argumentDependencies = call == null
-                    ? conservativeArgumentDependencies(callerNode, targetNode)
-                    : argumentDependencies((MethodModel) callerNode, call);
-            if (call != null) enrichedCalls.add(call);
-            // CodeGraph location may point to the caller or callee declaration; without a local call site use caller start line.
-            int callLine = call == null ? callerNode.symbol().getStartLine() : line(call);
-            String expression = call == null ? relation.source() + " " + key : call.toString();
-            String reason = call == null
-                    ? "CodeGraph Target 索引确认直接调用；局部 AST 未唯一定位调用现场，参数传播采用保守映射"
-                    : "CodeGraph Target 索引确认直接调用；局部 AST 已补充调用现场和参数映射";
-            SemanticCallEdge edge = edge(taskId, callerNode.symbol(), targetNode.symbol(), callLine,
-                    relation.calledName(), expression, "CODEGRAPH_CALL",
-                    call == null ? Confidence.MEDIUM : Confidence.HIGH, reason, mapping(argumentDependencies));
-            program.edges.add(new GraphEdge(edge, callerNode, targetNode, argumentDependencies));
-            if (call == null) program.unenrichedCodeGraphRelations++;
-            else program.enrichedCodeGraphRelations++;
-        }
-
-        // 再扫描局部调用，只提取数据库、持久化和安全 Guard 等框架边界，不解析项目内跨方法目标。
+    private void buildLocalBoundaryGraph(UUID taskId, Program program) {
         for (MethodModel caller : program.methods) {
             Map<String, String> variableTypes = variableTypes(caller);
-            Set<String> codeGraphNames = byCaller.getOrDefault(caller.symbol.getChunkId(), List.of()).stream()
-                    .map(CodeGraphIntegrationService.ScopedRelation::calledName)
-                    .collect(Collectors.toSet());
             for (MethodCallExpr call : caller.declaration.findAll(MethodCallExpr.class)) {
                 program.localCallSites++;
-                if (enrichedCalls.contains(call) || codeGraphNames.contains(call.getNameAsString())) continue;
                 String scopeType = inferScopeType(call, caller, variableTypes);
                 FrameworkModel framework = frameworkTarget(taskId, call, caller, scopeType, program);
                 if (framework == null) continue;
@@ -273,35 +227,11 @@ public class LightweightSemanticAnalyzer {
         }
     }
 
-    private MethodCallExpr uniqueLocalCall(ProgramNode callerNode,
-                                           CodeGraphIntegrationService.ScopedRelation relation,
-                                           Map<Long, List<CodeGraphIntegrationService.ScopedRelation>> byCaller) {
-        if (!(callerNode instanceof MethodModel caller)) return null;
-        List<MethodCallExpr> calls = caller.declaration.findAll(MethodCallExpr.class).stream()
-                .filter(call -> call.getNameAsString().equals(relation.calledName()))
-                .sorted(Comparator.comparingInt(this::line).thenComparingInt(this::column)).toList();
-        long sameNameRelations = byCaller.getOrDefault(relation.callerChunkId(), List.of()).stream()
-                .filter(item -> item.calledName().equals(relation.calledName())).count();
-        return calls.size() == 1 && sameNameRelations == 1 ? calls.get(0) : null;
-    }
-
     private Map<Integer, Set<Integer>> argumentDependencies(MethodModel caller, MethodCallExpr call) {
         Map<String, Set<Integer>> variables = variableDependencies(caller, call);
         Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
         for (int index = 0; index < call.getArguments().size(); index++) {
             result.put(index, expressionDependencies(call.getArgument(index), variables));
-        }
-        return result;
-    }
-
-    private Map<Integer, Set<Integer>> conservativeArgumentDependencies(ProgramNode callerNode,
-                                                                         ProgramNode targetNode) {
-        if (!(callerNode instanceof MethodModel caller) || !(targetNode instanceof MethodModel target)) return Map.of();
-        Set<Integer> allCallerParameters = new LinkedHashSet<>();
-        for (int index = 0; index < caller.parameterNames.size(); index++) allCallerParameters.add(index);
-        Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
-        for (int index = 0; index < target.parameterNames.size(); index++) {
-            result.put(index, Set.copyOf(allCallerParameters));
         }
         return result;
     }
@@ -649,7 +579,7 @@ public class LightweightSemanticAnalyzer {
         List<Long> chunkIds = state.nodes.stream().map(node -> node.symbol().getChunkId())
                 .filter(Objects::nonNull).distinct().toList();
         if (chunkIds.isEmpty() || entry.symbol.getChunkId() == null) return;
-        // MEDIUM CodeGraph 边表示拓扑已确认，但局部参数映射使用保守值。
+        // MEDIUM 局部框架边表示参数映射仍采用保守值。
         int localSemanticGaps = (int) state.edges.stream()
                 .filter(edge -> edge.persisted.getConfidence() == Confidence.MEDIUM).count();
         Confidence confidence = localSemanticGaps == 0 ? Confidence.HIGH : Confidence.MEDIUM;
@@ -959,10 +889,7 @@ public class LightweightSemanticAnalyzer {
     public record Result(List<SemanticSymbol> symbols, List<SemanticCallEdge> edges,
                          List<SecurityFlow> flows, CallGraphCoverage coverage) {}
 
-    // 分开统计 CodeGraph 拓扑与 JavaParser 局部补充。
-    public record CallGraphCoverage(int codeGraphRelations, int enrichedCodeGraphRelations,
-                                    int unenrichedCodeGraphRelations, int unmappedCodeGraphRelations,
-                                    int frameworkEdges, int localCallSites) {}
+    public record CallGraphCoverage(int frameworkEdges, int localCallSites) {}
 
     private interface ProgramNode {
         // 返回当前程序节点对应的语义符号。
@@ -980,10 +907,6 @@ public class LightweightSemanticAnalyzer {
         private final Map<String, TypeModel> types = new LinkedHashMap<>();
         private final Map<Long, ProgramNode> byChunkId = new HashMap<>();
         private final Map<UUID, List<GraphEdge>> outgoing = new HashMap<>();
-        private int codeGraphRelations;
-        private int enrichedCodeGraphRelations;
-        private int unenrichedCodeGraphRelations;
-        private int unmappedCodeGraphRelations;
         private int frameworkEdges;
         private int localCallSites;
 
@@ -997,7 +920,7 @@ public class LightweightSemanticAnalyzer {
                     .min(Comparator.comparingInt(chunk -> Math.abs(chunk.getStartLine() - line))).orElse(null);
         }
 
-        // 优先索引 AST 方法；对解析失败的作用域方法建立只承载 CodeGraph 拓扑的回退节点。
+        // 优先索引 AST 方法；对解析失败的作用域方法建立最小回退节点。
         private void index(UUID taskId, Set<Long> scopeChunkIds) {
             methods.stream().filter(method -> method.symbol.getChunkId() != null)
                     .forEach(method -> byChunkId.put(method.symbol.getChunkId(), method));
@@ -1036,8 +959,7 @@ public class LightweightSemanticAnalyzer {
         }
 
         private CallGraphCoverage coverage() {
-            return new CallGraphCoverage(codeGraphRelations, enrichedCodeGraphRelations,
-                    unenrichedCodeGraphRelations, unmappedCodeGraphRelations, frameworkEdges, localCallSites);
+            return new CallGraphCoverage(frameworkEdges, localCallSites);
         }
     }
 
@@ -1071,7 +993,7 @@ public class LightweightSemanticAnalyzer {
         @Override public SemanticSymbol symbol() { return symbol; }
     }
 
-    // JavaParser 无法解析时仍保留 CodeGraph 关系端点；该节点不参与局部方法摘要推导。
+    // JavaParser 无法解析时仍保留作用域证据端点；该节点不参与局部方法摘要推导。
     private record ChunkMethodModel(SemanticSymbol symbol) implements ProgramNode {}
 
     private static final class SqlModel implements ProgramNode {

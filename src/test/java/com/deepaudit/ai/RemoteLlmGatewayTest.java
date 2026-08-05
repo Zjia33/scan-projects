@@ -71,67 +71,20 @@ class RemoteLlmGatewayTest {
                 "change-7", 7L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
                 "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
-                "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", "");
+                "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", 1, 5);
 
         gateway.triageIncremental(UUID.randomUUID(), recon(), List.of(unit));
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("真实 targetCodeExcerpt", "逐个比较 Base/Target", "不得仅凭文件名");
+                .contains("真实 targetCodeExcerpt", "逐行比较 Base/Target", "不得仅凭文件名",
+                        "INVESTIGATE 或 SKIP", "focusRanges", "investigationQuestions")
+                .doesNotContain("NEED_CONTEXT");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"reviewUnits\"", "\"baseCodeExcerpt\":\"return value.trim();\"",
                         "\"targetCodeExcerpt\":\"return value.strip();\"", "\"DIRECT_CHANGE\"",
                         "\"projectTechnology\"")
                 .doesNotContain("\"architectureSummary\"", "\"candidateTypes\"");
-    }
-
-    @Test
-    void sendsSingleUnitFinalTriageWithConclusiveDispositionOnly() {
-        AiProperties properties = properties(1);
-        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
-                {"summary":"终审完成","decisions":[{"unitId":"change-8","primaryChunkId":8,
-                 "disposition":"SKIP","vulnerabilityTypes":[],"reason":"现有证据不支持具体安全假设"}]}
-                """);
-        IncrementalReviewUnit unit = new IncrementalReviewUnit(
-                "change-8", 8L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
-                "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
-                List.of("DIRECT_CHANGE"), "String value", "", "strip",
-                "return value.trim();", "return value.strip();", "METHOD_MODIFIED",
-                "已补充调用上下文", "");
-
-        gateway.triageIncrementalFinal(UUID.randomUUID(), recon(), unit);
-
-        assertThat(gateway.requests).hasSize(1);
-        assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("唯一一次补充上下文复判", "只能是 INVESTIGATE 或 SKIP", "不得再次返回 NEED_CONTEXT");
-        assertThat(gateway.requests.get(0).get(1).get("content"))
-                .contains("\"reviewUnit\"", "disposition:INVESTIGATE|SKIP")
-                .doesNotContain("\"reviewUnits\"");
-    }
-
-    @Test
-    void repairsFinalTriageWhenValidJsonOmitsTheOnlyRequiredDecision() {
-        AiProperties properties = properties(1);
-        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties,
-                "{\"summary\":\"未返回决定\",\"decisions\":[]}", """
-                {"summary":"复判完成","decisions":[{"unitId":"change-99","primaryChunkId":99,
-                 "disposition":"INVESTIGATE","vulnerabilityTypes":["STORED_XSS"],
-                 "reason":"HTML输出需要专业调查"}]}
-                """);
-        IncrementalReviewUnit unit = new IncrementalReviewUnit(
-                "change-99", 99L, "NoticeController.java", "NoticeController#view", "/notice",
-                "JAVA_METHOD", "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
-                List.of("HAS_OUTPUT_OPERATION"), "", "", "render", "return oldValue;",
-                "return html;", "METHOD_MODIFIED", "已补充输出上下文", "");
-
-        LlmGateway.TriagePlan result = gateway.triageIncrementalFinal(UUID.randomUUID(), recon(), unit);
-
-        assertThat(result.decisions()).singleElement().satisfies(decision -> {
-            assertThat(decision.unitId()).isEqualTo("change-99");
-            assertThat(decision.disposition())
-                    .isEqualTo(com.deepaudit.agent.TriageDisposition.INVESTIGATE);
-        });
-        assertThat(gateway.requests).hasSize(2);
     }
 
     @Test
@@ -233,7 +186,7 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("所有供人阅读的摘要", "简体中文", "technologyProfile",
                         "UNVERIFIED_CANDIDATE", "verify_relation", "VERIFIED_EVIDENCE")
-                .contains("explore_call_graph", "search_code", "read_source", "verify_relation")
+                .contains("explore_call_graph", "read_impact_source", "search_code", "read_source", "verify_relation")
                 .doesNotContain("get_call_chain({", "call_context({", "read_source_range({");
     }
 

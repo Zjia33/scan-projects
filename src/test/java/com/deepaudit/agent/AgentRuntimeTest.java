@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -47,7 +48,7 @@ class AgentRuntimeTest {
         CodeChunk candidate = chunk(taskId, 2L, "OrderService#load", "return repository.find(input);");
         List<CodeChunk> chunks = List.of(target, candidate);
         AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
-                VulnerabilityType.AUTHORIZATION, "检查授权", "规则线索");
+                VulnerabilityType.AUTHORIZATION, "检查授权；规则线索");
 
         when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "entry"));
@@ -81,6 +82,70 @@ class AgentRuntimeTest {
         assertThat(finalTurn.observations().get(0).result()).contains("COMPACT_OBSERVATION");
         assertThat(finalTurn.observations().get(2).result()).contains("TOOL_BUDGET")
                 .doesNotContain("CACHE_HIT");
+    }
+
+    @Test
+    void suppliesConcreteReasonWhenModelRejectSummaryIsBlank() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = chunk(taskId, 1L, "Controller#entry", "return service.load(input);");
+        AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
+                VulnerabilityType.AUTHORIZATION, "检查授权");
+        when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "entry"));
+        when(semanticEvidenceService.query(taskId, 1L, 10, VulnerabilityType.AUTHORIZATION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(gateway.decide(any())).thenReturn(
+                new LlmGateway.AgentDecision("REJECT", null, Map.of(), "", null));
+
+        runtime.investigate(taskId, task, null, List.of(target));
+
+        verify(traceService).event(eq(taskId), any(), eq(AgentType.AUTHORIZATION),
+                eq(com.deepaudit.domain.AgentEventType.REJECTED),
+                org.mockito.ArgumentMatchers.argThat(message -> message != null
+                        && message.contains("未发现能够支持")));
+    }
+
+    @Test
+    void treatsToolFailureFollowedByRejectAsIncompleteInvestigation() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        properties.setMaxIterationsPerAgent(2);
+        properties.setMaxToolCallsPerAgent(2);
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = chunk(taskId, 1L, "Controller#entry", "return service.load(input);");
+        AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
+                VulnerabilityType.AUTHORIZATION, "检查授权");
+        when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "entry"));
+        when(semanticEvidenceService.query(taskId, 1L, 10, VulnerabilityType.AUTHORIZATION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(gateway.decide(any())).thenReturn(
+                tool("explore_call_graph", Map.of(), "查询调用关系"),
+                new LlmGateway.AgentDecision("REJECT", null, Map.of(), "没有更多上下文", null));
+        when(toolService.execute(anyString(), anyMap(), eq(target), any(),
+                eq(VulnerabilityType.AUTHORIZATION), any(ToolSessionContext.class)))
+                .thenReturn(new ToolResult(ToolResult.Status.ERROR, "CODEGRAPH_QUERY_FAILED",
+                        "查询失败", Set.of(), Set.of(), false, null));
+
+        assertThatThrownBy(() -> runtime.investigate(taskId, task, null, List.of(target)))
+                .isInstanceOf(IncompleteInvestigationException.class)
+                .hasMessageContaining("不完整");
     }
 
     private LlmGateway.AgentDecision tool(String tool, Map<String, Object> arguments, String summary) {

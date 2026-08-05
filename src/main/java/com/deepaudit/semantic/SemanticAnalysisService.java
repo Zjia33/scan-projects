@@ -1,7 +1,6 @@
 package com.deepaudit.semantic;
 
 import com.deepaudit.domain.CodeChunk;
-import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticSymbolMapper;
@@ -38,23 +37,22 @@ public class SemanticAnalysisService {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    // CodeGraph 决定跨方法拓扑；本服务仅重建作用域内的局部语义补充和安全流索引。
-    public Summary rebuild(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds,
-                           List<CodeGraphIntegrationService.ScopedRelation> relations) {
+    // 仅重建 CHANGED 作用域内的局部语义补充和安全流索引。
+    public Summary rebuild(UUID taskId, Path root, List<CodeChunk> chunks, Set<Long> scopeChunkIds) {
         long rebuildStarted = ExecutionTiming.start();
         if (!properties.isEnabled()) {
             // 功能关闭时仍清理历史结果，避免后续读取到过期语义证据。
             transactionTemplate.executeWithoutResult(status -> deleteExisting(taskId));
             TimingDetailLog.info("执行耗时：taskId={}，stage=SCOPED_SEMANTIC_ANALYSIS，elapsedMs={}，status=DISABLED",
                     taskId, ExecutionTiming.elapsedMillis(rebuildStarted));
-            return new Summary(0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new Summary(0, 0, 0, 0, 0);
         }
         try {
             // taskId 用于标记结果归属，root 用于读取源码，chunks 用于把语义节点关联回可引用证据。
             // 先在事务外完成耗时的源码解析和路径搜索，避免分析期间长期占用数据库事务。
             long parseStarted = ExecutionTiming.start();
             LightweightSemanticAnalyzer.Result result = localSemanticAnalyzer.enrich(
-                    taskId, root, chunks, scopeChunkIds, relations);
+                    taskId, root, chunks, scopeChunkIds);
             long parseElapsedMs = ExecutionTiming.elapsedMillis(parseStarted);
             // 只有完整分析成功后才进入事务替换旧索引，防止半成品符号图被后续 Agent 读取。
             long persistStarted = ExecutionTiming.start();
@@ -66,24 +64,20 @@ public class SemanticAnalysisService {
             });
             long persistElapsedMs = ExecutionTiming.elapsedMillis(persistStarted);
             LightweightSemanticAnalyzer.CallGraphCoverage coverage = result.coverage();
-            TimingDetailLog.info("任务 {} CodeGraph 拓扑与局部语义索引完成：{} 个符号、{} 条关系边、{} 条安全数据流；"
-                            + "CodeGraph关系={}，局部现场补充={}，保守参数映射={}，未映射关系={}，框架语义桥={}，局部调用点={}",
+            TimingDetailLog.info("任务 {} CHANGED 局部语义索引完成：{} 个符号、{} 条边、{} 条安全数据流；"
+                            + "框架语义边={}，局部调用点={}",
                     taskId, result.symbols().size(), result.edges().size(), result.flows().size(),
-                    coverage.codeGraphRelations(), coverage.enrichedCodeGraphRelations(),
-                    coverage.unenrichedCodeGraphRelations(), coverage.unmappedCodeGraphRelations(),
                     coverage.frameworkEdges(), coverage.localCallSites());
-            TimingDetailLog.info("执行耗时：taskId={}，stage=SCOPED_SEMANTIC_ANALYSIS，elapsedMs={}，parseElapsedMs={}，persistElapsedMs={}，scopeChunks={}，relations={}，symbols={}，edges={}，flows={}",
+            TimingDetailLog.info("执行耗时：taskId={}，stage=CHANGED_LOCAL_SEMANTIC_ANALYSIS，elapsedMs={}，parseElapsedMs={}，persistElapsedMs={}，scopeChunks={}，symbols={}，edges={}，flows={}",
                     taskId, ExecutionTiming.elapsedMillis(rebuildStarted), parseElapsedMs, persistElapsedMs,
-                    scopeChunkIds == null ? 0 : scopeChunkIds.size(), relations == null ? 0 : relations.size(),
+                    scopeChunkIds == null ? 0 : scopeChunkIds.size(),
                     result.symbols().size(), result.edges().size(), result.flows().size());
             return new Summary(result.symbols().size(), result.edges().size(), result.flows().size(),
-                    coverage.codeGraphRelations(), coverage.enrichedCodeGraphRelations(),
-                    coverage.unenrichedCodeGraphRelations(), coverage.unmappedCodeGraphRelations(),
                     coverage.frameworkEdges(), coverage.localCallSites());
         } catch (Exception exception) {
             log.error("执行耗时：taskId={}，stage=SCOPED_SEMANTIC_ANALYSIS，elapsedMs={}，status=FAILED，error={}",
                     taskId, ExecutionTiming.elapsedMillis(rebuildStarted), exception.getClass().getSimpleName());
-            throw new IllegalStateException("轻量级跨过程语义分析失败: " + exception.getMessage(), exception);
+            throw new IllegalStateException("CHANGED 局部语义分析失败: " + exception.getMessage(), exception);
         }
     }
 
@@ -108,7 +102,5 @@ public class SemanticAnalysisService {
     }
 
     public record Summary(int symbolCount, int callEdgeCount, int securityFlowCount,
-                          int codeGraphRelationCount, int enrichedCodeGraphRelationCount,
-                          int conservativeMappingCount, int unmappedCodeGraphRelationCount,
                           int frameworkEdgeCount, int localCallSiteCount) {}
 }

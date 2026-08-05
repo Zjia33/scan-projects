@@ -51,11 +51,11 @@ deepaudit:
     read-timeout-seconds: 120
     # 模型偶尔会返回语法不合法的 JSON；最多追加两次格式纠正请求。
     json-repair-attempts: 2
-    max-iterations-per-agent: 6
+    max-iterations-per-agent: 10
     max-tool-calls-per-agent: 10
     # 仅保留最近工具观察的详细正文，较早观察压缩为状态和证据 ID。
     max-detailed-observations: 2
-    max-observation-chars: 4000
+    max-observation-chars: 8000
     # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
@@ -67,7 +67,7 @@ deepaudit:
     max-paths-per-entry: 20
     max-states-per-entry: 1000
   codegraph:
-    # CodeGraph 是生产环境唯一的全局调用拓扑与影响范围来源。
+  # CodeGraph 只提供 Target 调用符号候选；源码由专业 Agent 明确选择后按需物化。
     enabled: ${DEEPAUDIT_CODEGRAPH_ENABLED:true}
     executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
     # Windows 官方发行包可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
@@ -75,7 +75,6 @@ deepaudit:
     expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
     timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:120}
     max-output-bytes: ${DEEPAUDIT_CODEGRAPH_MAX_OUTPUT_BYTES:8388608}
-    impact-depth: ${DEEPAUDIT_CODEGRAPH_IMPACT_DEPTH:2}
     relation-limit: ${DEEPAUDIT_CODEGRAPH_RELATION_LIMIT:100}
     agent-context-limit: ${DEEPAUDIT_CODEGRAPH_AGENT_CONTEXT_LIMIT:10}
     # 索引保存在提交级快照缓存中，同一提交可被后续任务复用。

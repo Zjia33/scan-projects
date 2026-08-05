@@ -107,16 +107,16 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.INVENTORY, 28,
                             "已读取变更清单，准备增量安全上下文");
                     task = update(task, AuditStatus.INDEXING, 42,
-                            "仅索引变更代码，并准备 Base/Target CodeGraph 影响分析");
+                            "切分直接变更代码，并准备 Target CodeGraph 按需调用查询");
                     long indexStageStarted = ExecutionTiming.start();
                     stageStarted = ExecutionTiming.start();
-                    codeGraphIntegrationService.prepare(taskId, baseRoot, targetRoot);
-                    logTiming(taskId, "CODEGRAPH_PREPARE", stageStarted, taskStarted, "snapshots=2");
+                    codeGraphIntegrationService.prepare(taskId, targetRoot);
+                    logTiming(taskId, "CODEGRAPH_PREPARE", stageStarted, taskStarted, "targetSnapshots=1");
                     stageStarted = ExecutionTiming.start();
                     var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, changes);
                     logTiming(taskId, "INCREMENTAL_RECON_INDEX", stageStarted, taskStarted,
                             "changedChunks=" + recon.chunkCount());
-                    log.info("阶段耗时：taskId={}，阶段=增量索引准备，耗时={}ms，说明=建立Base/Target CodeGraph索引并切分直接变更代码，变更代码块数={}",
+                    log.info("阶段耗时：taskId={}，阶段=增量索引准备，耗时={}ms，说明=建立Target CodeGraph临时调用索引并切分直接变更代码，变更代码块数={}",
                             taskId, ExecutionTiming.elapsedMillis(indexStageStarted), recon.chunkCount());
 
                     task = update(task, AuditStatus.RECON, 55,
@@ -124,7 +124,7 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.AGENT_RECON, 62, "Recon Agent 解析框架、模块与技术架构");
                     task = update(task, AuditStatus.PLANNING, 68, "Triage Orchestrator 正在轻量分流审计单元");
                     task = update(task, AuditStatus.ANALYSIS, 74,
-                            "专业安全 Agents 调查变更及语义影响面");
+                            "专业安全 Agents 调查变更，并按需选择关联调用上下文");
                     stageStarted = ExecutionTiming.start();
                     AnalysisService.AnalysisResult analysis = analysisService.analyze(
                             taskId, targetRoot, recon, project.getName(), task);

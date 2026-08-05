@@ -73,6 +73,30 @@ class ReconServiceTest {
     }
 
     @Test
+    void projectSearchMaterializesOnlyMatchingTargetMethods() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        when(mapper.findByTaskId(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        UUID taskId = UUID.randomUUID();
+        write("src/main/java/demo/FirstService.java", """
+                class FirstService { void load() { sensitiveLookup(); } }
+                """);
+        write("src/main/java/demo/SecondService.java", """
+                class SecondService { void unrelated() { noop(); } }
+                """);
+
+        ReconService.ProjectSearchMaterialization result = new ReconService(mapper)
+                .materializeProjectSearch(taskId, projectRoot, "sensitiveLookup", false, "**/*.java", 20);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(result.matchedLocations()).isEqualTo(1);
+        assertThat(result.truncated()).isFalse();
+        assertThat(captor.getValue()).singleElement()
+                .satisfies(chunk -> assertThat(chunk.getSymbolName()).endsWith("#load"));
+    }
+
+    @Test
     void preservesChangedJavaLinesOutsideMethodsAsDirectEvidence() throws Exception {
         CodeChunkMapper mapper = mock(CodeChunkMapper.class);
         UUID taskId = UUID.randomUUID();
@@ -92,6 +116,27 @@ class ReconServiceTest {
             assertThat(chunk.getChunkType()).isEqualTo("JAVA_CHANGE");
             assertThat(chunk.getContent()).contains("password");
             assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
+        });
+    }
+
+    @Test
+    void preservesDeletedConfigurationAsChangedDiffAnchor() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        UUID taskId = UUID.randomUUID();
+        GitFileChange change = new GitFileChange(taskId, "src/main/resources/application.yml",
+                null, "DELETE", 0, 2, "1:2", "",
+                "@@ base 1-2 target 1-1 @@\n- management:\n-   endpoints: permit-all", true);
+
+        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
+            assertThat(chunk.getChangeType()).isEqualTo(com.deepaudit.domain.ChunkChangeType.DELETED);
+            assertThat(chunk.getChunkType()).isEqualTo("TEXT_DELETED");
+            assertThat(chunk.getBaseContent()).contains("permit-all");
         });
     }
 

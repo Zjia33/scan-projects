@@ -18,6 +18,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @Slf4j
 @Service
@@ -40,30 +41,36 @@ public class ProfessionalAgentRunner {
         long batchStarted = ExecutionTiming.start();
         TimingDetailLog.info("执行阶段开始：taskId={}，stage=PROFESSIONAL_AGENT_BATCH，tasks={}", taskId, plan.size());
         cancellationService.throwIfCancellationRequested(taskId);
+        // 专业 Agent 共享按需物化的上下文；CopyOnWrite 保证并行调查期间新增 IMPACTED 块可见。
+        List<CodeChunk> sharedChunks = new CopyOnWriteArrayList<>(chunks);
         // 每个规划任务独立运行，单个格式错误不会取消其他专业调查。
         List<CompletableFuture<TaskResult>> futures = new ArrayList<>();
         List<AgentCandidate> candidates = new ArrayList<>();
         int formatFailures = 0;
+        int incompleteInvestigations = 0;
         try {
             for (AgentTask task : plan) {
                 cancellationService.throwIfCancellationRequested(taskId);
                 futures.add(CompletableFuture.supplyAsync(
-                        () -> investigateOne(taskId, task, recon, chunks), executor));
+                        () -> investigateOne(taskId, task, recon, sharedChunks), executor));
             }
             for (CompletableFuture<TaskResult> future : futures) {
                 cancellationService.throwIfCancellationRequested(taskId);
                 TaskResult result = join(future);
                 result.candidate().ifPresent(candidates::add);
                 if (result.formatFailure()) formatFailures++;
+                if (result.incomplete()) incompleteInvestigations++;
             }
         } catch (RuntimeException exception) {
             futures.forEach(future -> future.cancel(true));
             throw exception;
         }
-        BatchResult batchResult = new BatchResult(List.copyOf(candidates), formatFailures);
-        log.info("阶段耗时：taskId={}，阶段=专业安全Agent调查，耗时={}ms，说明=并行验证增量漏洞假设与证据，任务数={}，候选数={}，格式失败={}",
+        BatchResult batchResult = new BatchResult(List.copyOf(candidates), formatFailures,
+                incompleteInvestigations);
+        log.info("阶段耗时：taskId={}，阶段=专业安全Agent调查，耗时={}ms，说明=并行验证增量漏洞假设与证据，任务数={}，候选数={}，格式失败={}，未完成调查={}",
                 taskId, ExecutionTiming.elapsedMillis(batchStarted), plan.size(),
-                batchResult.candidates().size(), batchResult.formatFailures());
+                batchResult.candidates().size(), batchResult.formatFailures(),
+                batchResult.incompleteInvestigations());
         return batchResult;
     }
 
@@ -74,7 +81,8 @@ public class ProfessionalAgentRunner {
         try (AuditCancellationService.WorkerRegistration ignored =
                      cancellationService.registerWorker(taskId)) {
             cancellationService.throwIfCancellationRequested(taskId);
-            TaskResult result = new TaskResult(agentRuntime.investigate(taskId, task, recon, chunks), false);
+            TaskResult result = new TaskResult(
+                    agentRuntime.investigate(taskId, task, recon, chunks), false, false);
             cancellationService.throwIfCancellationRequested(taskId);
             TimingDetailLog.info("执行耗时：taskId={}，stage=PROFESSIONAL_AGENT_TASK，agentType={}，chunkId={}，vulnerabilityType={}，elapsedMs={}，candidate={}",
                     taskId, task.agentType(), task.chunkId(), task.vulnerabilityType(),
@@ -85,7 +93,12 @@ public class ProfessionalAgentRunner {
         } catch (AiResponseFormatException exception) {
             log.warn("任务 {} 的 {} 在目标 {} 上返回不可解析 JSON，跳过该调查任务并继续扫描；elapsedMs={}",
                     taskId, task.agentType(), task.chunkId(), ExecutionTiming.elapsedMillis(taskStarted));
-            return new TaskResult(Optional.empty(), true);
+            return new TaskResult(Optional.empty(), true, true);
+        } catch (IncompleteInvestigationException exception) {
+            log.warn("任务 {} 的 {} 在目标 {} 上调查不完整：{}；elapsedMs={}",
+                    taskId, task.agentType(), task.chunkId(), exception.getMessage(),
+                    ExecutionTiming.elapsedMillis(taskStarted));
+            return new TaskResult(Optional.empty(), false, true);
         } catch (RuntimeException exception) {
             log.error("执行耗时：taskId={}，stage=PROFESSIONAL_AGENT_TASK，agentType={}，chunkId={}，vulnerabilityType={}，elapsedMs={}，status=FAILED，error={}",
                     taskId, task.agentType(), task.chunkId(), task.vulnerabilityType(),
@@ -105,9 +118,11 @@ public class ProfessionalAgentRunner {
         }
     }
 
-    private record TaskResult(Optional<AgentCandidate> candidate, boolean formatFailure) {
+    private record TaskResult(Optional<AgentCandidate> candidate, boolean formatFailure,
+                              boolean incomplete) {
     }
 
-    public record BatchResult(List<AgentCandidate> candidates, int formatFailures) {
+    public record BatchResult(List<AgentCandidate> candidates, int formatFailures,
+                              int incompleteInvestigations) {
     }
 }

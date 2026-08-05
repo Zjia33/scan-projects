@@ -159,7 +159,7 @@ public class ProfessionalToolService {
         if (paths.isEmpty()) {
             String target = targetId == null ? "" : "，目标代码块=" + targetId;
             return ToolResult.empty("[CALL_GRAPH] 在方向=" + direction + "、深度=" + depth + target
-                    + " 的范围内没有找到 CodeGraph/框架关系路径。局部语义缺口=" + localSemanticGapCount(allEdges));
+                    + " 的范围内没有找到已物化的局部框架关系路径。");
         }
 
         Set<Long> evidence = new LinkedHashSet<>();
@@ -167,7 +167,7 @@ public class ProfessionalToolService {
         paths.forEach(path -> path.steps().forEach(step -> evidence.add(step.to())));
         String body = paths.stream().map(this::formatPath).collect(Collectors.joining("\n\n"));
         return new ToolResult("[CALL_GRAPH] direction=" + direction + " depth=" + depth
-                + " localSemanticGaps=" + localSemanticGapCount(allEdges) + "\n" + body, evidence, Set.of());
+                + "\n" + body, evidence, Set.of());
     }
 
     public ToolResult getChangeContext(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
@@ -426,12 +426,6 @@ public class ProfessionalToolService {
 
     private boolean reliable(SemanticCallEdge edge) {
         return edge.getConfidence() != Confidence.LOW;
-    }
-
-    // 统计已确认 CodeGraph 关系中未由局部 AST 唯一定位调用现场的数量。
-    private long localSemanticGapCount(List<SemanticCallEdge> edges) {
-        return edges.stream().filter(edge -> "CODEGRAPH_CALL".equals(edge.getEdgeType())
-                && edge.getConfidence() == Confidence.MEDIUM).count();
     }
 
     private boolean changeMatches(SemanticMethodChange change, CodeChunk current, String selector) {

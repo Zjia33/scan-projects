@@ -18,11 +18,14 @@ import static org.mockito.Mockito.when;
 
 class IncrementalScopeServiceTest {
     @Test
-    void deletedMethodAddsRemainingMethodsInItsTargetFileWithoutBuildingASecondCallGraph() {
+    void deletedMethodUsesChangedDiffAnchorWithoutPreloadingSiblingMethods() {
         UUID taskId = UUID.randomUUID();
         String servicePath = "src/main/java/demo/OrderService.java";
         CodeChunk caller = chunk(1L, "src/main/java/demo/OrderController.java", "OrderController#load");
         CodeChunk sibling = chunk(2L, servicePath, "OrderService#remaining");
+        CodeChunk deletionAnchor = chunk(3L, servicePath, "demo.OrderService.removed()");
+        deletionAnchor.setChunkType("JAVA_METHOD_DELETED");
+        deletionAnchor.setAnalysisScope(AnalysisScope.CHANGED);
         SemanticMethodChange deleted = new SemanticMethodChange(taskId, SemanticChangeKind.METHOD_DELETED,
                 "removed", servicePath, servicePath, "demo.OrderService.removed()", null,
                 10, 12, null, null, "void removed() {}", "", "方法已删除");
@@ -35,9 +38,10 @@ class IncrementalScopeServiceTest {
         when(semanticChangeMapper.findByTaskId(taskId)).thenReturn(List.of(deleted));
 
         IncrementalScopeService.ScopeResult result = new IncrementalScopeService(
-                fileChangeMapper, semanticChangeMapper).determine(taskId, List.of(caller, sibling));
+                fileChangeMapper, semanticChangeMapper).determine(taskId,
+                List.of(caller, sibling, deletionAnchor));
 
-        assertThat(result.impactedChunkIds()).containsExactly(2L);
+        assertThat(result.changedChunkIds()).containsExactly(3L);
         assertThat(result.semanticChangeCounts()).containsEntry(SemanticChangeKind.METHOD_DELETED, 1L);
     }
 

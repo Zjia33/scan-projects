@@ -3,10 +3,13 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.recon.ReconService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -16,6 +19,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 class AuditToolServiceTest {
 
@@ -23,7 +27,7 @@ class AuditToolServiceTest {
     void catalogDefinesOnlyCurrentToolSet() {
         assertThat(AgentToolCatalog.specs()).extracting(AgentToolCatalog.ToolSpec::name)
                 .containsExactly("read_source", "verify_relation", "search_symbols", "search_code",
-                        "explore_call_graph", "get_change_context", "resolve_data_access",
+                        "explore_call_graph", "read_impact_source", "get_change_context", "resolve_data_access",
                         "inspect_security_policy", "trace_value");
     }
 
@@ -50,7 +54,7 @@ class AuditToolServiceTest {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
         ProfessionalToolService professional = mock(ProfessionalToolService.class);
-        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional);
+        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional, null, null);
         UUID taskId = UUID.randomUUID();
         CodeChunk current = chunk(taskId, 1L, "Controller#entry", "/orders/{id}",
                 "service.load(id)", "load");
@@ -123,27 +127,67 @@ class AuditToolServiceTest {
     }
 
     @Test
-    void dispatchesCallGraphAndAddsVerifiedCodeGraphRelations() {
+    void dispatchesCallGraphAsUnverifiedSymbolCandidatesWithoutPreloadingSource() {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
         ProfessionalToolService professional = mock(ProfessionalToolService.class);
-        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional);
+        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional, null, null);
         CodeChunk current = chunk(1L, "Controller#entry", "/orders", "service.load(id)", "load");
         CodeChunk candidate = chunk(2L, "OrderService#load", null, "return row;", "");
         when(professional.exploreCallGraph(eq(current.getTaskId()), eq(current), eq(List.of(current, candidate)),
                 any(ToolArguments.class), eq(5)))
                 .thenReturn(new ToolResult("[CALL_GRAPH]", Set.of(1L), Set.of()));
-        when(codeGraph.relationContext(current.getTaskId(), current, List.of(current, candidate), 5))
-                .thenReturn(new CodeGraphIntegrationService.RelationContext(
-                        "[VERIFIED_EVIDENCE][CODEGRAPH_RELATIONS] CHUNK_ID=2", Set.of(2L), 0));
+        var location = new com.deepaudit.codegraph.CodeGraphClient.CodeGraphLocation(
+                "OrderService.load", "method", "demo/OrderService.java", 10);
+        var impactCandidate = new CodeGraphIntegrationService.ImpactCandidate(
+                "candidate-1", 1L, CodeGraphIntegrationService.Direction.CALLEES, location);
+        when(codeGraph.relatedCandidates(current.getTaskId(), current,
+                CodeGraphIntegrationService.Direction.BOTH, 0, 5))
+                .thenReturn(new CodeGraphIntegrationService.CandidatePage(
+                        List.of(impactCandidate), 1, false, null));
 
         ToolResult result = tools.execute("explore_call_graph", Map.of("limit", 5),
                 current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION,
                 session(Set.of(1L), Set.of()));
 
-        assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(result.evidenceChunkIds()).containsExactly(1L);
         assertThat(result.candidateChunkIds()).isEmpty();
-        assertThat(result.text()).contains("CALL_GRAPH", "CODEGRAPH_RELATIONS");
+        assertThat(result.text()).contains("CALL_GRAPH", "UNVERIFIED_SYMBOL_CANDIDATES",
+                "candidateId=candidate-1").doesNotContain("CHUNK_ID=2");
+    }
+
+    @Test
+    void materializesOnlyExplicitlySelectedImpactCandidate() {
+        SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+        CodeGraphIntegrationService codeGraph = mock(CodeGraphIntegrationService.class);
+        ProfessionalToolService professional = mock(ProfessionalToolService.class);
+        ReconService recon = mock(ReconService.class);
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        AuditToolService tools = new AuditToolService(semantic, codeGraph, professional, recon, mapper);
+        UUID taskId = UUID.randomUUID();
+        CodeChunk current = chunk(taskId, 1L, "Controller#entry", "/orders", "service.load(id)", "load");
+        CodeChunk selected = chunk(taskId, 2L, "OrderService#load", null,
+                "return repository.find(id);", "find");
+        var location = new com.deepaudit.codegraph.CodeGraphClient.CodeGraphLocation(
+                "OrderService.load", "method", "demo/OrderService.java", 10);
+        var candidate = new CodeGraphIntegrationService.ImpactCandidate(
+                "candidate-1", 1L, CodeGraphIntegrationService.Direction.CALLEES, location);
+        var chunks = new ArrayList<>(List.of(current));
+        var root = java.nio.file.Path.of("target-worktree");
+        when(codeGraph.candidate(taskId, "candidate-1")).thenReturn(candidate);
+        when(codeGraph.targetRoot(taskId)).thenReturn(root);
+        when(mapper.findByTaskId(taskId)).thenReturn(List.of(current, selected));
+        when(codeGraph.mapCandidate(chunks, candidate)).thenReturn(selected);
+
+        ToolResult result = tools.execute("read_impact_source", Map.of("candidateId", "candidate-1"),
+                current, chunks, VulnerabilityType.AUTHORIZATION, session(Set.of(1L), Set.of()));
+
+        assertThat(result.status()).isEqualTo(ToolResult.Status.OK);
+        assertThat(result.candidateChunkIds()).containsExactly(2L);
+        assertThat(result.evidenceChunkIds()).isEmpty();
+        assertThat(result.text()).contains("UNVERIFIED_CANDIDATE", "IMPACT_SOURCE");
+        verify(recon).materializeCodeGraphLocations(taskId, root, List.of(location));
+        verify(recon).promoteImpactScope(taskId, Set.of(2L));
     }
 
     @Test
@@ -168,7 +212,7 @@ class AuditToolServiceTest {
 
     private AuditToolService tools(SemanticEvidenceService semantic) {
         return new AuditToolService(semantic, mock(CodeGraphIntegrationService.class),
-                mock(ProfessionalToolService.class));
+                mock(ProfessionalToolService.class), null, null);
     }
 
     private ToolSessionContext session(Set<Long> evidence, Set<Long> candidates) {

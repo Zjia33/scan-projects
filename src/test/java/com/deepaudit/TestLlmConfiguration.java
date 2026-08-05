@@ -51,7 +51,8 @@ public class TestLlmConfiguration {
                             ? TriageDisposition.SKIP : TriageDisposition.INVESTIGATE;
                     return new TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
                             List.copyOf(types),
-                            types.isEmpty() ? "真实差异不支持具体安全假设" : "真实差异包含需要深入调查的安全操作");
+                            types.isEmpty() ? "真实差异不支持具体安全假设" : "真实差异包含需要深入调查的安全操作",
+                            List.of(), List.of());
                 }).toList();
                 return new TriagePlan("测试模型已完成真实增量差异审查", decisions);
             }

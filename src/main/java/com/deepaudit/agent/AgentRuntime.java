@@ -43,13 +43,14 @@ public class AgentRuntime {
                                                 LlmGateway.ReconInsight recon, List<CodeChunk> chunks) {
         cancellationService.throwIfCancellationRequested(taskId);
         // 当前目标和确定性语义流是初始允许引用的证据集合。
-        Map<Long, CodeChunk> byId = chunks.stream().collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
+        Map<Long, CodeChunk> byId = chunkIndex(chunks);
         CodeChunk target = byId.get(task.chunkId());
         if (target == null) return Optional.empty();
         AgentRun run = traceService.start(taskId, task.agentType(), target.getId(), target.getSymbolName());
         List<RuntimeObservation> observations = new ArrayList<>();
         Set<Long> allowedEvidence = new LinkedHashSet<>();
         Set<Long> candidateEvidence = new LinkedHashSet<>();
+        boolean incompleteCoverage = "OVERSIZED_FILE_CHANGE".equals(target.getChunkType());
         allowedEvidence.add(target.getId());
         SemanticEvidenceService.EvidenceResult semanticEvidence = semanticEvidenceService.query(
                 taskId, target.getId(), 10, task.vulnerabilityType());
@@ -57,7 +58,8 @@ public class AgentRuntime {
         try {
             int maxIterations = Math.max(1, properties.getMaxIterationsPerAgent());
             // 每轮只允许继续调用只读工具、提交发现或结束调查。
-            for (int iteration = 1; iteration <= maxIterations; iteration++) {
+            // 额外保留一轮只用于消费最后一次工具观察并形成结论，避免最后一个工具结果永远不被模型看到。
+            for (int iteration = 1; iteration <= maxIterations + 1; iteration++) {
                 cancellationService.throwIfCancellationRequested(taskId);
                 run.setStepCount(iteration);
                 run.setModelCallCount(run.getModelCallCount() + 1);
@@ -66,8 +68,8 @@ public class AgentRuntime {
                         task.ruleHint(), semanticEvidence.text(), recon,
                         promptObservations(observations), iteration);
                 String observationContext = observations.isEmpty()
-                        ? "结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断"
-                        : "结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 " + observations.size()
+                        ? "结合 Recon 架构事实与 CHANGED 局部安全语义进行判断，必要时按需查询调用上下文"
+                        : "结合 Recon 架构事实、CHANGED 局部安全语义和 " + observations.size()
                         + " 条工具观察进行安全判断";
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
                         "第 " + iteration + " 轮：" + observationContext);
@@ -83,7 +85,18 @@ public class AgentRuntime {
                 String action = decision.action() == null ? "" : decision.action().toUpperCase();
                 if ("TOOL".equals(action)) {
                     // 工具返回分别标记为已验证证据或仍需关系验证的候选。
-                    if (run.getToolCallCount() >= properties.getMaxToolCallsPerAgent()) break;
+                    if (iteration > maxIterations
+                            || run.getToolCallCount() >= properties.getMaxToolCallsPerAgent()) {
+                        incompleteCoverage = true;
+                        String budgetMessage = "调查工具或轮次预算已耗尽，当前结论不完整；"
+                                + "不能把未继续查询解释为已经证明安全。";
+                        observations.add(new RuntimeObservation("investigation_budget", Map.of(),
+                                "[INCOMPLETE_INVESTIGATION] " + budgetMessage,
+                                ToolResult.Status.ERROR, Set.of(), Set.of()));
+                        traceService.event(taskId, run.getId(), task.agentType(),
+                                AgentEventType.INSUFFICIENT_EVIDENCE, budgetMessage);
+                        break;
+                    }
                     run.setToolCallCount(run.getToolCallCount() + 1);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.TOOL_CALL,
                             decision.tool() + "：" + safe(decision.summary()));
@@ -93,6 +106,12 @@ public class AgentRuntime {
                     allowedEvidence.addAll(result.evidenceChunkIds());
                     candidateEvidence.addAll(result.candidateChunkIds());
                     candidateEvidence.removeAll(result.evidenceChunkIds());
+                    if (result.status() == ToolResult.Status.ERROR
+                            || result.code().contains("PARTIAL")
+                            || result.code().contains("COVERAGE_LIMIT")
+                            || result.truncated() && result.nextCursor() == null) {
+                        incompleteCoverage = true;
+                    }
                     int remaining = Math.max(0,
                             properties.getMaxToolCallsPerAgent() - run.getToolCallCount());
                     String observationText = result.observationText()
@@ -106,6 +125,7 @@ public class AgentRuntime {
                 }
                 if ("FINDING".equals(action)) {
                     // FINDING 必须匹配任务类型且只能引用当前已获准的代码块。
+                    byId = chunkIndex(chunks);
                     LlmGateway.FindingProposal proposal = validate(
                             decision.finding(), task, allowedEvidence, byId);
                     if (proposal == null) {
@@ -134,16 +154,28 @@ public class AgentRuntime {
                     return Optional.of(new AgentCandidate(task.agentType(), proposal, evidence, hypothesis));
                 }
                 // 非工具、非发现动作视为专业 Agent 主动结束且没有充分证据。
-                run.complete("Agent 未找到足够证据：" + safe(decision.summary()));
+                String rejectionReason = rejectionReason(decision.summary(), task, observations);
+                if (incompleteCoverage) {
+                    String message = "调查上下文或工具结果不完整，未形成可执行结论：" + rejectionReason;
+                    run.complete(message);
+                    traceService.event(taskId, run.getId(), task.agentType(),
+                            AgentEventType.INSUFFICIENT_EVIDENCE, message);
+                    traceService.update(run);
+                    throw new IncompleteInvestigationException(message);
+                }
+                run.complete("Agent 未找到足够证据：" + rejectionReason);
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REJECTED,
-                        safe(decision.summary()));
+                        rejectionReason);
                 traceService.update(run);
                 return Optional.empty();
             }
-            run.complete("达到调查预算，未形成证据充分的漏洞假设");
-            traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REJECTED, run.getSummary());
+            run.complete("达到调查预算或覆盖边界，未能完成当前漏洞假设验证");
+            traceService.event(taskId, run.getId(), task.agentType(),
+                    AgentEventType.INSUFFICIENT_EVIDENCE, run.getSummary());
             traceService.update(run);
-            return Optional.empty();
+            throw new IncompleteInvestigationException(run.getSummary());
+        } catch (IncompleteInvestigationException exception) {
+            throw exception;
         } catch (RuntimeException exception) {
             if (exception instanceof AuditCancelledException
                     || cancellationService.isCancellationRequested(taskId)) {
@@ -232,6 +264,11 @@ public class AgentRuntime {
         return List.copyOf(result);
     }
 
+    private Map<Long, CodeChunk> chunkIndex(List<CodeChunk> chunks) {
+        return chunks.stream().filter(chunk -> chunk.getId() != null).collect(Collectors.toMap(
+                CodeChunk::getId, Function.identity(), (left, right) -> right));
+    }
+
     private String compactObservation(RuntimeObservation observation) {
         String firstLine = observation.result().lines().findFirst().orElse("");
         return "[COMPACT_OBSERVATION status=" + observation.status()
@@ -247,6 +284,19 @@ public class AgentRuntime {
 
     private String safe(String value) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), 2_000));
+    }
+
+    private String rejectionReason(String summary, AgentTask task,
+                                   List<RuntimeObservation> observations) {
+        String value = safe(summary).strip();
+        if (!value.isBlank()) return value;
+        if (observations.isEmpty()) {
+            return "未发现能够支持 " + task.vulnerabilityType().getDisplayName()
+                    + " 的具体危险操作、缺失安全控制或可利用数据流";
+        }
+        RuntimeObservation last = observations.get(observations.size() - 1);
+        return "已检查 " + observations.size() + " 条工具观察，最后状态为 " + last.status()
+                + "，仍未获得能够支持 " + task.vulnerabilityType().getDisplayName() + " 的已验证证据";
     }
 
     private record RuntimeObservation(String tool, Map<String, Object> arguments, String result,

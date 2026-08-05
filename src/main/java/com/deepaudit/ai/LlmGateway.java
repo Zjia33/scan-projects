@@ -19,15 +19,9 @@ public interface LlmGateway {
 
     ReconInsight inspectProject(UUID taskId, ReconSummary summary);
 
-    // 首次只基于真实 Base/Target 和轻量关系事实分流全部 CHANGED 审查位置。
+    // 只基于真实 Base/Target 变更对全部 CHANGED 审查位置做调查/跳过路由。
     TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                  List<IncrementalReviewUnit> reviewUnits);
-
-    // 对补充上下文后的单个增量位置执行唯一一次明确复判；必须返回 INVESTIGATE 或 SKIP。
-    default TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
-                                              IncrementalReviewUnit reviewUnit) {
-        return triageIncremental(taskId, recon, List.of(reviewUnit));
-    }
 
     AgentDecision decide(AgentTurn turn);
 
@@ -61,12 +55,22 @@ public interface LlmGateway {
     }
 
     record TriageDecision(String unitId, long primaryChunkId, TriageDisposition disposition,
-                          List<VulnerabilityType> vulnerabilityTypes, String reason) {
+                          List<VulnerabilityType> vulnerabilityTypes, String reason,
+                          List<LineRange> focusRanges, List<String> investigationQuestions) {
         // 校验并规范化 TriageDecision 的构造参数。
         public TriageDecision {
             vulnerabilityTypes = vulnerabilityTypes == null ? List.of() : vulnerabilityTypes.stream()
                     .filter(java.util.Objects::nonNull).distinct().toList();
+            focusRanges = focusRanges == null ? List.of() : focusRanges.stream()
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+            investigationQuestions = investigationQuestions == null ? List.of()
+                    : investigationQuestions.stream().filter(java.util.Objects::nonNull)
+                    .map(String::strip).filter(value -> !value.isBlank()).distinct().toList();
         }
+
+    }
+
+    record LineRange(int startLine, int endLine) {
     }
 
     record TriagePlan(String summary, List<TriageDecision> decisions) {

@@ -87,7 +87,8 @@ class AuditFlowIntegrationTest {
                         "taskRequestSequence", "selectedTask() !== task",
                         "withoutInternalChunkIds", "finding-evidence-chunk",
                         "正在创建审计任务并加入队列", "queuedTaskFromSubmission",
-                        "void loadTasks({ forceDetail: true })", "state.submittingAudit")
+                        "void loadTasks({ forceDetail: true })", "state.submittingAudit",
+                        "Agent 未获得能够支持当前漏洞假设的已验证证据")
                 .doesNotContain("chunk.id ? `CHUNK", "代码证据 ${index + 1}");
     }
 

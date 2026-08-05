@@ -3,6 +3,8 @@ package com.deepaudit.agent;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.recon.ReconService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import org.springframework.stereotype.Service;
 
@@ -11,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -19,13 +22,18 @@ public class AuditToolService {
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
     private final ProfessionalToolService professionalToolService;
+    private final ReconService reconService;
+    private final CodeChunkMapper chunkMapper;
 
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
                             CodeGraphIntegrationService codeGraphIntegrationService,
-                            ProfessionalToolService professionalToolService) {
+                            ProfessionalToolService professionalToolService,
+                            ReconService reconService, CodeChunkMapper chunkMapper) {
         this.semanticEvidenceService = semanticEvidenceService;
         this.codeGraphIntegrationService = codeGraphIntegrationService;
         this.professionalToolService = professionalToolService;
+        this.reconService = reconService;
+        this.chunkMapper = chunkMapper;
     }
 
     // 使用当前 Agent 工具会话中的证据状态执行只读工具。
@@ -55,19 +63,26 @@ public class AuditToolService {
                     anchor, chunks, session);
             case AgentToolCatalog.SEARCH_SYMBOLS -> professionalToolService.searchSymbols(
                     anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.SEARCH_CODE -> professionalToolService.searchCode(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> addCodeGraphRelations(
-                    professionalToolService.exploreCallGraph(anchor.getTaskId(), anchor, chunks,
-                            arguments, limit), anchor, chunks, limit);
+            case AgentToolCatalog.SEARCH_CODE -> searchCode(arguments, anchor, chunks, limit);
+            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> exploreCallGraph(arguments, anchor, chunks, limit);
+            case AgentToolCatalog.READ_IMPACT_SOURCE -> readImpactSource(arguments, anchor, chunks);
             case AgentToolCatalog.GET_CHANGE_CONTEXT -> professionalToolService.getChangeContext(
                     anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.RESOLVE_DATA_ACCESS -> professionalToolService.resolveDataAccess(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.INSPECT_SECURITY_POLICY -> professionalToolService.inspectSecurityPolicy(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.TRACE_VALUE -> professionalToolService.traceValue(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit, vulnerabilityType);
+            case AgentToolCatalog.RESOLVE_DATA_ACCESS -> {
+                ToolResult result = professionalToolService.resolveDataAccess(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                yield explainPartialScope(result, "数据访问实现尚未物化；可先用 explore_call_graph 选择被调用符号，"
+                        + "再用 read_impact_source 和 verify_relation 验证。 ");
+            }
+            case AgentToolCatalog.INSPECT_SECURITY_POLICY -> {
+                materializeGlobalContext(anchor, chunks);
+                yield professionalToolService.inspectSecurityPolicy(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+            }
+            case AgentToolCatalog.TRACE_VALUE -> explainPartialScope(
+                    professionalToolService.traceValue(anchor.getTaskId(), anchor, chunks,
+                            arguments, limit, vulnerabilityType),
+                    "当前值流索引只覆盖已物化范围；需要跨方法时应先按需载入并验证调用上下文。 ");
             default -> ToolResult.invalid("不允许的 Agent 工具: " + tool);
         };
     }
@@ -95,20 +110,138 @@ public class AuditToolService {
         return new AnchorResolution(anchor, null);
     }
 
-    // CodeGraph 直接关系与持久化语义图具有相同证据级别，不再要求 JavaParser 或本地名称匹配重复证明。
-    private ToolResult addCodeGraphRelations(ToolResult base, CodeChunk current,
-                                             List<CodeChunk> chunks, int limit) {
-        if (codeGraphIntegrationService == null) return base;
-        CodeGraphIntegrationService.RelationContext context = codeGraphIntegrationService.relationContext(
-                current.getTaskId(), current, chunks, limit);
-        if (context.relatedChunkIds().isEmpty()) return base;
-        Set<Long> evidence = new LinkedHashSet<>(base.evidenceChunkIds());
-        evidence.addAll(context.relatedChunkIds());
-        Set<Long> candidates = new LinkedHashSet<>(base.candidateChunkIds());
-        candidates.removeAll(evidence);
-        String text = base.text() + "\n\n" + context.text();
-        return new ToolResult(base.status(), base.code(), text, evidence, candidates,
-                base.truncated(), base.nextCursor());
+    private ToolResult exploreCallGraph(ToolArguments arguments, CodeChunk anchor,
+                                        List<CodeChunk> chunks, int limit) {
+        ToolResult local = professionalToolService.exploreCallGraph(
+                anchor.getTaskId(), anchor, chunks, arguments, limit);
+        if (codeGraphIntegrationService == null) return local;
+        CodeGraphIntegrationService.Direction direction;
+        try {
+            String requested = arguments.string("direction");
+            direction = requested.isBlank() ? CodeGraphIntegrationService.Direction.BOTH
+                    : CodeGraphIntegrationService.Direction.valueOf(requested.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            return ToolResult.invalid("direction 只能是 CALLERS、CALLEES 或 BOTH。");
+        }
+        int cursor = arguments.integer("cursor", 0, 0, Integer.MAX_VALUE);
+        CodeGraphIntegrationService.CandidatePage page = codeGraphIntegrationService.relatedCandidates(
+                anchor.getTaskId(), anchor, direction, cursor, limit);
+        if (page.error() != null) {
+            return new ToolResult(ToolResult.Status.ERROR, "CODEGRAPH_QUERY_FAILED", page.error(),
+                    local.evidenceChunkIds(), local.candidateChunkIds(), false, null);
+        }
+        if (page.candidates().isEmpty() && page.truncated() && page.nextCursor() == null) {
+            return new ToolResult(ToolResult.Status.ERROR, "CODEGRAPH_COVERAGE_LIMIT_REACHED",
+                    "[PARTIAL_SCOPE] CodeGraph 关系数量达到后端安全上限，仍可能存在未返回的调用关系。",
+                    local.evidenceChunkIds(), local.candidateChunkIds(), true, null);
+        }
+        if (page.candidates().isEmpty()) return local;
+        String candidates = page.candidates().stream().map(candidate -> {
+            var location = candidate.location();
+            return "candidateId=" + candidate.candidateId() + " | direction=" + candidate.direction()
+                    + " | symbol=" + location.name() + " | kind=" + location.kind()
+                    + " | file=" + location.filePath() + ":" + location.startLine();
+        }).collect(Collectors.joining("\n"));
+        String text = local.text() + "\n\n[UNVERIFIED_SYMBOL_CANDIDATES] 仅含符号位置，尚未读取源码：\n"
+                + candidates + (page.truncated() && page.nextCursor() == null
+                ? "\n[PARTIAL_SCOPE] 已达到 CodeGraph 最大关系读取范围，候选集合可能不完整。" : "");
+        return new ToolResult(ToolResult.Status.OK, "CODEGRAPH_SYMBOL_CANDIDATES", text,
+                local.evidenceChunkIds(), local.candidateChunkIds(), page.truncated(), page.nextCursor());
+    }
+
+    private ToolResult searchCode(ToolArguments arguments, CodeChunk anchor,
+                                  List<CodeChunk> chunks, int limit) {
+        ReconService.ProjectSearchMaterialization coverage = null;
+        String scope = arguments.string("scope").toUpperCase(Locale.ROOT);
+        if (scope.isBlank()) scope = "RELATED";
+        if ("PROJECT".equals(scope) && reconService != null && codeGraphIntegrationService != null) {
+            var root = codeGraphIntegrationService.targetRoot(anchor.getTaskId());
+            String query = arguments.string("query");
+            boolean caseSensitive = arguments.bool("caseSensitive", false);
+            String filePattern = arguments.string("filePattern");
+            String searchKey = query + "|" + caseSensitive + "|" + filePattern;
+            if (root != null && !query.isBlank()) {
+                synchronized (materializationLock(anchor)) {
+                    if (codeGraphIntegrationService.markProjectSearchIfNew(anchor.getTaskId(), searchKey)) {
+                        coverage = reconService.materializeProjectSearch(anchor.getTaskId(), root,
+                                query, caseSensitive, filePattern, 500);
+                    }
+                    refreshChunks(anchor.getTaskId(), chunks);
+                }
+            }
+        }
+        ToolResult base = professionalToolService.searchCode(
+                anchor.getTaskId(), anchor, chunks, arguments, limit);
+        if (coverage == null || !coverage.truncated() && coverage.skippedOversizedFiles() == 0) return base;
+        String note = "\n[PARTIAL_SCOPE] 项目搜索按需物化达到安全上限或跳过超大文件：matched="
+                + coverage.matchedLocations() + "，skippedOversizedFiles="
+                + coverage.skippedOversizedFiles() + "。未返回结果不能证明项目中不存在匹配代码。";
+        return new ToolResult(base.status(), "PROJECT_SEARCH_PARTIAL", base.text() + note,
+                base.evidenceChunkIds(), base.candidateChunkIds(), true, base.nextCursor());
+    }
+
+    private ToolResult explainPartialScope(ToolResult result, String guidance) {
+        if (result.status() != ToolResult.Status.EMPTY) return result;
+        return new ToolResult(ToolResult.Status.EMPTY, "PARTIAL_SCOPE", result.text()
+                + "\n[PARTIAL_SCOPE] " + guidance + "未找到不等于已证明不存在。",
+                result.evidenceChunkIds(), result.candidateChunkIds(), false, null);
+    }
+
+    private ToolResult readImpactSource(ToolArguments arguments, CodeChunk anchor,
+                                        List<CodeChunk> chunks) {
+        if (codeGraphIntegrationService == null || reconService == null || chunkMapper == null) {
+            return ToolResult.notFound("CodeGraph 按需源码读取不可用。");
+        }
+        String candidateId = arguments.string("candidateId");
+        if (candidateId.isBlank()) return ToolResult.invalid("read_impact_source 需要 candidateId。");
+        CodeGraphIntegrationService.ImpactCandidate candidate = codeGraphIntegrationService.candidate(
+                anchor.getTaskId(), candidateId);
+        if (candidate == null || !Objects.equals(candidate.anchorChunkId(), anchor.getId())) {
+            return ToolResult.forbidden("candidateId 不属于当前已验证锚点的 CodeGraph 查询结果。");
+        }
+        var root = codeGraphIntegrationService.targetRoot(anchor.getTaskId());
+        if (root == null) return ToolResult.notFound("当前任务没有可读取的 Target 工作区。");
+        CodeChunk selected;
+        synchronized (materializationLock(anchor)) {
+            reconService.materializeCodeGraphLocations(anchor.getTaskId(), root, List.of(candidate.location()));
+            refreshChunks(anchor.getTaskId(), chunks);
+            selected = codeGraphIntegrationService.mapCandidate(chunks, candidate);
+            if (selected != null && Objects.equals(selected.getId(), anchor.getId())) {
+                return ToolResult.invalid("CodeGraph 候选指向当前锚点自身，无需作为 IMPACTED 上下文读取。");
+            }
+            if (selected != null && selected.getId() != null) {
+                reconService.promoteImpactScope(anchor.getTaskId(), Set.of(selected.getId()));
+                selected.setAnalysisScope(com.deepaudit.domain.AnalysisScope.IMPACTED);
+            }
+        }
+        if (selected == null || selected.getId() == null) {
+            return ToolResult.notFound("CodeGraph 候选无法严格映射到唯一源码块。");
+        }
+        return new ToolResult(ToolResult.Status.OK, "IMPACT_SOURCE_LOADED",
+                "[UNVERIFIED_CANDIDATE][IMPACT_SOURCE] 候选源码已按需载入，必须继续 verify_relation。\n"
+                        + format(selected, "CodeGraph 候选位置"),
+                Set.of(), Set.of(selected.getId()), false, null);
+    }
+
+    private void materializeGlobalContext(CodeChunk anchor, List<CodeChunk> chunks) {
+        if (codeGraphIntegrationService == null || reconService == null || chunkMapper == null) return;
+        var root = codeGraphIntegrationService.targetRoot(anchor.getTaskId());
+        if (root == null) return;
+        synchronized (materializationLock(anchor)) {
+            if (!codeGraphIntegrationService.isGlobalContextMaterialized(anchor.getTaskId())) {
+                reconService.materializeGlobalSecurityContext(anchor.getTaskId(), root);
+                codeGraphIntegrationService.markGlobalContextMaterialized(anchor.getTaskId());
+            }
+            refreshChunks(anchor.getTaskId(), chunks);
+        }
+    }
+
+    private void refreshChunks(java.util.UUID taskId, List<CodeChunk> chunks) {
+        Set<Long> existing = chunks.stream().map(CodeChunk::getId).filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (CodeChunk chunk : chunkMapper.findByTaskId(taskId)) {
+            if (chunk.getId() != null && existing.add(chunk.getId())) chunks.add(chunk);
+        }
     }
 
     private boolean hasUniqueDirectCallRelation(CodeChunk current, CodeChunk candidate,
@@ -197,9 +330,10 @@ public class AuditToolService {
             return new ToolResult("[VERIFIED_EVIDENCE][SEMANTIC_RELATION] " + semantic.reason() + "\n"
                     + format(candidate, "语义关系验证通过"), Set.of(candidateId), Set.of());
         }
-        if (codeGraph != null && codeGraph.verified()) {
-            return new ToolResult("[VERIFIED_EVIDENCE][CODEGRAPH_RELATION] " + codeGraph.reason() + "\n"
-                    + format(candidate, "CodeGraph 直接关系复验通过"), Set.of(candidateId), Set.of());
+        if (codeGraph != null && codeGraph.verified() && hasLocalCallSite(current, candidate)) {
+            return new ToolResult("[VERIFIED_EVIDENCE][CODEGRAPH_RELATION][LOCAL_CALL_SITE] "
+                    + codeGraph.reason() + "；本地源码存在对应调用点\n"
+                    + format(candidate, "CodeGraph 与本地调用点共同复验通过"), Set.of(candidateId), Set.of());
         }
         if (!structural.verified()) {
             String semanticReason = semantic == null || semantic.reason() == null ? "" : semantic.reason() + "；";
@@ -240,6 +374,18 @@ public class AuditToolService {
         }
         return new RelationAssessment(false, "NO_VERIFIED_RELATION",
                 "未找到可靠的调用、数据流或安全策略关系");
+    }
+
+    private Object materializationLock(CodeChunk anchor) {
+        Object lock = codeGraphIntegrationService.materializationLock(anchor.getTaskId());
+        return lock == null ? this : lock;
+    }
+
+    private boolean hasLocalCallSite(CodeChunk current, CodeChunk candidate) {
+        String currentMethod = methodName(current.getSymbolName());
+        String candidateMethod = methodName(candidate.getSymbolName());
+        return splitSymbols(current.getCalledSymbols()).contains(candidateMethod)
+                || splitSymbols(candidate.getCalledSymbols()).contains(currentMethod);
     }
 
     private boolean securityPolicyMatches(String endpoint, String content) {

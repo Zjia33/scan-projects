@@ -22,7 +22,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
     private final CodeGraphProperties properties;
     private final CodeGraphCommandRunner runner;
     private final ObjectMapper objectMapper;
-    private final Map<WorkspaceKey, Path> roots = new ConcurrentHashMap<>();
+    private final Map<UUID, Path> roots = new ConcurrentHashMap<>();
 
     public CliCodeGraphClient(CodeGraphProperties properties, CodeGraphCommandRunner runner,
                               ObjectMapper objectMapper) {
@@ -32,12 +32,12 @@ public class CliCodeGraphClient implements CodeGraphClient {
     }
 
     @Override
-    public void prepare(UUID taskId, CodeGraphSnapshot snapshot, Path projectRoot) {
+    public void prepare(UUID taskId, Path projectRoot) {
         if (!properties.isEnabled()) return;
-        Path root = requireTaskWorkspace(taskId, snapshot, projectRoot);
+        Path root = requireTaskWorkspace(taskId, projectRoot);
         verifyVersion(root);
         boolean cachedIndex = Files.isDirectory(root.resolve(requireIndexDirectory(properties.getIndexDirectory())));
-        TimingDetailLog.info("任务 {} CodeGraph {} {}：workspace={}", taskId, snapshot,
+        TimingDetailLog.info("任务 {} CodeGraph Target {}：workspace={}", taskId,
                 cachedIndex ? "尝试复用提交级索引" : "建立提交级索引", root.getFileName());
         CodeGraphCommandRunner.CommandOutput init = runner.run(root,
                 List.of("init", root.toString(), "--no-color"), environment());
@@ -46,32 +46,24 @@ public class CliCodeGraphClient implements CodeGraphClient {
                 List.of("status", root.toString(), "--json", "--no-color"), environment());
         requireSuccess("status", status);
         validateStatus(status.stdout());
-        roots.put(new WorkspaceKey(taskId, snapshot), root);
+        roots.put(taskId, root);
     }
 
     @Override
-    public List<CodeGraphLocation> impact(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int depth) {
-        Path root = requirePrepared(taskId, snapshot);
-        CodeGraphCommandRunner.CommandOutput output = runner.run(root, List.of(
-                "impact", requireSymbol(symbol), "--path", root.toString(),
-                "--depth", String.valueOf(Math.max(1, Math.min(depth, 10))), "--json", "--no-color"), environment());
-        requireSuccess("impact", output);
-        return parseLocations(output.stdout(), "affected");
-    }
-
-    @Override
-    public RelatedLocations related(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit) {
-        Path root = requirePrepared(taskId, snapshot);
-        int safeLimit = Math.max(1, Math.min(limit, 100));
+    public RelatedLocations related(UUID taskId, String symbol, int limit) {
+        Path root = requirePrepared(taskId);
+        int safeLimit = Math.max(1, Math.min(limit, 1000));
         String query = requireSymbol(symbol);
         List<CodeGraphLocation> callers = relation(root, "callers", query, safeLimit);
         List<CodeGraphLocation> callees = relation(root, "callees", query, safeLimit);
-        return new RelatedLocations(callers, callees);
+        // CLI 没有返回总量；达到 limit 时必须按“可能仍有更多”处理，不能宣称结果完整。
+        return new RelatedLocations(callers, callees,
+                callers.size() >= safeLimit, callees.size() >= safeLimit);
     }
 
     @Override
     public void release(UUID taskId) {
-        roots.keySet().removeIf(key -> key.taskId().equals(taskId));
+        roots.remove(taskId);
     }
 
     private List<CodeGraphLocation> relation(Path root, String command, String symbol, int limit) {
@@ -148,22 +140,22 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return json;
     }
 
-    private Path requireTaskWorkspace(UUID taskId, CodeGraphSnapshot snapshot, Path value) {
-        if (taskId == null || snapshot == null || value == null) {
-            throw new CodeGraphException("任务 ID、快照类型和源码快照不能为空");
+    private Path requireTaskWorkspace(UUID taskId, Path value) {
+        if (taskId == null || value == null) {
+            throw new CodeGraphException("任务 ID 和 Target 源码快照不能为空");
         }
         Path root = value.toAbsolutePath().normalize();
-        String expected = "workspace-" + taskId + "-" + snapshot.workspaceSuffix();
+        String expected = "workspace-" + taskId + "-target";
         boolean taskWorkspace = root.getFileName() != null && expected.equals(root.getFileName().toString());
         boolean commitCache = root.getFileName() != null
                 && root.getFileName().toString().matches("[0-9a-f]{40}")
                 && root.getParent() != null && root.getParent().getFileName() != null
                 && "commit-cache".equals(root.getParent().getFileName().toString());
         if (!taskWorkspace && !commitCache) {
-            throw new CodeGraphException("CodeGraph 只允许索引当前任务的 " + snapshot + " 快照: " + root);
+            throw new CodeGraphException("CodeGraph 只允许索引当前任务的 Target 快照: " + root);
         }
         if (!Files.isDirectory(root)) {
-            throw new CodeGraphException(snapshot + " 快照目录不存在: " + root);
+            throw new CodeGraphException("Target 快照目录不存在: " + root);
         }
         try {
             Path realRoot = root.toRealPath();
@@ -174,18 +166,18 @@ public class CliCodeGraphClient implements CodeGraphClient {
                     && realRoot.getParent() != null && realRoot.getParent().getFileName() != null
                     && "commit-cache".equals(realRoot.getParent().getFileName().toString());
             if (!realTaskWorkspace && !realCommitCache) {
-            throw new CodeGraphException("CodeGraph " + snapshot + " 快照不能通过符号链接跳出任务目录: " + root);
+            throw new CodeGraphException("CodeGraph Target 快照不能通过符号链接跳出任务目录: " + root);
             }
             return realRoot;
         } catch (IOException exception) {
-            throw new CodeGraphException("无法解析 CodeGraph " + snapshot + " 快照: " + root, exception);
+            throw new CodeGraphException("无法解析 CodeGraph Target 快照: " + root, exception);
         }
     }
 
-    private Path requirePrepared(UUID taskId, CodeGraphSnapshot snapshot) {
-        Path root = roots.get(new WorkspaceKey(taskId, snapshot));
+    private Path requirePrepared(UUID taskId) {
+        Path root = roots.get(taskId);
         if (root == null) {
-            throw new CodeGraphException("任务尚未建立 CodeGraph " + snapshot + " 索引: " + taskId);
+            throw new CodeGraphException("任务尚未建立 CodeGraph Target 索引: " + taskId);
         }
         return root;
     }
@@ -238,6 +230,4 @@ public class CliCodeGraphClient implements CodeGraphClient {
         return text.substring(0, Math.min(text.length(), 500));
     }
 
-    private record WorkspaceKey(UUID taskId, CodeGraphSnapshot snapshot) {
-    }
 }

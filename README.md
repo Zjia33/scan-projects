@@ -11,19 +11,19 @@
 - Base/Target 分支变更审计；分支分叉时自动使用共同祖先作为实际比较基线
 - 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
 - 将增量语义变化分类为方法新增、修改、删除、签名变化、Guard 新增和 Guard 删除，纯删除行不再依赖 Target 新增行范围
-- Git Diff 行区间与方法语义差异共同确定变更块，由 Base/Target CodeGraph 索引计算跨文件影响范围
-- 增量任务只深入调查直接变更块和语义影响块，同时保留完整 Target 项目事实
+- Git Diff 行区间与方法语义差异共同确定 CHANGED 变更块；CodeGraph 不预先扩张整个影响范围
+- 增量任务只分诊直接变更块，专业 Agent 根据调查问题分页查看调用符号并按需读取 Target 上下文
 - 漏洞使用独立于行号的稳定指纹进行跨扫描匹配
 - Critic 只输出本次变更新增或 Base/Target 持续存在的确认结果
 - JavaParser 方法级切块、接口、参数、注解和调用方法提取；模板与配置文件按行数和字符数切窗
-- JavaParser 只解析 CHANGED/IMPACTED 及直接上下文，验证 CodeGraph 调用现场并提取参数流、Guard 和框架语义
+- 轻量语义分析只解析 CHANGED，提取局部参数、Guard、Sink 和框架事实；CodeGraph 候选在取证时通过本地调用点复验
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
 - 面向五类新任务漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
 - 统一文件角色白名单：索引 Java 后端源码、运行与安全配置、MyBatis/SQL、服务端模板；构建描述只用于架构识别
 - Markdown、独立前端源码与静态资源在 Git 快照物化前即被忽略，不进入 Diff、分块、语义分析或模型上下文
 - Recon Agent：只读取去计数后的框架事实、构建描述和 application/bootstrap 配置，生成技术架构摘要；不接收普通业务源码或增量作用域
-- Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
-- `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
+- Triage Orchestrator：逐行比较 CHANGED 的 Base/Target，只执行 `INVESTIGATE / SKIP` 二态分流并给出可疑行和调查问题
+- 专业 Agent：在 `INVESTIGATE` 后才分页查看 CodeGraph 符号候选，明确选择后才物化对应源码为 IMPACTED
 - 只有 `INVESTIGATE` 单元创建 SQL 注入、权限、敏感信息泄露、XSS 或验证绕过专业 Agent
 - SQL 注入、越权、敏感信息泄露、存储 XSS、验证绕过五类独立专业 Agents
 - 受控多轮工具调用，返回真实代码块而不是只有文件名
@@ -41,13 +41,12 @@
   → Base/Target ChangeSet
   → Base/Target 方法索引、稳定方法映射和六类语义差异
   → 确定性技术栈、项目结构画像和语义索引
-  → CodeGraph 扩展调用方、被调用方和安全配置影响面
-  → JavaParser 在作用域内验证调用现场并构建轻量安全数据流
+  → 轻量语义分析只处理 CHANGED 的局部参数、Guard、Sink 和确定性安全事实
   → Recon Agent 读取构建描述、application/bootstrap 配置和去计数框架事实，归纳技术架构
   → 按入口、危险操作、安全配置、变更和语义流构建紧凑审计单元
-  → Triage Orchestrator 三态轻量分流
-  → NEED_CONTEXT 定向补充调用链和安全上下文后复判
-  → 专业 Agents 多轮调用代码工具
+  → Triage Orchestrator 逐行执行 INVESTIGATE / SKIP 二态分流
+  → 专业 Agents 分页查看调用符号，按需物化并验证选中的 IMPACTED 源码
+  → 专业 Agents 继续多轮调用只读代码工具
   → 形成结构化漏洞假设
   → Critic Agent 寻找反证
   → 文件和行号校验
@@ -114,12 +113,12 @@ AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解
 
 ## CodeGraph 全局拓扑
 
-DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供跨文件全局调用拓扑，
-JavaParser 不再构建第二套全项目调用图。CodeGraph 只决定影响范围和关系候选，不直接判定漏洞。
+DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供 Target 跨文件调用符号候选，
+JavaParser 不再构建第二套全项目调用图。CodeGraph 不预先决定影响范围，也不直接判定漏洞；专业 Agent 只物化明确选择的候选源码。
 CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
 可以从 `PATH` 调用，也可以配置 Windows 官方发行包的解压根目录。无需为被审计项目单独执行
-`codegraph init`。增量任务会在不可变 Comparison Base 和 Target 快照中分别建立临时索引：Target
-用于当前影响范围和作用域关系，Base 用于删除方法、签名变化和历史调用者。
+`codegraph init`。增量任务只在不可变 Target 快照中建立临时索引；Base 由 Git Diff 和方法快照用于变更比较，
+不再建立未被调查链路使用的 CodeGraph 索引。
 
 Windows 官方发行包无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
 然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI

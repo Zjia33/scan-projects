@@ -62,11 +62,10 @@ class CliCodeGraphClientTest {
                 output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""));
         CliCodeGraphClient target = new CliCodeGraphClient(properties, runner, new ObjectMapper());
 
-        target.prepare(taskId, CodeGraphSnapshot.TARGET, root);
+        target.prepare(taskId, root);
 
         verify(runner, times(2)).run(eq(root.toRealPath()), anyList(), anyMap());
-        assertThatThrownBy(() -> target.impact(UUID.randomUUID(), CodeGraphSnapshot.TARGET,
-                "OrderService.load", 2))
+        assertThatThrownBy(() -> target.related(UUID.randomUUID(), "OrderService.load", 2))
                 .isInstanceOf(CodeGraphException.class)
                 .hasMessageContaining("尚未建立");
     }
@@ -82,7 +81,7 @@ class CliCodeGraphClientTest {
                 output(0, "{\"initialized\":true,\"index\":{\"state\":\"partial\"}}", ""));
         CliCodeGraphClient target = new CliCodeGraphClient(properties, runner, new ObjectMapper());
 
-        assertThatThrownBy(() -> target.prepare(taskId, CodeGraphSnapshot.TARGET, root))
+        assertThatThrownBy(() -> target.prepare(taskId, root))
                 .isInstanceOf(CodeGraphException.class)
                 .hasMessageContaining("索引不完整");
     }
@@ -96,30 +95,9 @@ class CliCodeGraphClientTest {
         CliCodeGraphClient target = new CliCodeGraphClient(
                 properties, mock(CodeGraphCommandRunner.class), new ObjectMapper());
 
-        assertThatThrownBy(() -> target.prepare(taskId, CodeGraphSnapshot.TARGET, root))
+        assertThatThrownBy(() -> target.prepare(taskId, root))
                 .isInstanceOf(CodeGraphException.class)
                 .hasMessageContaining("单级相对目录名");
-    }
-
-    @Test
-    void preparesBaseAndTargetAsIndependentIndexes() throws Exception {
-        UUID taskId = UUID.randomUUID();
-        Path base = Files.createDirectory(temporaryDirectory.resolve("workspace-" + taskId + "-base"));
-        Path target = Files.createDirectory(temporaryDirectory.resolve("workspace-" + taskId + "-target"));
-        CodeGraphProperties properties = new CodeGraphProperties();
-        CodeGraphCommandRunner runner = mock(CodeGraphCommandRunner.class);
-        when(runner.run(org.mockito.ArgumentMatchers.any(Path.class), anyList(), anyMap())).thenReturn(
-                output(0, "", ""),
-                output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""),
-                output(0, "", ""),
-                output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""));
-        CliCodeGraphClient dual = new CliCodeGraphClient(properties, runner, new ObjectMapper());
-
-        dual.prepare(taskId, CodeGraphSnapshot.BASE, base);
-        dual.prepare(taskId, CodeGraphSnapshot.TARGET, target);
-
-        verify(runner, times(2)).run(eq(base.toRealPath()), anyList(), anyMap());
-        verify(runner, times(2)).run(eq(target.toRealPath()), anyList(), anyMap());
     }
 
     @Test
@@ -134,7 +112,7 @@ class CliCodeGraphClientTest {
                 output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""));
         CliCodeGraphClient cached = new CliCodeGraphClient(properties, runner, new ObjectMapper());
 
-        cached.prepare(taskId, CodeGraphSnapshot.TARGET, root);
+        cached.prepare(taskId, root);
 
         verify(runner, times(2)).run(eq(root.toRealPath()), anyList(), anyMap());
     }

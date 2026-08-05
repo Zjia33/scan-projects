@@ -34,7 +34,16 @@ public class AgentTraceService {
 
     // 持久化截断后的事件消息并实时推送给当前 SSE 订阅者。
     public void event(UUID taskId, UUID runId, AgentType type, AgentEventType eventType, String message) {
-        String safe = message == null ? "" : message.substring(0, Math.min(message.length(), 12_000));
+        String normalized = message == null ? "" : message.strip();
+        if (normalized.isBlank()) {
+            normalized = switch (eventType) {
+                case REJECTED -> "Agent 未获得能够支持当前漏洞假设的已验证证据，已结束本次调查";
+                case INSUFFICIENT_EVIDENCE -> "当前调查因上下文、工具结果或证据不足而未形成最终结论";
+                case ERROR, FORMAT_ERROR -> "Agent 执行异常，但没有返回可展示的错误详情";
+                default -> "Agent 已记录 " + eventType + " 事件，但没有返回补充说明";
+            };
+        }
+        String safe = normalized.substring(0, Math.min(normalized.length(), 12_000));
         AgentEvent event = new AgentEvent(taskId, runId, type, eventType, safe);
         eventMapper.insert(event);
         eventStreamService.publish(event);

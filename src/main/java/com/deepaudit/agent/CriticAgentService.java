@@ -12,11 +12,14 @@ import com.deepaudit.domain.HypothesisStatus;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.mapper.AuditHypothesisMapper;
+import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.codegraph.CodeGraphIntegrationService;
+import com.deepaudit.recon.ReconService;
 import com.deepaudit.semantic.SemanticEvidenceService;
 import com.deepaudit.util.ExecutionTiming;
 import com.deepaudit.util.TimingDetailLog;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -30,13 +33,37 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class CriticAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
     private final AuditHypothesisMapper hypothesisMapper;
     private final SemanticEvidenceService semanticEvidenceService;
+    private final ReconService reconService;
+    private final CodeChunkMapper chunkMapper;
+    private final CodeGraphIntegrationService codeGraphIntegrationService;
+
+    @Autowired
+    public CriticAgentService(LlmGateway llmGateway, AgentTraceService traceService,
+                              AuditHypothesisMapper hypothesisMapper,
+                              SemanticEvidenceService semanticEvidenceService,
+                              ReconService reconService, CodeChunkMapper chunkMapper,
+                              CodeGraphIntegrationService codeGraphIntegrationService) {
+        this.llmGateway = llmGateway;
+        this.traceService = traceService;
+        this.hypothesisMapper = hypothesisMapper;
+        this.semanticEvidenceService = semanticEvidenceService;
+        this.reconService = reconService;
+        this.chunkMapper = chunkMapper;
+        this.codeGraphIntegrationService = codeGraphIntegrationService;
+    }
+
+    CriticAgentService(LlmGateway llmGateway, AgentTraceService traceService,
+                       AuditHypothesisMapper hypothesisMapper,
+                       SemanticEvidenceService semanticEvidenceService) {
+        this(llmGateway, traceService, hypothesisMapper, semanticEvidenceService,
+                null, null, null);
+    }
 
     // 用独立语义证据和全局安全控制反证候选，仅确认项可转换为 Finding。
     public Optional<Finding> review(UUID taskId, AgentCandidate candidate,
@@ -45,6 +72,7 @@ public class CriticAgentService {
         AgentRun run = traceService.start(taskId, AgentType.CRITIC,
                 candidate.proposal().primaryChunkId(), candidate.proposal().title());
         try {
+            materializeCriticContext(taskId, candidate.proposal().type(), chunks);
             Map<Long, CodeChunk> chunksById = chunks.stream()
                     .collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
             run.setModelCallCount(1);
@@ -187,6 +215,27 @@ public class CriticAgentService {
             traceService.update(run);
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.ERROR, exception.getMessage());
             throw exception;
+        }
+    }
+
+    private void materializeCriticContext(UUID taskId,
+                                          com.deepaudit.domain.VulnerabilityType type,
+                                          List<CodeChunk> chunks) {
+        if (reconService == null || chunkMapper == null || codeGraphIntegrationService == null
+                || type != com.deepaudit.domain.VulnerabilityType.AUTHORIZATION
+                && type != com.deepaudit.domain.VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE) return;
+        var root = codeGraphIntegrationService.targetRoot(taskId);
+        if (root == null) return;
+        synchronized (codeGraphIntegrationService.materializationLock(taskId)) {
+            if (!codeGraphIntegrationService.isGlobalContextMaterialized(taskId)) {
+                reconService.materializeGlobalSecurityContext(taskId, root);
+                codeGraphIntegrationService.markGlobalContextMaterialized(taskId);
+            }
+            Set<Long> existing = chunks.stream().map(CodeChunk::getId).filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            for (CodeChunk chunk : chunkMapper.findByTaskId(taskId)) {
+                if (chunk.getId() != null && existing.add(chunk.getId())) chunks.add(chunk);
+            }
         }
     }
 

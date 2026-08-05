@@ -967,10 +967,17 @@ function buildEventRow(event, animate) {
     meta.append(time);
     const toolCall = event.eventType === 'TOOL_CALL';
     const observation = event.eventType === 'OBSERVATION';
-    const message = withoutInternalChunkIds(toolCall ? summarizeToolCall(event.message)
+    let message = withoutInternalChunkIds(toolCall ? summarizeToolCall(event.message)
         : observation ? summarizeObservation(event.message)
             : event.eventType === 'MODEL_CALL' ? summarizeModelCall(event.message)
                 : String(event.message || ''));
+    if (!message && event.eventType === 'REJECTED') {
+        message = 'Agent 未获得能够支持当前漏洞假设的已验证证据，已结束本次调查。';
+    } else if (!message && event.eventType === 'INSUFFICIENT_EVIDENCE') {
+        message = '当前调查因上下文、工具结果或证据不足而未形成最终结论。';
+    } else if (!message) {
+        message = '该事件未返回可展示的详细说明。';
+    }
     const copy = el('p', 'event-message', message.length > 1000 ? `${message.slice(0, 1000)}…` : message);
     row.append(meta, copy);
     if (!toolCall && !observation && message.length > 1000) {
@@ -988,10 +995,7 @@ function buildEventRow(event, animate) {
 }
 
 function summarizeModelCall(value) {
-    return String(value || '').replace(
-        /结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 0 条工具观察进行安全判断/g,
-        '结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断'
-    );
+    return String(value || '');
 }
 
 function withoutInternalChunkIds(value) {
@@ -1484,7 +1488,13 @@ function summarizeObservation(message) {
         return '已追踪相关变量从输入到敏感操作的数据流与参数映射。';
     }
     if (raw.includes('[SEMANTIC_EVIDENCE]')) {
-        return '已查询确定性语义关系，补充调用链、数据流或安全防护证据。';
+        return '已查询 CHANGED 局部语义关系，补充数据流或安全防护证据。';
+    }
+    if (raw.includes('[UNVERIFIED_SYMBOL_CANDIDATES]')) {
+        return '已查询相关调用符号候选，尚未读取候选源码。';
+    }
+    if (raw.includes('[IMPACT_SOURCE]')) {
+        return '已按需读取选中的关联源码，仍需验证其与当前审计目标的调用关系。';
     }
     if (raw.includes('[UNVERIFIED_CANDIDATE]')) {
         return '已读取相关候选代码，仍需验证其与当前审计目标的确定性关系。';

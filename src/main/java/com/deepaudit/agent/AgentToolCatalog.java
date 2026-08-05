@@ -14,6 +14,7 @@ public final class AgentToolCatalog {
     public static final String SEARCH_SYMBOLS = "search_symbols";
     public static final String SEARCH_CODE = "search_code";
     public static final String EXPLORE_CALL_GRAPH = "explore_call_graph";
+    public static final String READ_IMPACT_SOURCE = "read_impact_source";
     public static final String GET_CHANGE_CONTEXT = "get_change_context";
     public static final String RESOLVE_DATA_ACCESS = "resolve_data_access";
     public static final String INSPECT_SECURITY_POLICY = "inspect_security_policy";
@@ -29,10 +30,12 @@ public final class AgentToolCatalog {
                     "按符号、注解、文件或端点执行确定性结构搜索"),
             spec(SEARCH_CODE, Set.of("query", "scope", "filePattern", "includeTests", "caseSensitive",
                             "contextLines", "depth", "limit", "cursor", "anchorChunkId"),
-                    "在当前文件、关联范围或项目内执行字面量源码搜索；结果仅为候选"),
+                    "在当前文件、已验证关联范围或 Target 项目内执行字面量源码搜索；PROJECT 会按需物化命中位置，结果仅为候选"),
             spec(EXPLORE_CALL_GRAPH, Set.of("direction", "depth", "targetChunkId", "targetSymbol",
-                            "limit", "anchorChunkId"),
-                    "探索一跳或多跳调用路径，direction 为 CALLERS、CALLEES 或 BOTH"),
+                            "limit", "cursor", "anchorChunkId"),
+                    "分页查看直接调用者/被调用者符号候选，不预先读取候选源码"),
+            spec(READ_IMPACT_SOURCE, Set.of("candidateId", "anchorChunkId", "limit"),
+                    "按 candidateId 物化并读取一个 CodeGraph 候选源码；读取后仍需验证关系"),
             spec(GET_CHANGE_CONTEXT, Set.of("selector", "includeConfiguration", "limit", "anchorChunkId"),
                     "读取 Base/Target 方法和文件变更"),
             spec(RESOLVE_DATA_ACCESS, Set.of("selector", "depth", "limit", "anchorChunkId"),
@@ -60,7 +63,8 @@ public final class AgentToolCatalog {
         return "可用只读工具：" + SPECS.stream().map(ToolSpec::promptLine)
                 .collect(Collectors.joining("；")) + "。"
                 + "只有已验证 evidenceChunkId 才能作为 anchorChunkId，候选必须先 verify_relation。"
-                + "各工具可用 limit:1..10；分页结果 truncated=true 时使用 nextCursor。";
+                + "各工具可用 limit:1..10；分页结果 truncated=true 且存在 nextCursor 时继续翻页；"
+                + "PARTIAL_SCOPE、ERROR 或 truncated=true 且没有 nextCursor 表示覆盖不完整，禁止据此否决漏洞。";
     }
 
     private static ToolSpec spec(String name, Set<String> arguments, String description) {

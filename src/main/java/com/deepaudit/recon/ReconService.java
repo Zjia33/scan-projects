@@ -96,6 +96,8 @@ public class ReconService {
             incrementalSemanticDiffService.analyze(taskId, baseRoot, root, chunks, changes);
         }
         addUncoveredChangedRanges(taskId, root, chunks, changes);
+        addDeletionAnchors(taskId, root, baseRoot, chunks, changes);
+        addOversizedChangeAnchors(taskId, root, chunks, changes);
         chunks.removeIf(chunk -> chunk.getAnalysisScope() != AnalysisScope.CHANGED);
         for (int start = 0; start < chunks.size(); start += 500) {
             chunkMapper.insertBatch(chunks.subList(start, Math.min(start + 500, chunks.size())));
@@ -115,7 +117,7 @@ public class ReconService {
                 technologyProfile, projectStructure, frameworkFiles(root, frameworkPaths));
     }
 
-    // 将调用图扩展得到的代码块提升为深度分析范围。
+    // 将专业 Agent 明确选中并物化的代码块提升为 IMPACTED 证据范围。
     public void promoteImpactScope(UUID taskId, Set<Long> impactedChunkIds) {
         List<CodeChunk> chunks = chunkMapper.findByTaskId(taskId);
         List<CodeChunk> promoted = new ArrayList<>();
@@ -194,6 +196,77 @@ public class ReconService {
         return additions.size();
     }
 
+    /**
+     * 为专业 Agent 的 PROJECT 字面量搜索按需扫描文件，但只物化真实命中位置所在的代码块。
+     * 这避免把“尚未载入的项目源码”错误地解释为“项目中不存在匹配代码”。
+     */
+    @Transactional
+    public ProjectSearchMaterialization materializeProjectSearch(UUID taskId, Path root,
+                                                                 String query, boolean caseSensitive,
+                                                                 String filePattern, int maxMatches) {
+        if (root == null || query == null || query.isBlank()) {
+            return new ProjectSearchMaterialization(0, false, 0);
+        }
+        int safeLimit = Math.max(1, Math.min(maxMatches, 2_000));
+        String needle = caseSensitive ? query : query.toLowerCase(Locale.ROOT);
+        List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
+        int oversized = 0;
+        boolean truncated = false;
+        try (Stream<Path> paths = Files.walk(root)) {
+            var iterator = paths.filter(Files::isRegularFile).iterator();
+            while (iterator.hasNext()) {
+                Path file = iterator.next();
+                String relative = normalizePath(root.relativize(file).toString());
+                if (!AuditSourceFilter.classify(relative).createChunks()
+                        || !globMatches(relative, filePattern)) continue;
+                try {
+                    if (Files.size(file) > MAX_SOURCE_FILE_BYTES) {
+                        oversized++;
+                        continue;
+                    }
+                    String[] lines = Files.readString(file, StandardCharsets.UTF_8).split("\\R", -1);
+                    for (int index = 0; index < lines.length; index++) {
+                        String haystack = caseSensitive ? lines[index] : lines[index].toLowerCase(Locale.ROOT);
+                        if (!haystack.contains(needle)) continue;
+                        if (locations.size() >= safeLimit) {
+                            truncated = true;
+                            break;
+                        }
+                        locations.add(new CodeGraphClient.CodeGraphLocation(
+                                "", "PROJECT_TEXT_MATCH", relative, index + 1));
+                    }
+                } catch (IOException exception) {
+                    log.debug("项目按需搜索跳过无法读取的文件: {}", file, exception);
+                }
+                if (truncated) break;
+            }
+        } catch (IOException exception) {
+            log.warn("任务 {} 项目按需源码搜索未完整执行", taskId, exception);
+            truncated = true;
+        }
+        materializeCodeGraphLocations(taskId, root, locations);
+        return new ProjectSearchMaterialization(locations.size(), truncated, oversized);
+    }
+
+    private boolean globMatches(String path, String pattern) {
+        if (pattern == null || pattern.isBlank()) return true;
+        StringBuilder regex = new StringBuilder("^");
+        for (int index = 0; index < pattern.length(); index++) {
+            char current = pattern.charAt(index);
+            if (current == '*' && index + 1 < pattern.length() && pattern.charAt(index + 1) == '*') {
+                regex.append(".*");
+                index++;
+            } else if (current == '*') {
+                regex.append("[^/]*");
+            } else if (current == '?') {
+                regex.append("[^/]");
+            } else {
+                regex.append(java.util.regex.Pattern.quote(String.valueOf(current)));
+            }
+        }
+        return normalizePath(path).matches(regex.append('$').toString());
+    }
+
     private void insertChunks(List<CodeChunk> chunks) {
         for (int start = 0; start < chunks.size(); start += 500) {
             chunkMapper.insertBatch(chunks.subList(start, Math.min(start + 500, chunks.size())));
@@ -229,10 +302,20 @@ public class ReconService {
     private boolean globalContextFile(Path file) {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         String path = normalizePath(file.toString()).toLowerCase(Locale.ROOT);
-        return isFrameworkFile(file) || name.contains("security") || name.contains("controller")
-                || name.contains("filter") || name.contains("interceptor") || name.contains("mapper")
-                || path.contains("/security/") || path.contains("/controller/")
-                || path.contains("/filter/") || path.contains("/interceptor/");
+        if (isFrameworkFile(file) || name.contains("security")
+                || name.contains("filter") || name.contains("interceptor")
+                || path.contains("/security/")
+                || path.contains("/filter/") || path.contains("/interceptor/")) return true;
+        if (!name.endsWith(".java")) return false;
+        try {
+            if (Files.size(file) > MAX_SOURCE_FILE_BYTES) return false;
+            String content = Files.readString(file, StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
+            return content.contains("@preauthorize") || content.contains("@postauthorize")
+                    || content.contains("@secured") || content.contains("@rolesallowed")
+                    || content.contains("securityfilterchain") || content.contains("enablemethodsecurity");
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     private void applyIncrementalMetadata(List<CodeChunk> chunks,
@@ -311,6 +394,135 @@ public class ReconService {
                 fallback.setBaseContent(truncateBase(change.getContextText()));
                 chunks.add(fallback);
             }
+        }
+    }
+
+    /**
+     * 纯删除 hunk 没有 Target 新增行，不能依赖 newRanges 建立 CHANGED 块。
+     * 方法删除优先使用方法级锚点；其余配置、模板、SQL、解析失败源码和整文件删除使用文件级差异锚点。
+     */
+    private void addDeletionAnchors(UUID taskId, Path root, Path baseRoot, List<CodeChunk> chunks,
+                                    List<GitFileChange> changes) {
+        for (GitFileChange change : changes) {
+            if (change.getDeletions() <= 0 || change.getOldPath() == null) continue;
+            boolean pureDeletion = change.getNewPath() == null
+                    || change.getNewRanges() == null || change.getNewRanges().isBlank();
+            if (!pureDeletion) continue;
+            String targetPath = change.getNewPath() == null ? change.getOldPath() : change.getNewPath();
+            AuditFileRole role = AuditSourceFilter.classify(targetPath);
+            if (!role.createChunks()) continue;
+            List<LineRange> deletedRanges = parseRanges(change.getOldRanges());
+            if (deletedRanges.isEmpty()) deletedRanges = List.of(new LineRange(1, 1));
+            for (LineRange deleted : deletedRanges) {
+                boolean covered = chunks.stream()
+                        .filter(chunk -> chunk.getAnalysisScope() == AnalysisScope.CHANGED)
+                        .filter(chunk -> targetPath.equals(normalizePath(chunk.getFilePath())))
+                        .anyMatch(chunk -> chunk.getChangeType() == ChunkChangeType.DELETED
+                                && chunk.getStartLine() <= deleted.end()
+                                && deleted.start() <= chunk.getEndLine());
+                if (covered) continue;
+                int line = targetLineFromDiff(change.getContextText(), deleted.start());
+                String targetContent = targetLineContext(root, change.getNewPath(), line);
+                int targetStart = targetContent.isBlank() ? line : Math.max(1, line - 8);
+                int targetEnd = targetContent.isBlank() ? line
+                        : targetStart + targetContent.split("\\R", -1).length - 1;
+                String baseContent = baseLineContext(baseRoot, change.getOldPath(), deleted);
+                CodeChunk anchor = new CodeChunk(taskId, normalizePath(targetPath),
+                        (change.getNewPath() == null ? "deleted-file" : "deleted-lines")
+                                + "#" + deleted.start() + "-" + deleted.end(),
+                        null, targetStart, targetEnd, targetContent,
+                        role == AuditFileRole.JAVA_SOURCE ? "JAVA_CHANGE_DELETED" : "TEXT_DELETED",
+                        "", "", "");
+                anchor.setAnalysisScope(AnalysisScope.CHANGED);
+                anchor.setChangeType(ChunkChangeType.DELETED);
+                anchor.setBaseContent(baseContent.isBlank()
+                        ? truncateBase(change.getContextText()) : truncate(baseContent));
+                chunks.add(anchor);
+            }
+        }
+    }
+
+    private String baseLineContext(Path baseRoot, String basePath, LineRange range) {
+        if (baseRoot == null || basePath == null) return "";
+        Path file = safeResolve(baseRoot, basePath);
+        if (file == null || !Files.isRegularFile(file)) return "";
+        try {
+            if (Files.size(file) > MAX_SOURCE_FILE_BYTES) return "";
+            return sourceLines(Files.readString(file, StandardCharsets.UTF_8),
+                    Math.max(1, range.start() - 8), range.end() + 8);
+        } catch (IOException ignored) {
+            return "";
+        }
+    }
+
+    /** 为超大变更文件保留明确覆盖状态，避免文件被跳过后任务仍宣称完整。 */
+    private void addOversizedChangeAnchors(UUID taskId, Path root, List<CodeChunk> chunks,
+                                           List<GitFileChange> changes) {
+        for (GitFileChange change : changes) {
+            String path = change.getNewPath() == null ? change.getOldPath() : change.getNewPath();
+            if (path == null) continue;
+            String normalized = normalizePath(path);
+            if (chunks.stream().filter(chunk -> chunk.getAnalysisScope() == AnalysisScope.CHANGED)
+                    .anyMatch(chunk -> normalized.equals(normalizePath(chunk.getFilePath())))) continue;
+            AuditFileRole role = AuditSourceFilter.classify(normalized);
+            Path target = change.getNewPath() == null ? null : safeResolve(root, change.getNewPath());
+            boolean oversized = false;
+            try {
+                oversized = target != null && Files.isRegularFile(target)
+                        && Files.size(target) > MAX_SOURCE_FILE_BYTES;
+            } catch (IOException ignored) {
+            }
+            if (!role.createChunks() || !oversized) continue;
+            int line = firstRangeLine(change.getNewRanges() == null || change.getNewRanges().isBlank()
+                    ? change.getOldRanges() : change.getNewRanges());
+            CodeChunk anchor = new CodeChunk(taskId, normalized,
+                    "oversized-change#" + line,
+                    null, line, line, truncateBase(change.getContextText()),
+                    "OVERSIZED_FILE_CHANGE", "", "", "");
+            anchor.setAnalysisScope(AnalysisScope.CHANGED);
+            anchor.setChangeType("ADD".equals(change.getChangeType())
+                    ? ChunkChangeType.ADDED : ChunkChangeType.MODIFIED);
+            anchor.setBaseContent(truncateBase(change.getContextText()));
+            chunks.add(anchor);
+            if (oversized) {
+                log.warn("任务 {} 的变更文件 {} 超过 {} 字节，仅保留 Git 差异锚点并标记覆盖受限",
+                        taskId, normalized, MAX_SOURCE_FILE_BYTES);
+            }
+        }
+    }
+
+    private int firstRangeLine(String ranges) {
+        if (ranges == null || ranges.isBlank()) return 1;
+        try {
+            return Math.max(1, Integer.parseInt(ranges.split(",", 2)[0].split(":", 2)[0]));
+        } catch (RuntimeException ignored) {
+            return 1;
+        }
+    }
+
+    private int targetLineFromDiff(String context, int fallback) {
+        if (context == null) return fallback;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("@@\\s+base\\s+\\d+-\\d+\\s+target\\s+(\\d+)-")
+                .matcher(context);
+        if (!matcher.find()) return fallback;
+        try {
+            return Math.max(1, Integer.parseInt(matcher.group(1)));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private String targetLineContext(Path root, String targetPath, int line) {
+        if (targetPath == null) return "";
+        Path file = safeResolve(root, targetPath);
+        if (file == null || !Files.isRegularFile(file)) return "";
+        try {
+            if (Files.size(file) > MAX_SOURCE_FILE_BYTES) return "";
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            return sourceLines(content, Math.max(1, line - 8), line + 8);
+        } catch (IOException ignored) {
+            return "";
         }
     }
 
@@ -432,8 +644,9 @@ public class ReconService {
             String parameters = method.getParameters().stream()
                     .map(parameter -> parameter.getTypeAsString() + " " + parameter.getNameAsString())
                     .collect(java.util.stream.Collectors.joining(", "));
-            String annotations = method.getAnnotations().stream().map(AnnotationExpr::toString)
-                    .collect(java.util.stream.Collectors.joining(" "));
+            String annotations = Stream.concat(ownerAnnotations(method).stream(),
+                            method.getAnnotations().stream().map(AnnotationExpr::toString))
+                    .distinct().collect(java.util.stream.Collectors.joining(" "));
             String calledSymbols = method.findAll(MethodCallExpr.class).stream()
                     .map(MethodCallExpr::getNameAsString).distinct().sorted()
                     .collect(java.util.stream.Collectors.joining(","));
@@ -467,6 +680,18 @@ public class ReconService {
             current = current.getParentNode().orElse(null);
         }
         return "UnknownClass";
+    }
+
+    private List<String> ownerAnnotations(MethodDeclaration method) {
+        List<String> annotations = new ArrayList<>();
+        Node current = method.getParentNode().orElse(null);
+        while (current != null) {
+            if (current instanceof com.github.javaparser.ast.body.TypeDeclaration<?> owner) {
+                owner.getAnnotations().stream().map(AnnotationExpr::toString).forEach(annotations::add);
+            }
+            current = current.getParentNode().orElse(null);
+        }
+        return annotations;
     }
 
     // 将 XML、模板和解析失败源码切成有字符与行数上限的文本窗口。
@@ -606,5 +831,9 @@ public class ReconService {
     }
 
     private record LineRange(int start, int end) {
+    }
+
+    public record ProjectSearchMaterialization(int matchedLocations, boolean truncated,
+                                               int skippedOversizedFiles) {
     }
 }
