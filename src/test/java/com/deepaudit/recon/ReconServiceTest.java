@@ -201,7 +201,7 @@ class ReconServiceTest {
 
         assertThat(profile.modules()).singleElement().satisfies(module -> {
             assertThat(module.path()).isEqualTo(".");
-            assertThat(module.sourceFileCount()).isEqualTo(6);
+            assertThat(module.sourceFileCount()).isEqualTo(5);
             assertThat(module.javaMethodCount()).isEqualTo(4);
             assertThat(module.endpointCount()).isEqualTo(1);
         });
@@ -260,6 +260,10 @@ class ReconServiceTest {
                 }
                 """);
         write("src/main/resources/application.yml", "spring.application.name: orders");
+        write("pom.xml", "<project><artifactId>orders</artifactId></project>");
+        write("README.md", "# Orders\nThis text must not become an audit chunk.");
+        write("frontend/src/App.ts", "export const unsafe = userInput;");
+        write("src/main/resources/static/app.js", "element.innerHTML = input;");
         write("src/test/java/demo/InsecureControllerTest.java", """
                 package demo;
                 @RestController class InsecureControllerTest {
@@ -282,6 +286,9 @@ class ReconServiceTest {
                 .containsOnly(
                         "src/main/java/demo/OrderService.java",
                         "src/main/resources/application.yml");
+        assertThat(indexed).extracting(CodeChunk::getFilePath)
+                .doesNotContain("pom.xml", "README.md", "frontend/src/App.ts",
+                        "src/main/resources/static/app.js");
         assertThat(indexed).extracting(CodeChunk::getSymbolName)
                 .doesNotContain("OrderService#testOnlyUnsafeCall");
         assertThat(summary.technologyProfile().securityFrameworks()).doesNotContain("Spring Security");

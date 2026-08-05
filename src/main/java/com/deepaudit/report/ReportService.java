@@ -22,7 +22,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.UUID;
 
-// 负责 ReportService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class ReportService {
@@ -98,7 +97,6 @@ public class ReportService {
                 + "</style></head><body><main class='report-shell'>"
                 + "<header class='report-hero'><p class='eyebrow'>DEEPAUDIT · SECURITY REVIEW</p>"
                 + "<h1>代码安全审计报告</h1>"
-                // "<p class='hero-copy'>基于代码事实、语义关系和多 Agent 复核生成的安全审计结果。</p>"
                 + "<div class='report-meta'><article><small>项目</small><strong>" + escape(report.project().getName()) + "</strong></article>"
                 + "<article><small>扫描范围</small><strong>BASE → TARGET 增量审计</strong></article>"
                 + "<article><small>目标提交</small><strong>" + escape(shortSha(report.task().getTargetCommitSha())) + "</strong></article>"
@@ -134,7 +132,6 @@ public class ReportService {
         return (hiddenSection < 0 ? value : value.substring(0, hiddenSection)).stripTrailing();
     }
 
-    // 执行 ReportService 中的 sectionStart 处理。
     private int sectionStart(String value, String marker) {
         int index = value.indexOf("\n\n" + marker);
         if (index >= 0) return index;
@@ -153,7 +150,7 @@ public class ReportService {
                 "finding-description");
     }
 
-    // 将证据按 CHUNK 拆分为独立代码卡片，并移除旧的漏洞行红色标记。
+    // 按内部代码块边界拆分证据，但报告仅展示证据顺序，不暴露内部块号。
     private String evidenceHtml(String value) {
         StringBuilder html = new StringBuilder("<section class='content-block'><h3>代码证据</h3>"
                 + "<div class='evidence-list'>");
@@ -161,7 +158,7 @@ public class ReportService {
         for (int index = 0; index < chunks.size(); index++) {
             EvidenceChunk chunk = chunks.get(index);
             html.append("<article class='evidence-chunk'><header><b>")
-                    .append(escape(chunk.id().isBlank() ? "证据 " + (index + 1) : "CHUNK " + chunk.id()))
+                    .append(escape("代码证据 " + (index + 1)))
                     .append("</b><span>").append(escape(chunk.location().isBlank() ? "代码上下文" : chunk.location()))
                     .append("</span></header>").append(codeLinesHtml(chunk.code())).append("</article>");
         }
@@ -251,7 +248,6 @@ public class ReportService {
     private record EvidenceChunk(String id, String location, String code) {
     }
 
-    // 执行 ReportService 中的 severityLabel 处理。
     private String severityLabel(com.deepaudit.domain.Severity severity) {
         return switch (severity) {
             case CRITICAL -> "严重";
@@ -261,7 +257,6 @@ public class ReportService {
         };
     }
 
-    // 执行 ReportService 中的 confidenceLabel 处理。
     private String confidenceLabel(com.deepaudit.domain.Confidence confidence) {
         return switch (confidence) {
             case HIGH -> "高";
@@ -270,7 +265,6 @@ public class ReportService {
         };
     }
 
-    // 执行 ReportService 中的 statusLabel 处理。
     private String statusLabel(com.deepaudit.domain.AuditStatus status) {
         return switch (status) {
             case COMPLETED -> "已完成";
@@ -280,7 +274,6 @@ public class ReportService {
         };
     }
 
-    // 执行 ReportService 中的 deltaLabel 处理。
     private String deltaLabel(com.deepaudit.domain.FindingDeltaStatus status) {
         if (status == null) return "变更新增";
         return switch (status) {
@@ -289,7 +282,6 @@ public class ReportService {
         };
     }
 
-    // 执行 ReportService 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
@@ -301,7 +293,6 @@ public class ReportService {
                 .replace("\"", "&quot;").replace("'", "&#39;");
     }
 
-    // 封装 AuditReport 使用的不可变结构化数据。
     public record AuditReport(Project project, AuditTask task, AiReportSummary aiSummary,
                               List<Finding> findings, List<AgentRun> agentRuns,
                               List<AuditHypothesis> hypotheses,

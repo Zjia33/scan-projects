@@ -17,7 +17,6 @@ public class AiReportSummary {
     private String coverageSummary; // 本次审计范围与覆盖情况摘要
     private Instant generatedAt; // 摘要生成时间
 
-    // 创建 AiReportSummary 实例并初始化所需依赖或状态。
     public AiReportSummary(UUID taskId, String executiveSummary, String coverageSummary) {
         this.taskId = taskId;
         this.executiveSummary = executiveSummary;

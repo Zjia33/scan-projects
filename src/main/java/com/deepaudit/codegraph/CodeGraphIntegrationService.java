@@ -33,14 +33,14 @@ public class CodeGraphIntegrationService {
 
     // 增量任务必须分别建立 Comparison Base 和 Target 索引。
     public boolean prepare(UUID taskId, Path baseRoot, Path targetRoot) {
-        if (!properties.enabled()) return false;
+        if (!properties.isEnabled()) return false;
         boolean base = prepareSnapshot(taskId, CodeGraphSnapshot.BASE, baseRoot);
         boolean target = prepareSnapshot(taskId, CodeGraphSnapshot.TARGET, targetRoot);
         return base && target;
     }
 
     private boolean prepareSnapshot(UUID taskId, CodeGraphSnapshot snapshot, Path root) {
-        if (!properties.enabled()) return false;
+        if (!properties.isEnabled()) return false;
         if (prepared(taskId, snapshot)) {
             log.debug("任务 {} CodeGraph {} 索引已绑定，跳过重复准备", taskId, snapshot);
             return true;

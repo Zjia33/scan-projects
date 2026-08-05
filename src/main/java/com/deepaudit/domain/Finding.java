@@ -30,7 +30,6 @@ public class Finding {
     private String fingerprint; // 用于跨扫描匹配和去重的稳定指纹
     private Instant createdAt; // 发现记录创建时间
 
-    // 创建 Finding 实例并初始化所需依赖或状态。
     public Finding(UUID taskId, VulnerabilityType type, Severity severity, Confidence confidence,
                    String title, String filePath, int startLine, int endLine, String endpoint,
                    String description, String evidence, String remediation) {

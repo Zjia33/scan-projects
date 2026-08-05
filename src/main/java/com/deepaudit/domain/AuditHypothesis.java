@@ -25,7 +25,6 @@ public class AuditHypothesis {
     private Instant createdAt; // 假设创建时间
     private Instant updatedAt; // 假设状态最后更新时间
 
-    // 创建 AuditHypothesis 实例并初始化所需依赖或状态。
     public AuditHypothesis(UUID taskId, UUID runId, VulnerabilityType type, String claim,
                            Long primaryChunkId, String evidenceChunkIds, Confidence confidence) {
         this.id = UUID.randomUUID();

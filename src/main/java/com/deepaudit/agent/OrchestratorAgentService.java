@@ -24,7 +24,6 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-// 负责 OrchestratorAgentService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -499,7 +498,6 @@ public class OrchestratorAgentService {
         tasks.putIfAbsent(key(task), task);
     }
 
-    // 执行 OrchestratorAgentService 中的 truncate 处理。
     private String truncate(String value, int maxLength) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), maxLength));
     }
@@ -514,7 +512,6 @@ public class OrchestratorAgentService {
         return task.chunkId() + "|" + task.vulnerabilityType();
     }
 
-    // 封装 TriageCounts 使用的不可变结构化数据。
     private record TriageCounts(int total, int investigate, int needContext, int skip) {
     }
 

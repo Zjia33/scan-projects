@@ -26,7 +26,6 @@ public class SecurityFlow {
     private int confirmedRelationEdges; // 路径中由 CodeGraph 或确定性框架桥确认的关系边数量
     private int localSemanticGaps; // 已确认拓扑中未能由局部 AST 精确补充的参数语义数量
 
-    // 创建 SecurityFlow 实例并初始化所需依赖或状态。
     public SecurityFlow(UUID taskId, VulnerabilityType type, UUID sourceSymbolId, UUID sinkSymbolId,
                         Long primaryChunkId, String sourceDescription, String sinkDescription,
                         String guardSummary, String pathText, String evidenceChunkIds,

@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-// 负责 GitSnapshotService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -149,7 +148,7 @@ public class GitSnapshotService {
                     if (++visitedFiles > properties.getMaxFilesPerSnapshot()) {
                         throw new IllegalArgumentException("Git 提交文件数超过安全上限");
                     }
-                    if (!AuditSourceFilter.shouldAnalyze(tree.getPathString())) {
+                    if (!AuditSourceFilter.classify(tree.getPathString()).materialize()) {
                         skipped++;
                         continue;
                     }
@@ -184,17 +183,14 @@ public class GitSnapshotService {
         }
     }
 
-    // 执行 GitSnapshotService 中的 shortSha 处理。
     private String shortSha(String sha) {
         return sha == null ? "" : sha.substring(0, Math.min(8, sha.length()));
     }
 
-    // 执行 GitSnapshotService 中的 elapsedMillis 处理。
     private long elapsedMillis(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
     }
 
-    // 封装 SnapshotResult 使用的不可变结构化数据。
     public record SnapshotResult(String commitSha, int fileCount, int skippedFileCount, long totalBytes) {
     }
 }

@@ -4,9 +4,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
 
-/**
- * Defines repository paths that belong to the auditable production source set.
- */
+/** Classifies repository paths into the explicitly supported backend audit roles. */
 public final class AuditSourceFilter {
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".github", ".idea", ".vscode", ".gradle", ".codegraph-deepaudit",
@@ -26,38 +24,65 @@ public final class AuditSourceFilter {
             "BeforeTest", "AfterTest", "BeforeGroups", "AfterGroups"
     );
 
-    // 创建 AuditSourceFilter 实例并初始化所需依赖或状态。
     private AuditSourceFilter() {
     }
 
-    // 判断是否满足 shouldAnalyze 对应的条件。
-    public static boolean shouldAnalyze(Path root, Path candidate) {
-        if (root == null || candidate == null) return false;
+    public static AuditFileRole classify(Path root, Path candidate) {
+        if (root == null || candidate == null) return AuditFileRole.IGNORE;
         try {
-            return shouldAnalyze(root.toAbsolutePath().normalize()
+            return classify(root.toAbsolutePath().normalize()
                     .relativize(candidate.toAbsolutePath().normalize()).toString());
         } catch (IllegalArgumentException exception) {
-            return false;
+            return AuditFileRole.IGNORE;
         }
     }
 
-    // 判断是否满足 shouldAnalyze 对应的条件。
-    public static boolean shouldAnalyze(String repositoryPath) {
-        if (repositoryPath == null) return false;
+    public static AuditFileRole classify(String repositoryPath) {
+        if (repositoryPath == null) return AuditFileRole.IGNORE;
         String normalized = repositoryPath.replace('\\', '/');
         while (normalized.startsWith("./")) normalized = normalized.substring(2);
         while (normalized.contains("//")) normalized = normalized.replace("//", "/");
-        if (normalized.isBlank()) return true;
+        if (normalized.isBlank()) return AuditFileRole.IGNORE;
 
         String[] segments = normalized.split("/");
         for (String segment : segments) {
-            if (EXCLUDED_DIRECTORIES.contains(segment.toLowerCase(Locale.ROOT))) return false;
+            if (EXCLUDED_DIRECTORIES.contains(segment.toLowerCase(Locale.ROOT))) {
+                return AuditFileRole.IGNORE;
+            }
         }
         String fileName = segments[segments.length - 1];
-        return !isConventionalTestFile(fileName) && !isGeneratedAsset(fileName);
+        if (isConventionalTestFile(fileName) || isGeneratedAsset(fileName)) return AuditFileRole.IGNORE;
+
+        String lowerName = fileName.toLowerCase(Locale.ROOT);
+        String lowerPath = normalized.toLowerCase(Locale.ROOT);
+        if (isBuildDescriptor(lowerName)) return AuditFileRole.BUILD_METADATA;
+        if (lowerName.endsWith(".java")) return AuditFileRole.JAVA_SOURCE;
+        if (isEnvironmentFile(lowerName) || lowerName.endsWith(".properties")
+                || lowerName.endsWith(".yml") || lowerName.endsWith(".yaml")) {
+            return AuditFileRole.SECURITY_CONFIGURATION;
+        }
+        if (lowerName.endsWith(".sql")) return AuditFileRole.DATA_ACCESS;
+        if (lowerName.endsWith(".xml") && isDataAccessXml(lowerPath, lowerName)) {
+            return AuditFileRole.DATA_ACCESS;
+        }
+        if (isSecurityConfigurationXml(lowerPath, lowerName)) {
+            return AuditFileRole.SECURITY_CONFIGURATION;
+        }
+        if (lowerName.endsWith(".jsp") || lowerName.endsWith(".ftl")
+                || isServerHtmlTemplate(lowerPath, lowerName)) {
+            return AuditFileRole.SERVER_TEMPLATE;
+        }
+        return AuditFileRole.IGNORE;
     }
 
-    // 判断是否满足 isTestMethodAnnotation 对应的条件。
+    public static boolean isFrameworkContext(String repositoryPath) {
+        AuditFileRole role = classify(repositoryPath);
+        if (role == AuditFileRole.BUILD_METADATA) return true;
+        if (role != AuditFileRole.SECURITY_CONFIGURATION) return false;
+        String name = fileName(repositoryPath).toLowerCase(Locale.ROOT);
+        return name.matches("(?:application|bootstrap)(?:-[^.]+)?\\.(?:yml|yaml|properties)");
+    }
+
     public static boolean isTestMethodAnnotation(String annotationName) {
         if (annotationName == null || annotationName.isBlank()) return false;
         int separator = annotationName.lastIndexOf('.');
@@ -65,7 +90,6 @@ public final class AuditSourceFilter {
         return TEST_METHOD_ANNOTATIONS.contains(simpleName);
     }
 
-    // 判断是否满足 isConventionalTestFile 对应的条件。
     private static boolean isConventionalTestFile(String fileName) {
         if (fileName.endsWith(".java")) {
             String typeName = fileName.substring(0, fileName.length() - ".java".length());
@@ -81,10 +105,47 @@ public final class AuditSourceFilter {
                 || lower.startsWith("application-integrationtest.");
     }
 
-    // 判断是否满足 isGeneratedAsset 对应的条件。
     private static boolean isGeneratedAsset(String fileName) {
         String lower = fileName.toLowerCase(Locale.ROOT);
         return lower.endsWith(".min.js") || lower.endsWith(".bundle.js")
                 || lower.endsWith(".min.jsx") || lower.endsWith(".min.ts");
+    }
+
+    private static boolean isBuildDescriptor(String lowerName) {
+        return lowerName.equals("pom.xml") || lowerName.equals("build.gradle")
+                || lowerName.equals("build.gradle.kts") || lowerName.equals("settings.gradle")
+                || lowerName.equals("settings.gradle.kts");
+    }
+
+    private static boolean isEnvironmentFile(String lowerName) {
+        return lowerName.equals(".env") || lowerName.startsWith(".env.");
+    }
+
+    private static boolean isDataAccessXml(String lowerPath, String lowerName) {
+        return lowerName.endsWith("mapper.xml") || lowerName.contains("mybatis")
+                || lowerPath.contains("/mapper/") || lowerPath.contains("/mappers/")
+                || lowerPath.contains("/db/changelog/");
+    }
+
+    private static boolean isSecurityConfigurationXml(String lowerPath, String lowerName) {
+        if (!lowerName.endsWith(".xml")) return false;
+        return lowerName.equals("web.xml") || lowerName.startsWith("applicationcontext")
+                || lowerName.startsWith("spring-") || lowerName.startsWith("logback")
+                || lowerName.startsWith("log4j") || lowerName.contains("security")
+                || lowerPath.contains("/meta-inf/") || lowerPath.contains("/web-inf/");
+    }
+
+    private static boolean isServerHtmlTemplate(String lowerPath, String lowerName) {
+        if (!lowerName.endsWith(".html") && !lowerName.endsWith(".htm")) return false;
+        return lowerPath.startsWith("templates/") || lowerPath.contains("/templates/")
+                || lowerPath.startsWith("webapp/") || lowerPath.contains("/webapp/")
+                || lowerPath.startsWith("web-inf/") || lowerPath.contains("/web-inf/");
+    }
+
+    private static String fileName(String repositoryPath) {
+        if (repositoryPath == null) return "";
+        String normalized = repositoryPath.replace('\\', '/');
+        int separator = normalized.lastIndexOf('/');
+        return separator < 0 ? normalized : normalized.substring(separator + 1);
     }
 }

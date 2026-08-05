@@ -65,6 +65,18 @@ class DeepAuditApplicationTests {
     }
 
     @Test
+    void currentSchemaDoesNotContainRemovedProjectSourceColumns() {
+        Integer legacyColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'AUDIT_PROJECT'
+                  AND UPPER(COLUMN_NAME) IN ('ORIGINAL_FILENAME', 'SOURCE_TYPE')
+                """, Integer.class);
+
+        assertThat(legacyColumns).isZero();
+    }
+
+    @Test
     void acceptsCaseInsensitiveEnumValuesReturnedByModels() throws Exception {
         String modelJson = """
                 {

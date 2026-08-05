@@ -143,7 +143,8 @@ public class AuditController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new AuditSubmissionResponse(
                 submission.project().getId(), task.getId(), submission.project().getName(),
                 task.getBaseCommitSha(), task.getTargetCommitSha(),
-                task.getMergeBaseSha(),
+                task.getMergeBaseSha(), task.getStatus().name(), task.getProgress(),
+                task.getCurrentStage(), task.getCreatedAt(),
                 "Git 审计任务已创建，正在后台执行"));
     }
 
@@ -243,8 +244,8 @@ public class AuditController {
         List<AgentRun> runs = agentRunMapper.findByTaskId(task.getId());
         int modelCalls = runs.stream().mapToInt(AgentRun::getModelCallCount).sum();
         int toolCalls = runs.stream().mapToInt(AgentRun::getToolCallCount).sum();
-        return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getOriginalFilename(),
-                project.getRepositoryUrl(), task.getBaseCommitSha(), task.getTargetCommitSha(),
+        return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getRepositoryUrl(),
+                task.getBaseCommitSha(), task.getTargetCommitSha(),
                 task.getMergeBaseSha(), task.getChangeSummary(),
                 task.getStatus().name(), task.getProgress(), task.getCurrentStage(), task.getErrorMessage(),
                 findingMapper.countByTaskId(task.getId()), runs.size(), modelCalls, toolCalls,
@@ -258,54 +259,46 @@ public class AuditController {
         return task;
     }
 
-    // 执行 AuditController 中的 repository 处理。
     private RepositoryResponse repository(Project project) {
         return new RepositoryResponse(project.getId(), project.getName(), project.getRepositoryUrl(),
                 project.getDefaultBranch(), project.getDescription(), project.isArchived(),
                 project.getCreatedAt(), project.getUpdatedAt(), project.getArchivedAt());
     }
 
-    // 封装 ImportRepositoryRequest 使用的不可变结构化数据。
     public record ImportRepositoryRequest(String name, String repositoryUrl,
                                           String username, String accessToken) {
     }
 
-    // 封装 RefreshRepositoryRequest 使用的不可变结构化数据。
     public record RefreshRepositoryRequest(String username, String accessToken) {
     }
 
-    // 封装 UpdateProjectRequest 使用的不可变结构化数据。
     public record UpdateProjectRequest(String name, String description) {
     }
 
-    // 封装 CleanupProjectRequest 使用的不可变结构化数据。
     public record CleanupProjectRequest(String confirmation) {
     }
 
-    // 封装 CreateAuditRequest 使用的不可变结构化数据。
     public record CreateAuditRequest(String baseCommit, String targetCommit) {
     }
 
-    // 封装 RepositoryResponse 使用的不可变结构化数据。
     public record RepositoryResponse(UUID projectId, String name, String repositoryUrl,
                                      String defaultBranch, String description, boolean archived,
                                      java.time.Instant createdAt, java.time.Instant updatedAt,
                                      java.time.Instant archivedAt) {
     }
 
-    // 封装 ImportRepositoryResponse 使用的不可变结构化数据。
     public record ImportRepositoryResponse(RepositoryResponse project,
                                            List<GitRepositoryService.CommitInfo> commits, String message) {
     }
 
-    // 封装 AuditSubmissionResponse 使用的不可变结构化数据。
     public record AuditSubmissionResponse(UUID projectId, UUID taskId, String projectName,
                                           String baseCommit, String targetCommit,
-                                          String mergeBase, String message) {
+                                          String mergeBase, String status, int progress,
+                                          String currentStage, java.time.Instant createdAt,
+                                          String message) {
     }
 
-    // 封装 TaskResponse 使用的不可变结构化数据。
-    public record TaskResponse(UUID taskId, UUID projectId, String projectName, String originalFilename,
+    public record TaskResponse(UUID taskId, UUID projectId, String projectName,
                                String repositoryUrl, String baseCommit,
                                String targetCommit, String mergeBase, String changeSummary,
                                String status, int progress, String currentStage, String errorMessage,

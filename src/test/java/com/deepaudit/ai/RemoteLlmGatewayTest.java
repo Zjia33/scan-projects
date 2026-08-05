@@ -286,7 +286,6 @@ class RemoteLlmGatewayTest {
 
     private AiProperties properties(int repairAttempts) {
         AiProperties properties = new AiProperties();
-        properties.setRequired(true);
         properties.setJsonRepairAttempts(repairAttempts);
         return properties;
     }

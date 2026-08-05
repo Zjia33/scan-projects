@@ -2,6 +2,7 @@ package com.deepaudit.recon;
 
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.source.AuditFileRole;
 import com.deepaudit.source.AuditSourceFilter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -24,17 +25,13 @@ import java.util.stream.Stream;
 @Slf4j
 final class ProjectStructureProfiler {
     private static final long MAX_INSPECTED_FILE_BYTES = 2L * 1024L * 1024L;
-    private static final Set<String> PROFILED_EXTENSIONS = Set.of(
-            "java", "xml", "yml", "yaml", "properties", "gradle", "kts", "json");
-
-    // 执行 ProjectStructureProfiler 中的 profile 处理。
     ProjectStructureProfile profile(Path root, List<CodeChunk> chunks) {
         return profile(root, chunks, inspectableFiles(root));
     }
 
     ProjectStructureProfile profile(Path root, List<CodeChunk> chunks, List<Path> selectedFiles) {
         List<Path> files = selectedFiles.stream().filter(Files::isRegularFile)
-                .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
                 .filter(this::isInspectable).distinct()
                 .sorted(Comparator.comparing(path -> normalize(root.relativize(path).toString())))
                 .toList();
@@ -73,8 +70,9 @@ final class ProjectStructureProfiler {
         for (Path file : files) {
             String relative = normalize(root.relativize(file).toString());
             String module = moduleFor(relative, moduleRoots);
-            if (isConfigurationFile(file)) {
-                configurations.add(module, configurationKind(file));
+            AuditFileRole role = AuditSourceFilter.classify(relative);
+            if (role.configurationOrDependency()) {
+                configurations.add(module, configurationKind(role, file));
             }
             inspectFileFacts(file, module, entryPoints, security, integrations);
         }
@@ -86,11 +84,10 @@ final class ProjectStructureProfiler {
                 configurations.freeze());
     }
 
-    // 分析并提取 inspectableFiles 对应的事实。
     private List<Path> inspectableFiles(Path root) {
         try (Stream<Path> paths = Files.walk(root)) {
             return paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
                     .filter(this::isInspectable)
                     .sorted(Comparator.comparing(path -> normalize(root.relativize(path).toString())))
                     .toList();
@@ -100,20 +97,15 @@ final class ProjectStructureProfiler {
         }
     }
 
-    // 判断是否满足 isInspectable 对应的条件。
     private boolean isInspectable(Path file) {
         try {
             if (Files.size(file) > MAX_INSPECTED_FILE_BYTES) return false;
         } catch (IOException exception) {
             return false;
         }
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (isBuildDescriptor(name)) return true;
-        int dot = name.lastIndexOf('.');
-        return dot > 0 && PROFILED_EXTENSIONS.contains(name.substring(dot + 1));
+        return true;
     }
 
-    // 执行 ProjectStructureProfiler 中的 discoverModuleRoots 处理。
     private List<String> discoverModuleRoots(Path root, List<Path> files) {
         Set<String> modules = new LinkedHashSet<>();
         for (Path file : files) {
@@ -127,7 +119,6 @@ final class ProjectStructureProfiler {
                 .thenComparing(Comparator.naturalOrder())).toList();
     }
 
-    // 执行 ProjectStructureProfiler 中的 moduleFor 处理。
     private String moduleFor(String path, List<String> moduleRoots) {
         for (String module : moduleRoots) {
             if (".".equals(module) || path.equals(module) || path.startsWith(module + "/")) return module;
@@ -135,7 +126,6 @@ final class ProjectStructureProfiler {
         return ".";
     }
 
-    // 分析并提取 inspectEntryPoints 对应的事实。
     private void inspectEntryPoints(FactIndex facts, String module, CodeChunk chunk,
                                     String searchable) {
         if (notBlank(chunk.getEndpoint())) {
@@ -148,7 +138,6 @@ final class ProjectStructureProfiler {
         addIfContains(facts, module, "WEBSOCKET_MESSAGE", searchable, "messagemapping");
     }
 
-    // 分析并提取 inspectDataAccess 对应的事实。
     private void inspectDataAccess(FactIndex facts, String module, String path, String searchable) {
         addIfContainsAny(facts, module, "JDBC", searchable,
                 "jdbctemplate", "namedparameterjdbctemplate", "preparestatement", "createstatement");
@@ -163,7 +152,6 @@ final class ProjectStructureProfiler {
                 "redistemplate", "stringredistemplate", "redisrepository");
     }
 
-    // 分析并提取 inspectIntegrations 对应的事实。
     private void inspectIntegrations(FactIndex facts, String module, String searchable) {
         addIfContainsAny(facts, module, "KAFKA", searchable, "kafkatemplate", "kafkalistener");
         addIfContainsAny(facts, module, "RABBITMQ", searchable, "rabbittemplate", "rabbitlistener");
@@ -176,7 +164,6 @@ final class ProjectStructureProfiler {
                 "javamailsender", "mailsender", "sendemail");
     }
 
-    // 分析并提取 inspectFileFacts 对应的事实。
     private void inspectFileFacts(Path file, String module, FactIndex entryPoints,
                                   FactIndex security, FactIndex integrations) {
         String content;
@@ -212,7 +199,6 @@ final class ProjectStructureProfiler {
                 "addfilterbefore", "addfilterafter", "addfilterat");
     }
 
-    // 执行 ProjectStructureProfiler 中的 layer 处理。
     private String layer(CodeChunk chunk) {
         String value = (normalize(chunk.getFilePath()) + " " + safe(chunk.getSymbolName())).toLowerCase(Locale.ROOT);
         if (notBlank(chunk.getEndpoint()) || containsAny(value, "controller", "/web/", "/api/")) return "WEB";
@@ -228,7 +214,6 @@ final class ProjectStructureProfiler {
         return "OTHER";
     }
 
-    // 执行 ProjectStructureProfiler 中的 httpKind 处理。
     private String httpKind(String annotations) {
         String value = safe(annotations).toLowerCase(Locale.ROOT);
         if (value.contains("getmapping")) return "HTTP_GET";
@@ -239,7 +224,6 @@ final class ProjectStructureProfiler {
         return "HTTP_ENDPOINT";
     }
 
-    // 查询并返回 searchable 对应的数据。
     private String searchable(CodeChunk chunk) {
         return (safe(chunk.getFilePath()) + " " + safe(chunk.getSymbolName()) + " "
                 + safe(chunk.getAnnotations()) + " " + safe(chunk.getCalledSymbols()) + " "
@@ -257,7 +241,6 @@ final class ProjectStructureProfiler {
         if (containsAny(searchable, markers)) facts.add(module, kind);
     }
 
-    // 判断是否满足 containsAny 对应的条件。
     private boolean containsAny(String value, String... markers) {
         for (String marker : markers) {
             if (value.contains(marker)) return true;
@@ -265,36 +248,23 @@ final class ProjectStructureProfiler {
         return false;
     }
 
-    // 判断是否满足 isBuildDescriptor 对应的条件。
     private boolean isBuildDescriptor(String name) {
-        return name.equals("pom.xml") || name.equals("package.json") || name.startsWith("build.gradle")
-                || name.startsWith("settings.gradle");
+        return AuditSourceFilter.classify(name) == AuditFileRole.BUILD_METADATA;
     }
 
-    // 判断是否满足 isConfigurationFile 对应的条件。
-    private boolean isConfigurationFile(Path file) {
+    private String configurationKind(AuditFileRole role, Path file) {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (isBuildDescriptor(name) || name.startsWith("application.") || name.startsWith("bootstrap.")) return true;
-        return name.endsWith(".yml") || name.endsWith(".yaml") || name.endsWith(".properties")
-                || name.endsWith(".xml");
-    }
-
-    // 执行 ProjectStructureProfiler 中的 configurationKind 处理。
-    private String configurationKind(Path file) {
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (isBuildDescriptor(name)) return "BUILD_DESCRIPTOR";
+        if (role == AuditFileRole.BUILD_METADATA) return "BUILD_DESCRIPTOR";
         if (name.startsWith("application.") || name.startsWith("bootstrap.")) return "APPLICATION_CONFIGURATION";
-        if (name.endsWith("mapper.xml")) return "MYBATIS_MAPPING";
+        if (role == AuditFileRole.DATA_ACCESS) return name.endsWith(".sql") ? "SQL_DEFINITION" : "MYBATIS_MAPPING";
         if (name.endsWith(".xml")) return "XML_CONFIGURATION";
         return "RUNTIME_CONFIGURATION";
     }
 
-    // 执行 ProjectStructureProfiler 中的 notBlank 处理。
     private boolean notBlank(String value) {
         return value != null && !value.isBlank();
     }
 
-    // 执行 ProjectStructureProfiler 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value;
     }
@@ -305,7 +275,6 @@ final class ProjectStructureProfiler {
         return value.replace('\\', '/');
     }
 
-    // 封装 ModuleAccumulator 相关的数据与处理逻辑。
     private static final class ModuleAccumulator {
         private final String path;
         private final Set<String> files = new LinkedHashSet<>();
@@ -314,38 +283,32 @@ final class ProjectStructureProfiler {
         private int changedChunkCount;
         private int impactedChunkCount;
 
-        // 创建 ModuleAccumulator 实例并初始化所需依赖或状态。
         private ModuleAccumulator(String path) {
             this.path = path;
         }
 
-        // 执行 ModuleAccumulator 中的 freeze 处理。
         private ProjectStructureProfile.ModuleProfile freeze() {
             return new ProjectStructureProfile.ModuleProfile(path, files.size(), javaMethodCount,
                     endpointCount, changedChunkCount, impactedChunkCount);
         }
     }
 
-    // 封装 LayerAccumulator 相关的数据与处理逻辑。
     private static final class LayerAccumulator {
         private final String module;
         private final String layer;
         private final Set<String> files = new LinkedHashSet<>();
         private int codeChunkCount;
 
-        // 创建 LayerAccumulator 实例并初始化所需依赖或状态。
         private LayerAccumulator(String module, String layer) {
             this.module = module;
             this.layer = layer;
         }
 
-        // 执行 LayerAccumulator 中的 freeze 处理。
         private ProjectStructureProfile.LayerProfile freeze() {
             return new ProjectStructureProfile.LayerProfile(module, layer, files.size(), codeChunkCount);
         }
     }
 
-    // 封装 FactIndex 相关的数据与处理逻辑。
     private static final class FactIndex {
         private final Map<String, FactAccumulator> values = new TreeMap<>();
 
@@ -355,19 +318,16 @@ final class ProjectStructureProfiler {
                     .increment();
         }
 
-        // 执行 FactIndex 中的 freeze 处理。
         private List<ProjectStructureProfile.FactGroup> freeze() {
             return values.values().stream().map(FactAccumulator::freeze).toList();
         }
     }
 
-    // 封装 FactAccumulator 相关的数据与处理逻辑。
     private static final class FactAccumulator {
         private final String module;
         private final String kind;
         private int occurrenceCount;
 
-        // 创建 FactAccumulator 实例并初始化所需依赖或状态。
         private FactAccumulator(String module, String kind) {
             this.module = module;
             this.kind = kind;
@@ -378,7 +338,6 @@ final class ProjectStructureProfiler {
             occurrenceCount++;
         }
 
-        // 执行 FactAccumulator 中的 freeze 处理。
         private ProjectStructureProfile.FactGroup freeze() {
             return new ProjectStructureProfile.FactGroup(module, kind, occurrenceCount);
         }

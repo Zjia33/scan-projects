@@ -55,12 +55,17 @@ class GitDiffServiceTest {
         Path source = repositoryPath.resolve("src/main/java/demo/App.java");
         Path test = repositoryPath.resolve("src/test/java/demo/AppTest.java");
         Path generated = repositoryPath.resolve("target/generated-sources/demo/Generated.java");
+        Path documentation = repositoryPath.resolve("README.md");
+        Path frontend = repositoryPath.resolve("frontend/src/App.ts");
         Files.createDirectories(source.getParent());
         Files.createDirectories(test.getParent());
         Files.createDirectories(generated.getParent());
+        Files.createDirectories(frontend.getParent());
         Files.writeString(source, "class App { void run() {} }\n");
         Files.writeString(test, "class AppTest { void testRun() {} }\n");
         Files.writeString(generated, "class Generated { void call() {} }\n");
+        Files.writeString(documentation, "# Base\n");
+        Files.writeString(frontend, "export const safe = true;\n");
 
         try (Git git = Git.init().setDirectory(repositoryPath.toFile()).call()) {
             git.add().addFilepattern(".").call();
@@ -68,6 +73,8 @@ class GitDiffServiceTest {
             Files.writeString(source, "class App { void run() { secure(); } }\n");
             Files.writeString(test, "class AppTest { void testRun() { execute(\"unsafe\"); } }\n");
             Files.writeString(generated, "class Generated { void call() { execute(\"unsafe\"); } }\n");
+            Files.writeString(documentation, "# Target\n");
+            Files.writeString(frontend, "export const safe = false;\n");
             git.add().addFilepattern(".").call();
             String target = commit(git, "target");
 

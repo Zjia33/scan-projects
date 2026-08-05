@@ -6,6 +6,7 @@ import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.ChunkChangeType;
 import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.mapper.CodeChunkMapper;
+import com.deepaudit.source.AuditFileRole;
 import com.deepaudit.source.AuditSourceFilter;
 import com.deepaudit.semantic.IncrementalSemanticDiffService;
 import com.deepaudit.util.TimingDetailLog;
@@ -38,7 +39,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
-// 负责 ReconService 对应的业务编排和处理。
 @Slf4j
 @Service
 public class ReconService {
@@ -49,22 +49,15 @@ public class ReconService {
     private static final int MAX_FRAMEWORK_FILE_CHARS = 24_000;
     private static final int MAX_FRAMEWORK_CONTEXT_CHARS = 120_000;
     private static final int MAX_FRAMEWORK_FILES = 40;
-    private static final Set<String> TEXT_EXTENSIONS = Set.of(
-            "java", "xml", "html", "htm", "jsp", "ftl", "vue", "jsx", "tsx", "js", "ts",
-            "properties", "yml", "yaml", "sql"
-    );
-
     private final CodeChunkMapper chunkMapper;
     private final IncrementalSemanticDiffService incrementalSemanticDiffService;
     private final ProjectTechnologyDetector technologyDetector = new ProjectTechnologyDetector();
     private final ProjectStructureProfiler structureProfiler = new ProjectStructureProfiler();
 
-    // 创建 ReconService 实例并初始化所需依赖或状态。
     public ReconService(CodeChunkMapper chunkMapper) {
         this(chunkMapper, null);
     }
 
-    // 创建 ReconService 实例并初始化所需依赖或状态。
     @Autowired
     public ReconService(CodeChunkMapper chunkMapper,
                         IncrementalSemanticDiffService incrementalSemanticDiffService) {
@@ -94,8 +87,7 @@ public class ReconService {
         try (Stream<Path> paths = changedFileStream) {
             // 只遍历受支持的文本源码，二进制和未知文件不进入模型上下文。
             paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
-                    .filter(this::isSupportedTextFile)
+                    .filter(path -> AuditSourceFilter.classify(root, path).createChunks())
                     .forEach(path -> indexFile(taskId, root, path, chunks, counters));
         }
         applyIncrementalMetadata(chunks, changes);
@@ -153,8 +145,8 @@ public class ReconService {
         List<CodeChunk> additions = new ArrayList<>();
         for (Map.Entry<String, List<CodeGraphClient.CodeGraphLocation>> entry : byPath.entrySet()) {
             Path file = safeResolve(root, entry.getKey());
-            if (file == null || !Files.isRegularFile(file) || !isSupportedTextFile(file)
-                    || !AuditSourceFilter.shouldAnalyze(root, file)) continue;
+            if (file == null || !Files.isRegularFile(file)
+                    || !AuditSourceFilter.classify(root, file).createChunks()) continue;
             List<CodeChunk> candidates = new ArrayList<>();
             indexFile(taskId, root, file, candidates, new int[3]);
             for (CodeChunk candidate : candidates) {
@@ -180,7 +172,7 @@ public class ReconService {
         int selectedFiles = 0;
         try (Stream<Path> paths = Files.walk(root)) {
             for (Path file : paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(path -> AuditSourceFilter.classify(root, path).createChunks())
                     .filter(this::globalContextFile).toList()) {
                 selectedFiles++;
                 List<CodeChunk> candidates = new ArrayList<>();
@@ -235,7 +227,6 @@ public class ReconService {
     }
 
     private boolean globalContextFile(Path file) {
-        if (!isSupportedTextFile(file)) return false;
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         String path = normalizePath(file.toString()).toLowerCase(Locale.ROOT);
         return isFrameworkFile(file) || name.contains("security") || name.contains("controller")
@@ -244,7 +235,6 @@ public class ReconService {
                 || path.contains("/filter/") || path.contains("/interceptor/");
     }
 
-    // 执行 ReconService 中的 applyIncrementalMetadata 处理。
     private void applyIncrementalMetadata(List<CodeChunk> chunks,
                                           List<GitFileChange> changes) {
         Map<String, GitFileChange> byPath = new LinkedHashMap<>();
@@ -277,8 +267,8 @@ public class ReconService {
                     || change.getNewRanges().isBlank()) continue;
             String relativePath = normalizePath(change.getNewPath());
             Path file = safeResolve(root, relativePath);
-            if (file == null || !Files.isRegularFile(file) || !isSupportedTextFile(file)
-                    || !AuditSourceFilter.shouldAnalyze(root, file)) continue;
+            if (file == null || !Files.isRegularFile(file)
+                    || !AuditSourceFilter.classify(root, file).createChunks()) continue;
             String content;
             try {
                 if (Files.size(file) > MAX_SOURCE_FILE_BYTES) continue;
@@ -356,7 +346,6 @@ public class ReconService {
         return result;
     }
 
-    // 执行 ReconService 中的 overlaps 处理。
     private boolean overlaps(int chunkStart, int chunkEnd, String ranges) {
         if (ranges == null || ranges.isBlank()) return false;
         for (String value : ranges.split(",")) {
@@ -377,7 +366,6 @@ public class ReconService {
         return value == null ? "" : value.replace('\\', '/');
     }
 
-    // 执行 ReconService 中的 truncateBase 处理。
     private String truncateBase(String value) {
         if (value == null) return "";
         return value.substring(0, Math.min(value.length(), 4_000));
@@ -392,8 +380,10 @@ public class ReconService {
             // 统一使用 UTF-8 读取，并保存相对于隔离工作区的路径。
             String content = Files.readString(file, StandardCharsets.UTF_8);
             String relativePath = root.relativize(file).toString().replace('\\', '/');
+            AuditFileRole role = AuditSourceFilter.classify(relativePath);
+            if (!role.createChunks()) return;
             counters[0]++;
-            if (relativePath.endsWith(".java")) {
+            if (role == AuditFileRole.JAVA_SOURCE) {
                 indexJava(taskId, relativePath, content, chunks, counters);
             } else {
                 indexText(taskId, relativePath, file.getFileName().toString(), content, chunks,
@@ -468,7 +458,6 @@ public class ReconService {
                 });
     }
 
-    // 执行 ReconService 中的 ownerName 处理。
     private String ownerName(MethodDeclaration method) {
         Node current = method.getParentNode().orElse(null);
         while (current != null) {
@@ -536,17 +525,9 @@ public class ReconService {
                 chunkType, parameters, annotations, calledSymbols));
     }
 
-    // 执行 ReconService 中的 extension 处理。
     private String extension(String path) {
         int dot = path.lastIndexOf('.');
         return dot < 0 ? "text" : path.substring(dot + 1);
-    }
-
-    // 判断是否满足 isSupportedTextFile 对应的条件。
-    private boolean isSupportedTextFile(Path path) {
-        String name = path.getFileName().toString();
-        int dot = name.lastIndexOf('.');
-        return dot > 0 && TEXT_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.ROOT));
     }
 
     // Recon 只读取构建描述和 Spring 应用配置原文；普通业务源码仍由本地画像和后续专业 Agent 处理。
@@ -554,8 +535,8 @@ public class ReconService {
         List<Path> candidates;
         try (Stream<Path> paths = Files.walk(root)) {
             candidates = paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
-                    .filter(this::isFrameworkFile)
+                    .filter(path -> AuditSourceFilter.isFrameworkContext(
+                            normalizePath(root.relativize(path).toString())))
                     .sorted(Comparator.comparingInt(this::frameworkPriority)
                             .thenComparing(path -> normalizePath(root.relativize(path).toString())))
                     .toList();
@@ -592,10 +573,7 @@ public class ReconService {
     }
 
     private boolean isFrameworkFile(Path file) {
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        return name.equals("pom.xml") || name.equals("package.json")
-                || name.startsWith("build.gradle") || name.startsWith("settings.gradle")
-                || name.matches("(?:application|bootstrap)(?:-[^.]+)?\\.(?:yml|yaml|properties)");
+        return AuditSourceFilter.isFrameworkContext(file.getFileName().toString());
     }
 
     private int frameworkPriority(Path file) {
@@ -610,17 +588,16 @@ public class ReconService {
 
     private String frameworkFileKind(Path file) {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle")
-                || name.equals("package.json")) return "BUILD_DESCRIPTOR";
+        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle")) {
+            return "BUILD_DESCRIPTOR";
+        }
         return name.startsWith("bootstrap") ? "BOOTSTRAP_CONFIGURATION" : "APPLICATION_CONFIGURATION";
     }
 
-    // 执行 ReconService 中的 truncate 处理。
     private String truncate(String value) {
         return value.length() <= 100_000 ? value : value.substring(0, 100_000);
     }
 
-    // 执行 ReconService 中的 sourceLines 处理。
     private String sourceLines(String content, int startLine, int endLine) {
         String[] lines = content.split("\\R", -1);
         int from = Math.max(0, startLine - 1);

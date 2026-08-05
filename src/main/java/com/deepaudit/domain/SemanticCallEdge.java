@@ -25,7 +25,6 @@ public class SemanticCallEdge {
     private String resolutionReason; // 建立或保留该调用边的解析依据
     private String argumentMapping; // 调用方实参与被调用方形参的映射关系
 
-    // 创建 SemanticCallEdge 实例并初始化所需依赖或状态。
     public SemanticCallEdge(UUID taskId, UUID callerSymbolId, UUID calleeSymbolId,
                             Long callerChunkId, Long calleeChunkId, int callSiteLine,
                             String calledName, String expression, String edgeType,

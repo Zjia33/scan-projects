@@ -12,7 +12,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-// 负责 AgentEventStreamService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class AgentEventStreamService {
@@ -32,21 +31,34 @@ public class AgentEventStreamService {
         emitter.onCompletion(cleanup);
         emitter.onTimeout(() -> {
             cleanup.run();
-            emitter.complete();
+            safeComplete(emitter);
         });
         emitter.onError(ignored -> cleanup.run());
         try {
             emitter.send(SseEmitter.event().name("connected").data(taskId.toString()));
-            List<AgentEvent> backlog = eventMapper.findByTaskId(taskId);
-            for (AgentEvent event : backlog) send(emitter, event);
-        } catch (IOException exception) {
+        } catch (Exception exception) {
             // 浏览器刷新、切换任务或网络断开都可能中止首次写入；按 SSE 生命周期结束处理，
             // 不再通过 completeWithError 分派给返回 JSON 的全局异常处理器。
             cleanup.run();
-            emitter.complete();
-        } catch (Exception exception) {
+            safeComplete(emitter);
+            return emitter;
+        }
+        List<AgentEvent> backlog;
+        try {
+            backlog = eventMapper.findByTaskId(taskId);
+        } catch (RuntimeException exception) {
             cleanup.run();
-            emitter.completeWithError(exception);
+            safeCompleteWithError(emitter, exception);
+            return emitter;
+        }
+        for (AgentEvent event : backlog) {
+            try {
+                send(emitter, event);
+            } catch (Exception exception) {
+                cleanup.run();
+                safeComplete(emitter);
+                break;
+            }
         }
         return emitter;
     }
@@ -65,7 +77,8 @@ public class AgentEventStreamService {
                 send(emitter, event);
             } catch (Exception exception) {
                 remove(event.getTaskId(), emitter);
-                emitter.complete();
+                // send 失败时 Servlet 容器可能已经完成 AsyncContext 并执行 onError。
+                // 此处只注销订阅，不能再次 complete/dispatch，更不能让连接异常影响审计线程。
             }
         }
     }
@@ -83,5 +96,21 @@ public class AgentEventStreamService {
             current.remove(emitter);
             return current.isEmpty() ? null : current;
         });
+    }
+
+    private void safeComplete(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (RuntimeException ignored) {
+            // AsyncContext 可能已由 Tomcat 在断连或超时路径中完成。
+        }
+    }
+
+    private void safeCompleteWithError(SseEmitter emitter, Exception exception) {
+        try {
+            emitter.completeWithError(exception);
+        } catch (RuntimeException ignored) {
+            // 容器已处理异步错误时，不再尝试二次 dispatch。
+        }
     }
 }

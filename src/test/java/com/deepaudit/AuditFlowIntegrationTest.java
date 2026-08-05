@@ -83,7 +83,12 @@ class AuditFlowIntegrationTest {
         String script = mockMvc.perform(get("/app.js"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        assertThat(script).contains("中断审计", "/cancel", "确认中断");
+        assertThat(script).contains("中断审计", "/cancel", "确认中断",
+                        "taskRequestSequence", "selectedTask() !== task",
+                        "withoutInternalChunkIds", "代码证据 ${index + 1}",
+                        "正在创建审计任务并加入队列", "queuedTaskFromSubmission",
+                        "void loadTasks({ forceDetail: true })", "state.submittingAudit")
+                .doesNotContain("chunk.id ? `CHUNK");
     }
 
     @Test
@@ -112,7 +117,12 @@ class AuditFlowIntegrationTest {
                                 "baseCommit", repository.baseCommit(), "targetCommit", targetCommit))))
                 .andExpect(status().isAccepted())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        String taskId = objectMapper.readTree(auditJson).path("taskId").asText();
+        JsonNode submission = objectMapper.readTree(auditJson);
+        String taskId = submission.path("taskId").asText();
+        assertThat(submission.path("status").asText()).isEqualTo("UPLOADED");
+        assertThat(submission.path("progress").asInt()).isZero();
+        assertThat(submission.path("currentStage").asText()).isEqualTo("等待扫描");
+        assertThat(submission.path("createdAt").asText()).isNotBlank();
 
         JsonNode task = waitForCompletion(taskId);
         assertThat(task.path("status").asText()).isEqualTo("COMPLETED");
@@ -137,9 +147,9 @@ class AuditFlowIntegrationTest {
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(report).contains("代码安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
         assertThat(report).contains("class='finding-description'", "class='vulnerability-location'",
-                        "class='evidence-chunk'", "实际漏洞位置")
+                        "class='evidence-chunk'", "实际漏洞位置", "代码证据 1")
                 .doesNotContain("class='critic-review'", "class='vulnerable-line'", "&gt;&gt;&gt;",
-                        "[SEMANTIC_FLOW]", "[CRITIC]");
+                        "[SEMANTIC_FLOW]", "[CRITIC]", ">CHUNK 1<");
 
         String events = mockMvc.perform(get("/api/tasks/{taskId}/events", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()

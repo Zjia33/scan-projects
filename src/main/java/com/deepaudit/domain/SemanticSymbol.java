@@ -28,7 +28,6 @@ public class SemanticSymbol {
     private String annotations; // 符号声明上的注解序列化文本
     private String details; // 用于语义分析的源码及结构化摘要
 
-    // 创建 SemanticSymbol 实例并初始化所需依赖或状态。
     public SemanticSymbol(UUID taskId, Long chunkId, String kind, String qualifiedName, String simpleName,
                           String ownerName, String signature, String returnType, String parameterTypes,
                           String filePath, int startLine, int endLine, String endpoint,

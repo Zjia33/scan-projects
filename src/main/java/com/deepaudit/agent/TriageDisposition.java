@@ -10,7 +10,6 @@ public enum TriageDisposition {
     NEED_CONTEXT,
     SKIP;
 
-    // 执行 TriageDisposition 中的 fromModelValue 处理。
     @JsonCreator
     public static TriageDisposition fromModelValue(String value) {
         if (value == null || value.isBlank()) return null;

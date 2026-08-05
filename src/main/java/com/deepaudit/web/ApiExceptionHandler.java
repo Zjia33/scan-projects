@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
-// 封装 ApiExceptionHandler 相关的数据与处理逻辑。
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
@@ -42,7 +41,6 @@ public class ApiExceptionHandler {
         return response(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage(), servletResponse);
     }
 
-    // 执行 ApiExceptionHandler 中的 response 处理。
     private ResponseEntity<?> response(HttpStatus status, String message,
                                        HttpServletResponse servletResponse) {
         if (servletResponse.isCommitted()) return null;

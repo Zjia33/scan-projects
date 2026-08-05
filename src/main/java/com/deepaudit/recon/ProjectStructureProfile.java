@@ -24,23 +24,19 @@ public record ProjectStructureProfile(List<ModuleProfile> modules,
         configurationFiles = immutable(configurationFiles);
     }
 
-    // 执行 ProjectStructureProfile 中的 empty 处理。
     public static ProjectStructureProfile empty() {
         return new ProjectStructureProfile(List.of(), List.of(), List.of(), List.of(),
                 List.of(), List.of(), List.of());
     }
 
-    // 执行 ProjectStructureProfile 中的 immutable 处理。
     private static <T> List<T> immutable(List<T> values) {
         return values == null ? List.of() : List.copyOf(values);
     }
 
-    // 封装 ModuleProfile 使用的不可变结构化数据。
     public record ModuleProfile(String path, int sourceFileCount, int javaMethodCount,
                                 int endpointCount, int changedChunkCount, int impactedChunkCount) {
     }
 
-    // 封装 LayerProfile 使用的不可变结构化数据。
     public record LayerProfile(String module, String layer, int sourceFileCount, int codeChunkCount) {
     }
 

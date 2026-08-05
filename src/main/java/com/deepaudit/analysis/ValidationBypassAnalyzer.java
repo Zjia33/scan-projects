@@ -10,18 +10,15 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-// 负责 ValidationBypassAnalyzer 对应的确定性分析与事实提取。
 @Order(60)
 @Component
 public class ValidationBypassAnalyzer implements VulnerabilityAnalyzer {
 
     private static final String BYPASS_PATTERN = "skipverify|bypassverify|ignoreverification|verify\\w*\\s*\\([^;]+;\\s*(?!if)|catch\\s*\\([^)]*\\)\\s*\\{[^}]{0,300}(?:warn|ignore|continue)";
 
-    // 执行 ValidationBypassAnalyzer 中的 type 处理。
     @Override
     public VulnerabilityType type() { return VulnerabilityType.VALIDATION_BYPASS; }
 
-    // 分析并提取 analyze 对应的事实。
     @Override
     public List<FindingDraft> analyze(AnalysisContext context) {
         List<FindingDraft> results = new ArrayList<>();

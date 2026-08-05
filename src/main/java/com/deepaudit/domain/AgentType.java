@@ -14,7 +14,6 @@ public enum AgentType {
     CRITIC,
     REPORT;
 
-    // 执行 AgentType 中的 fromModelValue 处理。
     @JsonCreator
     public static AgentType fromModelValue(String value) {
         String normalized = ModelEnumNormalizer.normalize(value);
@@ -28,7 +27,6 @@ public enum AgentType {
         };
     }
 
-    // 执行 AgentType 中的 exactOrNull 处理。
     private static AgentType exactOrNull(String value) {
         try {
             return value.isBlank() ? null : valueOf(value);

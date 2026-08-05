@@ -27,7 +27,6 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-// 封装 AgentRuntime 相关的数据与处理逻辑。
 @Service
 @RequiredArgsConstructor
 public class AgentRuntime {
@@ -246,7 +245,6 @@ public class AgentRuntime {
         return value.substring(0, Math.min(value.length(), maxChars));
     }
 
-    // 执行 AgentRuntime 中的 safe 处理。
     private String safe(String value) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), 2_000));
     }

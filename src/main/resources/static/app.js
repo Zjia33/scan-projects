@@ -17,10 +17,11 @@ const state = {
     eventKeys: new Map(),
     events: new Map(),
     loadingTasks: false,
+    submittingAudit: false,
+    taskRequestSequence: 0,
     loadingProjects: false,
     cancellingTaskIds: new Set(),
-    agentRefreshTimer: null,
-    poller: null
+    agentRefreshTimer: null
 };
 
 const ui = {
@@ -29,16 +30,12 @@ const ui = {
     navLinks: [...document.querySelectorAll('[data-route]')],
     pages: [...document.querySelectorAll('[data-page]')],
     importForm: document.querySelector('#git-import-form'),
-    projectName: document.querySelector('#project-name'),
-    repositoryUrl: document.querySelector('#repository-url'),
     gitUsername: document.querySelector('#git-username'),
     gitToken: document.querySelector('#git-token'),
     importButton: document.querySelector('#import-button'),
     importMessage: document.querySelector('#git-message'),
     auditForm: document.querySelector('#audit-form'),
     repositorySelect: document.querySelector('#repository-select'),
-    baseBranchGroup: document.querySelector('#base-branch-group'),
-    baseCommitGroup: document.querySelector('#base-commit-group'),
     baseBranch: document.querySelector('#base-branch'),
     baseCommit: document.querySelector('#base-commit'),
     baseCommitHint: document.querySelector('#base-commit-hint'),
@@ -81,7 +78,7 @@ function bootstrap() {
     bindForms();
     routeFromHash();
     Promise.allSettled([loadRepositories(), loadProjects(), loadTasks({ forceDetail: true })]);
-    state.poller = window.setInterval(() => loadTasks(), 4000);
+    window.setInterval(() => loadTasks(), 4000);
 }
 
 function bindNavigation() {
@@ -188,24 +185,75 @@ async function submitAudit(event) {
         return;
     }
     ui.submitAudit.disabled = true;
+    state.submittingAudit = true;
+    state.taskRequestSequence += 1;
+    state.loadingTasks = false;
     setFormMessage(ui.auditMessage, '正在创建审计任务…');
+    const previousTaskId = state.selectedTaskId;
+    state.selectedTaskId = null;
+    state.renderedTaskId = null;
+    closeEventStream();
+    window.location.hash = '#/tasks';
+    ui.taskDetail.replaceChildren(el('div', 'loading-block', '正在创建审计任务并加入队列…'));
     try {
         const response = await fetchJson(`/api/projects/${projectId}/audits`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ baseCommit, targetCommit })
         });
-        state.selectedTaskId = response.taskId;
-        state.renderedTaskId = null;
+        const task = queuedTaskFromSubmission(response);
+        state.tasks = [task, ...state.tasks.filter(item => item.taskId !== task.taskId)];
+        state.selectedTaskId = task.taskId;
+        renderDashboard();
+        renderTaskList();
+        renderQueuedTask(task);
         setFormMessage(ui.auditMessage, response.message || '审计任务已创建。');
-        await loadTasks({ forceDetail: true });
         toast('审计已进入任务队列。');
-        window.location.hash = '#/tasks';
+        void loadTasks({ forceDetail: true });
     } catch (error) {
+        state.selectedTaskId = previousTaskId;
+        state.renderedTaskId = null;
+        window.location.hash = '#/new-audit';
         setFormMessage(ui.auditMessage, error.message, true);
+        toast(error.message, true);
     } finally {
+        state.submittingAudit = false;
         ui.submitAudit.disabled = false;
     }
+}
+
+function queuedTaskFromSubmission(response) {
+    const repository = state.repositories.find(item => item.projectId === response.projectId);
+    return {
+        taskId: response.taskId,
+        projectId: response.projectId,
+        projectName: response.projectName,
+        repositoryUrl: repository?.repositoryUrl || '',
+        baseCommit: response.baseCommit,
+        targetCommit: response.targetCommit,
+        mergeBase: response.mergeBase,
+        changeSummary: '',
+        status: response.status || 'UPLOADED',
+        progress: Number(response.progress || 0),
+        currentStage: response.currentStage || '等待扫描',
+        errorMessage: null,
+        findingCount: 0,
+        agentRunCount: 0,
+        modelCallCount: 0,
+        toolCallCount: 0,
+        createdAt: response.createdAt || new Date().toISOString(),
+        completedAt: null
+    };
+}
+
+function renderQueuedTask(task) {
+    seedEvents(task.taskId, []);
+    ui.taskDetail.replaceChildren(buildTaskDetail(task, [], [], [], []));
+    ui.taskDetail.dataset.taskId = task.taskId;
+    state.renderedTaskId = task.taskId;
+    state.renderedTaskStatus = task.status;
+    state.renderedFindingCount = 0;
+    connectEventStream(task.taskId);
 }
 
 async function loadRepositories(selectedProjectId = null) {
@@ -352,10 +400,14 @@ function commitTimestamp(commit) {
 }
 
 async function loadTasks({ forceDetail = false, notify = false } = {}) {
-    if (state.loadingTasks) return;
+    const priorityRefresh = forceDetail || notify;
+    if (state.submittingAudit && !priorityRefresh) return;
+    if (state.loadingTasks && !priorityRefresh) return;
+    const requestSequence = ++state.taskRequestSequence;
     state.loadingTasks = true;
     try {
         const tasks = await fetchJson('/api/tasks');
+        if (requestSequence !== state.taskRequestSequence) return;
         state.tasks = Array.isArray(tasks) ? tasks : [];
         if (!state.selectedTaskId && state.tasks.length) state.selectedTaskId = state.tasks[0].taskId;
         if (state.selectedTaskId && !state.tasks.some(task => task.taskId === state.selectedTaskId)) {
@@ -379,13 +431,14 @@ async function loadTasks({ forceDetail = false, notify = false } = {}) {
         const findingsChanged = task.findingCount !== state.renderedFindingCount;
         updateTaskSummary(task);
         if (findingsChanged || statusChanged) await refreshFindings(task);
-        if (statusChanged) await refreshMethodChanges(task);
+        if (statusChanged) await refreshFileChanges(task);
         state.renderedTaskStatus = task.status;
     } catch (error) {
+        if (requestSequence !== state.taskRequestSequence) return;
         ui.taskList.replaceChildren(emptyState(`无法读取任务：${error.message}`));
         if (notify) toast(error.message, true);
     } finally {
-        state.loadingTasks = false;
+        if (requestSequence === state.taskRequestSequence) state.loadingTasks = false;
     }
 }
 
@@ -472,16 +525,16 @@ async function renderTaskDetail(task) {
     ui.taskDetail.replaceChildren(el('div', 'loading-block', '正在加载调查上下文…'));
     closeEventStream();
     try {
-        const [findings, events, agents, methodChanges] = await Promise.all([
+        const [findings, events, agents, fileChanges] = await Promise.all([
             task.findingCount > 0 || task.status === 'COMPLETED'
                 ? fetchJson(`/api/tasks/${taskId}/findings`) : Promise.resolve([]),
             fetchJson(`/api/tasks/${taskId}/events`),
             fetchJson(`/api/tasks/${taskId}/agents`),
-            fetchJson(`/api/tasks/${taskId}/method-changes`).catch(() => [])
+            fetchJson(`/api/tasks/${taskId}/changes`).catch(() => [])
         ]);
-        if (state.selectedTaskId !== taskId) return;
+        if (state.selectedTaskId !== taskId || selectedTask() !== task) return;
         seedEvents(taskId, events);
-        ui.taskDetail.replaceChildren(buildTaskDetail(task, findings, agents, events, methodChanges));
+        ui.taskDetail.replaceChildren(buildTaskDetail(task, findings, agents, events, fileChanges));
         ui.taskDetail.dataset.taskId = taskId;
         state.renderedTaskId = taskId;
         state.renderedTaskStatus = task.status;
@@ -489,12 +542,12 @@ async function renderTaskDetail(task) {
         if (state.route === 'tasks' && !TERMINAL_STATUSES.has(task.status)) connectEventStream(taskId);
         else closeEventStream();
     } catch (error) {
-        if (state.selectedTaskId !== taskId) return;
+        if (state.selectedTaskId !== taskId || selectedTask() !== task) return;
         ui.taskDetail.replaceChildren(emptyState(`无法读取任务详情：${error.message}`));
     }
 }
 
-function buildTaskDetail(task, findings, agents, events, methodChanges) {
+function buildTaskDetail(task, findings, agents, events, fileChanges) {
     const fragment = document.createDocumentFragment();
     const header = el('header', 'detail-header');
     const title = el('div', 'detail-header-copy');
@@ -510,7 +563,7 @@ function buildTaskDetail(task, findings, agents, events, methodChanges) {
     body.append(buildProgress(task));
     if (task.errorMessage) body.append(el('p', 'error-banner', task.errorMessage));
     body.append(buildTaskStats(task, events.length));
-    body.append(buildMethodChanges(methodChanges));
+    body.append(buildFileChanges(fileChanges));
     body.append(buildInvestigation(agents, events), buildFindings(findings, task.status));
     fragment.append(header, body);
     return fragment;
@@ -697,7 +750,7 @@ function buildFindingEvidence(value) {
     splitFindingEvidence(value).forEach((chunk, index) => {
         const card = el('article', 'finding-evidence-chunk');
         const header = el('header');
-        header.append(el('b', '', chunk.id ? `CHUNK ${chunk.id}` : `证据 ${index + 1}`),
+        header.append(el('b', '', `代码证据 ${index + 1}`),
             el('span', '', chunk.location || '代码上下文'));
         const code = buildEvidenceCode(chunk.code || '暂无代码证据');
         card.append(header, code);
@@ -749,84 +802,65 @@ function buildEvidenceCode(value) {
     return code;
 }
 
-function buildMethodChanges(methodChanges) {
-    const changes = Array.isArray(methodChanges) ? methodChanges : [];
-    const groups = groupMethodChanges(changes);
+function buildFileChanges(fileChanges) {
+    const changes = Array.isArray(fileChanges) ? fileChanges : [];
     const section = el('section', 'detail-section');
-    section.id = 'method-change-section';
-    const panel = el('details', 'semantic-panel');
-    panel.open = changes.some(change => change.changeKind === 'GUARD_REMOVED');
-    const summary = el('summary');
-    const title = el('span', 'semantic-title');
-    title.append(el('small', '', 'INCREMENTAL SEMANTIC DIFF'), el('strong', '', '方法级语义变化'));
-    const count = el('span', 'semantic-count');
-    count.append(el('b', '', String(groups.length)), el('small', '', `${groups.length === 1 ? 'METHOD' : 'METHODS'} / ${changes.length} FACTS`));
-    summary.append(title, count);
-    const body = el('div', 'semantic-body');
+    section.id = 'file-change-section';
+    const panel = el('details', 'file-change-panel');
+    const heading = el('summary', 'file-change-heading');
+    const title = el('span', 'file-change-title');
+    title.append(el('small', '', 'BASE → TARGET'), el('strong', '', '提交代码变化'));
+    const additions = changes.reduce((total, change) => total + Number(change.additions || 0), 0);
+    const deletions = changes.reduce((total, change) => total + Number(change.deletions || 0), 0);
+    const totals = el('span', 'file-change-totals');
+    totals.append(el('b', '', `${changes.length} 个文件`),
+        el('small', 'file-additions', `+${additions}`),
+        el('small', 'file-deletions', `−${deletions}`));
+    heading.append(title, totals);
+    const body = el('div', 'file-change-list');
     if (!changes.length) {
-        body.append(emptyState('本次增量扫描未识别到 Java 方法级语义变化。', true));
+        body.append(emptyState('暂未读取到两次提交之间的文件变化。', true));
     } else {
-        const stats = el('div', 'change-stats');
-        methodChangeKinds().forEach(kind => {
-            const amount = changes.filter(change => change.changeKind === kind).length;
-            if (!amount) return;
-            const badge = el('span', `change-kind ${methodChangeTone(kind)}`);
-            badge.append(el('b', '', String(amount)), document.createTextNode(methodChangeLabel(kind)));
-            stats.append(badge);
-        });
-        const list = el('div', 'change-list');
-        groups.forEach(group => list.append(buildMethodChangeCard(group)));
-        body.append(stats, list);
+        changes.forEach(change => body.append(buildFileChangeCard(change)));
     }
-    panel.append(summary, body);
+    panel.append(heading, body);
     section.append(panel);
     return section;
 }
 
-function groupMethodChanges(changes) {
-    const grouped = new Map();
-    changes.forEach(change => {
-        const key = [change.basePath, change.targetPath, change.baseSymbol, change.targetSymbol, change.methodName]
-            .map(value => value || '').join('|');
-        if (!grouped.has(key)) grouped.set(key, { primary: change, changes: [] });
-        grouped.get(key).changes.push(change);
-    });
-    return [...grouped.values()];
-}
-
-function buildMethodChangeCard(group) {
-    const change = group.primary;
-    const card = el('details', 'change-card');
-    card.open = group.changes.some(item => item.changeKind === 'GUARD_REMOVED');
+function buildFileChangeCard(change) {
+    const card = el('details', 'file-change-card');
     const summary = el('summary');
-    const title = el('span', 'change-title');
-    title.append(el('strong', '', change.targetSymbol || change.baseSymbol || change.methodName || '未命名方法'),
-        el('small', '', methodChangeLocation(change)));
-    const badges = el('span', 'change-badges');
-    [...new Set(group.changes.map(item => item.changeKind))].forEach(kind => {
-        badges.append(el('span', `change-kind ${methodChangeTone(kind)}`, methodChangeLabel(kind)));
-    });
-    summary.append(title, badges);
-    const body = el('div', 'change-body');
-    const facts = el('ul', 'change-facts');
-    group.changes.forEach(item => facts.append(el('li', '', item.details || methodChangeLabel(item.changeKind))));
-    const compare = el('div', 'code-compare');
-    compare.append(buildCodePane('BASE', change.basePath, change.baseStartLine, change.baseEndLine,
-            change.baseContent, '基线提交中不存在该方法。'),
-        buildCodePane('TARGET', change.targetPath, change.targetStartLine, change.targetEndLine,
-            change.targetContent, '目标提交中已删除该方法。'));
-    body.append(facts, compare);
+    const identity = el('span', 'file-change-identity');
+    identity.append(el('strong', '', fileChangePath(change)),
+        el('small', '', fileChangeTypeLabel(change.changeType)));
+    const stats = el('span', 'file-change-stats');
+    stats.append(el('b', 'file-additions', `+${Number(change.additions || 0)}`),
+        el('b', 'file-deletions', `−${Number(change.deletions || 0)}`));
+    summary.append(identity, stats);
+    const body = el('div', 'file-change-body');
+    body.append(buildFileDiff(change.contextText));
     card.append(summary, body);
     return card;
 }
 
-function buildCodePane(label, path, startLine, endLine, content, fallback) {
-    const pane = el('section', 'code-pane');
-    const header = el('header');
-    header.append(el('b', '', label), el('span', '', lineLocation(path, startLine, endLine)));
-    const code = el('pre', content ? '' : 'empty', content || fallback);
-    pane.append(header, code);
-    return pane;
+function buildFileDiff(contextText) {
+    const diff = el('div', 'file-diff');
+    const content = String(contextText || '').trimEnd();
+    if (!content) {
+        diff.append(el('p', 'file-diff-empty', '该文件没有可展示的文本差异。'));
+        return diff;
+    }
+    content.split(/\r?\n/).forEach(line => {
+        const hunk = line.startsWith('@@');
+        const added = !hunk && line.startsWith('+ ');
+        const deleted = !hunk && line.startsWith('- ');
+        const row = el('div', `file-diff-line${hunk ? ' hunk' : added ? ' added' : deleted ? ' deleted' : ''}`);
+        row.append(el('span', 'file-diff-mark', hunk ? '···' : added ? '+' : deleted ? '−' : ''),
+            el('code', '', hunk ? line : line.slice(2)));
+        diff.append(row);
+    });
+    return diff;
 }
 
 function updateTaskSummary(task) {
@@ -861,14 +895,14 @@ async function refreshFindings(task) {
     }
 }
 
-async function refreshMethodChanges(task) {
+async function refreshFileChanges(task) {
     try {
-        const changes = await fetchJson(`/api/tasks/${task.taskId}/method-changes`);
+        const changes = await fetchJson(`/api/tasks/${task.taskId}/changes`);
         if (state.selectedTaskId !== task.taskId) return;
-        const current = ui.taskDetail.querySelector('#method-change-section');
-        if (current) current.replaceWith(buildMethodChanges(changes));
+        const current = ui.taskDetail.querySelector('#file-change-section');
+        if (current) current.replaceWith(buildFileChanges(changes));
     } catch (_) {
-        // Method changes are supporting context; live investigation remains available.
+        // File changes are supporting context; live investigation remains available.
     }
 }
 
@@ -934,10 +968,10 @@ function buildEventRow(event, animate) {
     meta.append(time);
     const toolCall = event.eventType === 'TOOL_CALL';
     const observation = event.eventType === 'OBSERVATION';
-    const message = toolCall ? summarizeToolCall(event.message)
+    const message = withoutInternalChunkIds(toolCall ? summarizeToolCall(event.message)
         : observation ? summarizeObservation(event.message)
             : event.eventType === 'MODEL_CALL' ? summarizeModelCall(event.message)
-                : String(event.message || '');
+                : String(event.message || ''));
     const copy = el('p', 'event-message', message.length > 1000 ? `${message.slice(0, 1000)}…` : message);
     row.append(meta, copy);
     if (!toolCall && !observation && message.length > 1000) {
@@ -959,6 +993,17 @@ function summarizeModelCall(value) {
         /结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 0 条工具观察进行安全判断/g,
         '结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断'
     );
+}
+
+function withoutInternalChunkIds(value) {
+    return String(value || '')
+        .replace(/\[CHUNK\s+\d+]\s*/gi, '')
+        .replace(/\bCHUNK_ID\s*=\s*\d+\b/gi, '相关代码位置')
+        .replace(/\b(?:PRIMARY_)?CHUNK(?:_ID)?\s*[:=#]?\s*\d+\b/gi, '相关代码位置')
+        .replace(/\b(?:primaryChunkId|chunkId)\s*[:=]\s*\d+\b/gi, '相关代码位置')
+        .replace(/代码块\s*[#＃]?\s*\d+/g, '相关代码块')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
 }
 
 function scheduleAgentRefresh(taskId) {
@@ -1338,34 +1383,18 @@ function deltaStatusText(value) {
     })[value] || '未分类';
 }
 
-function methodChangeKinds() {
-    return ['GUARD_REMOVED', 'GUARD_ADDED', 'SIGNATURE_CHANGED', 'METHOD_ADDED', 'METHOD_MODIFIED', 'METHOD_DELETED'];
+function fileChangePath(change) {
+    const oldPath = change.oldPath || '';
+    const newPath = change.newPath || '';
+    if (oldPath && newPath && oldPath !== newPath) return `${oldPath} → ${newPath}`;
+    return newPath || oldPath || '未知文件';
 }
 
-function methodChangeLabel(kind) {
+function fileChangeTypeLabel(changeType) {
     return ({
-        METHOD_ADDED: '方法新增', METHOD_MODIFIED: '方法修改', METHOD_DELETED: '方法删除',
-        SIGNATURE_CHANGED: '签名变化', GUARD_ADDED: '防护新增', GUARD_REMOVED: '防护删除'
-    })[kind] || kind || '未知变化';
-}
-
-function methodChangeTone(kind) {
-    if (kind === 'GUARD_REMOVED' || kind === 'METHOD_DELETED') return 'danger';
-    if (kind === 'GUARD_ADDED') return 'safe';
-    if (kind === 'SIGNATURE_CHANGED') return 'attention';
-    return 'neutral';
-}
-
-function methodChangeLocation(change) {
-    return lineLocation(change.targetPath || change.basePath,
-        change.targetStartLine ?? change.baseStartLine,
-        change.targetEndLine ?? change.baseEndLine);
-}
-
-function lineLocation(path, startLine, endLine) {
-    const file = path || '未知文件';
-    if (startLine == null) return file;
-    return `${file}:${startLine}${endLine != null && endLine !== startLine ? `-${endLine}` : ''}`;
+        ADD: '新增文件', MODIFY: '修改文件', DELETE: '删除文件',
+        RENAME: '重命名文件', COPY: '复制文件'
+    })[changeType] || changeType || '文件变化';
 }
 
 function commitRange(audit) {

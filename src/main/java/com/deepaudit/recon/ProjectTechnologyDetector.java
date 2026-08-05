@@ -13,22 +13,16 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
-// 负责 ProjectTechnologyDetector 对应的确定性分析与事实提取。
 @Slf4j
 final class ProjectTechnologyDetector {
     private static final long MAX_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_EVIDENCE = 80;
-    private static final Set<String> INSPECTED_EXTENSIONS = Set.of(
-            "java", "xml", "yml", "yaml", "properties", "gradle", "kts", "json",
-            "html", "jsp", "ftl", "vue", "jsx", "tsx", "js", "ts"
-    );
-
     // 从构建文件和源码标记中确定性识别框架、安全组件与持久化技术。
     TechnologyProfile detect(Path root) {
         List<Path> files;
         try (Stream<Path> paths = Files.walk(root)) {
             files = paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                    .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
                     .filter(this::isInspectable)
                     .toList();
         } catch (IOException exception) {
@@ -41,7 +35,7 @@ final class ProjectTechnologyDetector {
     TechnologyProfile detect(Path root, List<Path> selectedFiles) {
         Detection detection = new Detection(root);
         selectedFiles.stream().filter(Files::isRegularFile)
-                .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+                .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
                 .filter(this::isInspectable).distinct().forEach(detection::inspect);
         return detection.profile();
     }
@@ -53,14 +47,9 @@ final class ProjectTechnologyDetector {
         } catch (IOException exception) {
             return false;
         }
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (name.equals("pom.xml") || name.equals("package.json") || name.startsWith("build.gradle")
-                || name.startsWith("settings.gradle")) return true;
-        int dot = name.lastIndexOf('.');
-        return dot > 0 && INSPECTED_EXTENSIONS.contains(name.substring(dot + 1));
+        return true;
     }
 
-    // 封装 Detection 相关的数据与处理逻辑。
     private static final class Detection {
         private final Path root;
         private final Set<String> frameworks = new LinkedHashSet<>();
@@ -70,7 +59,6 @@ final class ProjectTechnologyDetector {
         private final Set<String> securityAnnotations = new LinkedHashSet<>();
         private final Set<String> evidence = new LinkedHashSet<>();
 
-        // 创建 Detection 实例并初始化所需依赖或状态。
         private Detection(Path root) {
             this.root = root;
         }
@@ -93,8 +81,6 @@ final class ProjectTechnologyDetector {
                         "webfluxconfigurer", "routerfunction<");
                 detect(content, relative, frameworks, "Jakarta Servlet", "jakarta.servlet", "javax.servlet");
                 detect(content, relative, frameworks, "Apache Struts", "struts2-core", "org.apache.struts");
-                detect(content, relative, frameworks, "Vue", "\"vue\"", ".vue");
-                detect(content, relative, frameworks, "React", "\"react\"", "react-dom");
                 detect(content, relative, frameworks, "Thymeleaf", "thymeleaf", "th:");
                 detect(content, relative, frameworks, "FreeMarker", "freemarker", ".ftl");
 
@@ -130,12 +116,10 @@ final class ProjectTechnologyDetector {
             }
         }
 
-        // 执行 Detection 中的 annotation 处理。
         private void annotation(String content, String relative, String annotation, String marker) {
             if (content.contains(marker)) add(securityAnnotations, annotation, relative, marker);
         }
 
-        // 分析并提取 detect 对应的事实。
         private void detect(String content, String relative, Set<String> target, String technology,
                             String... markers) {
             for (String marker : markers) {

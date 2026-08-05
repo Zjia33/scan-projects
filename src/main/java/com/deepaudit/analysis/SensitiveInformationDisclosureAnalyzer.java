@@ -7,6 +7,8 @@ import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.GitFileChangeMapper;
+import com.deepaudit.source.AuditFileRole;
+import com.deepaudit.source.AuditSourceFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -164,11 +166,8 @@ public class SensitiveInformationDisclosureAnalyzer implements VulnerabilityAnal
     }
 
     private boolean isConfiguration(String path) {
-        String normalized = normalizePath(path).toLowerCase(Locale.ROOT);
-        return normalized.endsWith(".yml") || normalized.endsWith(".yaml")
-                || normalized.endsWith(".properties") || normalized.endsWith(".xml")
-                || normalized.endsWith(".json") || normalized.endsWith(".conf")
-                || normalized.endsWith(".ini") || normalized.endsWith(".env");
+        AuditFileRole role = AuditSourceFilter.classify(normalizePath(path));
+        return role == AuditFileRole.SECURITY_CONFIGURATION || role == AuditFileRole.DATA_ACCESS;
     }
 
     private SecretCandidate redacted(String kind, String line) {

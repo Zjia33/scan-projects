@@ -14,14 +14,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-// 负责 AuditToolService 对应的业务编排和处理。
 @Service
 public class AuditToolService {
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
     private final ProfessionalToolService professionalToolService;
 
-    // 创建 AuditToolService 实例并初始化所需依赖或状态。
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
                             CodeGraphIntegrationService codeGraphIntegrationService,
                             ProfessionalToolService professionalToolService) {
@@ -74,7 +72,6 @@ public class AuditToolService {
         };
     }
 
-    // 执行 AuditToolService 中的 reference 处理。
     private String reference(ToolArguments arguments, String name) {
         Long value = arguments.longValue(name);
         return value == null ? null : String.valueOf(value);
@@ -245,7 +242,6 @@ public class AuditToolService {
                 "未找到可靠的调用、数据流或安全策略关系");
     }
 
-    // 执行 AuditToolService 中的 securityPolicyMatches 处理。
     private boolean securityPolicyMatches(String endpoint, String content) {
         if (endpoint == null || content == null) return false;
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
@@ -260,7 +256,6 @@ public class AuditToolService {
         return false;
     }
 
-    // 执行 AuditToolService 中的 endpointMatches 处理。
     private boolean endpointMatches(String endpoint, String antPattern) {
         StringBuilder regex = new StringBuilder("^");
         for (int index = 0; index < antPattern.length(); index++) {
@@ -285,7 +280,6 @@ public class AuditToolService {
         return endpoint.matches(regex.append('$').toString());
     }
 
-    // 解析输入并生成 parseChunkId 对应的结构化结果。
     private Long parseChunkId(String chunkReference) {
         if (chunkReference == null) return null;
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(chunkReference);
@@ -305,14 +299,12 @@ public class AuditToolService {
                 ? "\n[CONTENT_TRUNCATED] 请使用 read_source 精读目标行。" : "");
     }
 
-    // 执行 AuditToolService 中的 splitSymbols 处理。
     private Set<String> splitSymbols(String value) {
         if (value == null || value.isBlank()) return Set.of();
         return Arrays.stream(value.split(",")).map(String::strip).filter(item -> !item.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    // 执行 AuditToolService 中的 methodName 处理。
     private String methodName(String symbol) {
         if (symbol == null) return "";
         int hash = symbol.lastIndexOf('#');

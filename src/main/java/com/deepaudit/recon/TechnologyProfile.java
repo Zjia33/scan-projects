@@ -22,7 +22,6 @@ public record TechnologyProfile(List<String> frameworks,
         evidence = immutable(evidence);
     }
 
-    // 执行 TechnologyProfile 中的 empty 处理。
     public static TechnologyProfile empty() {
         return new TechnologyProfile(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
@@ -33,7 +32,6 @@ public record TechnologyProfile(List<String> frameworks,
                 buildTools, securityAnnotations, List.of());
     }
 
-    // 执行 TechnologyProfile 中的 immutable 处理。
     private static List<String> immutable(List<String> values) {
         return values == null ? List.of() : List.copyOf(values);
     }

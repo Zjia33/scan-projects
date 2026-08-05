@@ -12,7 +12,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-// 封装 CodeGraphResultMapper 相关的数据与处理逻辑。
 @Component
 public class CodeGraphResultMapper {
     // 执行 map 对应的数据库访问操作。
@@ -101,7 +100,6 @@ public class CodeGraphResultMapper {
         return path;
     }
 
-    // 封装 MappingResult 使用的不可变结构化数据。
     public record MappingResult(Set<Long> chunkIds, int unmappedLocations) {
     }
 }

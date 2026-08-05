@@ -25,7 +25,6 @@ public class AgentRun {
     private Instant startedAt; // 运行开始时间
     private Instant completedAt; // 运行完成或失败时间
 
-    // 创建 AgentRun 实例并初始化所需依赖或状态。
     public AgentRun(UUID taskId, AgentType agentType, Long targetChunkId, String targetSymbol) {
         this.id = UUID.randomUUID();
         this.taskId = taskId;
@@ -36,14 +35,12 @@ public class AgentRun {
         this.startedAt = Instant.now();
     }
 
-    // 执行 AgentRun 中的 complete 处理。
     public void complete(String summary) {
         this.status = AgentRunStatus.COMPLETED;
         this.summary = summary;
         this.completedAt = Instant.now();
     }
 
-    // 执行 AgentRun 中的 fail 处理。
     public void fail(String summary) {
         this.status = AgentRunStatus.FAILED;
         this.summary = summary;

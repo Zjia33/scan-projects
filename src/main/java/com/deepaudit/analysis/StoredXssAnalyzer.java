@@ -10,18 +10,15 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-// 负责 StoredXssAnalyzer 对应的确定性分析与事实提取。
 @Order(50)
 @Component
 public class StoredXssAnalyzer implements VulnerabilityAnalyzer {
 
     private static final String UNSAFE_SINK = "v-html|dangerouslySetInnerHTML|th:utext|innerHTML\\s*=|<%=|\\|\\s*safe";
 
-    // 执行 StoredXssAnalyzer 中的 type 处理。
     @Override
     public VulnerabilityType type() { return VulnerabilityType.STORED_XSS; }
 
-    // 分析并提取 analyze 对应的事实。
     @Override
     public List<FindingDraft> analyze(AnalysisContext context) {
         List<FindingDraft> results = new ArrayList<>();

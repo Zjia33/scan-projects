@@ -23,7 +23,6 @@ public class GitFileChange {
     private String contextText; // 供增量分析使用的统一差异上下文
     private boolean configurationChange; // 是否属于需整体纳入分析的配置文件变更
 
-    // 创建 GitFileChange 实例并初始化所需依赖或状态。
     public GitFileChange(UUID taskId, String oldPath, String newPath, String changeType,
                          int additions, int deletions, String oldRanges, String newRanges,
                          String contextText, boolean configurationChange) {

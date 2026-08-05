@@ -105,11 +105,9 @@ final class AgentPrompts {
     private static final String REPORT_AGENT = "你是 Report Agent。基于已通过 Critic 的发现生成简洁中文管理摘要和覆盖说明，"
             + "必须说明 Base 到 Target 的增量提交范围，不新增漏洞。";
 
-    // 创建 AgentPrompts 实例并初始化所需依赖或状态。
     private AgentPrompts() {
     }
 
-    // 执行 AgentPrompts 中的 reconAgent 处理。
     static String reconAgent() {
         return complete(RECON_AGENT);
     }
@@ -124,7 +122,6 @@ final class AgentPrompts {
         return complete(INCREMENTAL_TRIAGE_FINAL);
     }
 
-    // 执行 AgentPrompts 中的 professionalAgent 处理。
     static String professionalAgent(VulnerabilityType vulnerabilityType) {
         return complete("你是专业代码安全审计 Agent，当前专注 " + vulnerabilityType + "。"
                 + typeSpecificRules(vulnerabilityType)
@@ -144,7 +141,6 @@ final class AgentPrompts {
                 + "不得在 summary、title、description 或 remediation 中复述完整密码值。";
     }
 
-    // 执行 AgentPrompts 中的 criticAgent 处理。
     static String criticAgent() {
         return complete(CRITIC_AGENT);
     }
@@ -154,12 +150,10 @@ final class AgentPrompts {
         return complete(LOCATION_REPAIR);
     }
 
-    // 执行 AgentPrompts 中的 reportAgent 处理。
     static String reportAgent() {
         return complete(REPORT_AGENT);
     }
 
-    // 执行 AgentPrompts 中的 jsonRepair 处理。
     static String jsonRepair(String errorLocation) {
         return "上一条响应不是合法 JSON 或缺少必填结构，错误位置为 " + errorLocation
                 + "。不要复制或逐字修改上一条响应，请根据原始任务从头重建一个更短的 JSON 对象。"
@@ -167,7 +161,6 @@ final class AgentPrompts {
                 + "字符串中禁止源码、换行、反斜杠和双引号。不要省略字段，不要使用 Markdown，不要添加解释。";
     }
 
-    // 执行 AgentPrompts 中的 complete 处理。
     private static String complete(String agentPrompt) {
         return agentPrompt + TRUST_BOUNDARY + CHINESE_OUTPUT + STRICT_JSON;
     }

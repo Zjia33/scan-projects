@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-// 封装 AuditOrchestrator 相关的数据与处理逻辑。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -198,27 +197,23 @@ public class AuditOrchestrator {
         task.setVersion(task.getVersion() + 1);
     }
 
-    // 执行 AuditOrchestrator 中的 comparisonBase 处理。
     private String comparisonBase(AuditTask task) {
         return task.getMergeBaseSha() == null || task.getMergeBaseSha().isBlank()
                 ? task.getBaseCommitSha() : task.getMergeBaseSha();
     }
 
-    // 执行 AuditOrchestrator 中的 requireTask 处理。
     private AuditTask requireTask(UUID taskId) {
         AuditTask task = taskMapper.findById(taskId);
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         return task;
     }
 
-    // 执行 AuditOrchestrator 中的 requireProject 处理。
     private Project requireProject(UUID projectId) {
         Project project = projectMapper.findById(projectId);
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + projectId);
         return project;
     }
 
-    // 执行 AuditOrchestrator 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }

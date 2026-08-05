@@ -10,16 +10,13 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-// 负责 VerticalAuthorizationAnalyzer 对应的确定性分析与事实提取。
 @Order(30)
 @Component
 public class VerticalAuthorizationAnalyzer implements VulnerabilityAnalyzer {
 
-    // 执行 VerticalAuthorizationAnalyzer 中的 type 处理。
     @Override
     public VulnerabilityType type() { return VulnerabilityType.AUTHORIZATION; }
 
-    // 分析并提取 analyze 对应的事实。
     @Override
     public List<FindingDraft> analyze(AnalysisContext context) {
         List<FindingDraft> results = new ArrayList<>();

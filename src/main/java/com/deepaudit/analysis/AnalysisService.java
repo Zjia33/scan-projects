@@ -44,7 +44,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-// 负责 AnalysisService 对应的业务编排和处理。
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -350,7 +349,6 @@ public class AnalysisService {
                 .findFirst().or(() -> chunks.stream().filter(chunk -> chunk.getFilePath().equals(draft.filePath())).findFirst());
     }
 
-    // 执行 AnalysisService 中的 shortSha 处理。
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
     }
@@ -368,12 +366,10 @@ public class AnalysisService {
         }
     }
 
-    // 封装 HintIndex 使用的不可变结构化数据。
     private record HintIndex(Map<Long, Set<VulnerabilityType>> typesByChunk,
                              Map<Long, String> descriptionsByChunk) {
     }
 
-    // 封装 AnalysisResult 使用的不可变结构化数据。
     public record AnalysisResult(int findingCount, int plannedAgentTasks,
                                  int supportedHypotheses, String architectureSummary) {
     }

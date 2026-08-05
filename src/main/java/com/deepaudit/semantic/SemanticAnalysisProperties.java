@@ -5,7 +5,6 @@ import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-// 保存 SemanticAnalysisProperties 对应的配置参数。
 @Getter
 @Setter
 @Component

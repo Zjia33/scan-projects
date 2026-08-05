@@ -28,14 +28,12 @@ public class CodeChunk {
     private AnalysisScope analysisScope; // 增量审计中该代码块承担的分析范围角色
     private String baseContent; // 增量扫描中与当前代码块对应的基线内容
 
-    // 创建 CodeChunk 实例并初始化所需依赖或状态。
     public CodeChunk(UUID taskId, String filePath, String symbolName, String endpoint,
                      int startLine, int endLine, String content) {
         this(taskId, filePath, symbolName, endpoint, startLine, endLine, content,
                 "TEXT", "", "", "");
     }
 
-    // 创建 CodeChunk 实例并初始化所需依赖或状态。
     public CodeChunk(UUID taskId, String filePath, String symbolName, String endpoint,
                      int startLine, int endLine, String content,
                      String chunkType, String parameters, String annotations, String calledSymbols) {

@@ -4,7 +4,6 @@ import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 
-// 封装 FindingDraft 使用的不可变结构化数据。
 public record FindingDraft(
         VulnerabilityType type,
         Severity severity,

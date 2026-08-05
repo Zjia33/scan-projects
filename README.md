@@ -19,7 +19,8 @@
 - JavaParser 只解析 CHANGED/IMPACTED 及直接上下文，验证 CodeGraph 调用现场并提取参数流、Guard 和框架语义
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
 - 面向五类新任务漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
-- Java、XML、HTML、JSP、Vue、JavaScript、TypeScript、YAML 等文本索引
+- 统一文件角色白名单：索引 Java 后端源码、运行与安全配置、MyBatis/SQL、服务端模板；构建描述只用于架构识别
+- Markdown、独立前端源码与静态资源在 Git 快照物化前即被忽略，不进入 Diff、分块、语义分析或模型上下文
 - Recon Agent：只读取去计数后的框架事实、构建描述和 application/bootstrap 配置，生成技术架构摘要；不接收普通业务源码或增量作用域
 - Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
 - `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
@@ -84,10 +85,9 @@ DEEPAUDIT_GIT_ALLOWED_HOSTS=github.com,gitlab.com,gitee.com
 ```yaml
 deepaudit:
   ai:
-    required: true
-    base-url: http://localhost:11434/v1
+    base-url: https://api.deepseek.com
     api-key: ${DEEPAUDIT_AI_API_KEY:}
-    model: qwen2.5-coder:14b
+    model: deepseek-v4-flash
     connect-timeout-seconds: 10
     read-timeout-seconds: 120
     json-repair-attempts: 2
@@ -95,7 +95,7 @@ deepaudit:
     max-tool-calls-per-agent: 10
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
-    triage-batch-size: 40
+    triage-batch-size: 20
   semantic:
     enabled: true
     max-call-depth: 10
@@ -116,11 +116,11 @@ AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解
 DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供跨文件全局调用拓扑，
 JavaParser 不再构建第二套全项目调用图。CodeGraph 只决定影响范围和关系候选，不直接判定漏洞。
 CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
-可以从 `PATH` 调用，也可以配置 Windows 官方 ZIP 的解压根目录。无需为被审计项目单独执行
+可以从 `PATH` 调用，也可以配置 Windows 官方发行包的解压根目录。无需为被审计项目单独执行
 `codegraph init`。增量任务会在不可变 Comparison Base 和 Target 快照中分别建立临时索引：Target
 用于当前影响范围和作用域关系，Base 用于删除方法、签名变化和历史调用者。
 
-Windows 官方 ZIP 无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
+Windows 官方发行包无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
 然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI
 脚本，不经过 `codegraph.cmd` 或 `cmd.exe`。
 
@@ -161,10 +161,12 @@ CodeGraph 返回的直接关系先标记为候选。JavaParser 仅在调用方�
 - 构建脚本、测试或仓库内可执行文件
 - 目标项目依赖安装
 
-代码盘点默认只保留可审计的生产源码和配置。`src/test`、`tests`、`__tests__`、集成测试、
-测试夹具、`*Test.java`、`*IT.java`、构建输出、生成代码、依赖目录、文档目录和压缩后的前端
-Bundle 不会物化到分析快照，也不会生成 Chunk、语义关系、增量变更或 Agent 任务。
-`pom.xml`、生产环境 XML/YAML/Properties、MyBatis Mapper 和数据库迁移仍会保留。
+代码盘点使用统一的文件角色白名单，只保留可审计的 Java 生产源码、安全与运行配置、
+MyBatis/SQL、服务端模板和构建描述。`src/test`、`tests`、`__tests__`、集成测试、测试夹具、
+`*Test.java`、`*IT.java`、构建输出、生成代码、依赖目录、Markdown、独立前端源码、样式和
+静态 HTML 不会物化到分析快照，也不会生成 Diff、Chunk、语义关系或 Agent 任务。
+`pom.xml`/Gradle 描述只参与架构识别，不生成 Chunk；application/bootstrap 配置、受支持的
+安全 XML、MyBatis Mapper、数据库迁移以及 JSP/FreeMarker/Thymeleaf 服务端模板仍会保留。
 
 生产环境只允许 `deepaudit.git.allowed-hosts` 中的 HTTPS 主机。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
 
@@ -206,6 +208,8 @@ http://localhost:8080/
 - `V16__drop_legacy_scan_mode.sql`：删除已停用的扫描模式字段
 - `V17__remove_retired_audit_values.sql`：删除退役漏洞数据并约束当前枚举值
 - `V18__separate_sensitive_information_audit.sql`：拆分敏感信息泄露类型和独立专业 Agent
+- `V19__rename_semantic_flow_coverage.sql`：把语义流覆盖状态统一为当前局部语义命名
+- `V20__remove_legacy_project_source.sql`：删除已停用的上传文件名和项目来源类型字段
 
 `V7` 和 `V9` 是不可改写的历史迁移，新版本会继续保留文件用于已有数据库校验；当前运行时代码不再使用 RAG、Embedding 或向量召回。
 
@@ -243,8 +247,10 @@ http://localhost:8080/
 - `POST /api/projects/{projectId}/audits`：创建 Base→Target 增量审计任务
 - `GET /api/tasks`：任务列表和 Agent 调用统计
 - `GET /api/tasks/{taskId}`：任务进度
+- `POST /api/tasks/{taskId}/cancel`：中断尚未进入终态的审计任务
 - `GET /api/tasks/{taskId}/agents`：Agent 运行记录
 - `GET /api/tasks/{taskId}/events`：Agent 操作摘要和工具日志
+- `GET /api/tasks/{taskId}/events/stream`：任务实时事件流（SSE）
 - `GET /api/tasks/{taskId}/hypotheses`：漏洞假设及 Critic 状态
 - `GET /api/tasks/{taskId}/changes`：结构化 Git 文件和行范围差异
 - `GET /api/tasks/{taskId}/method-changes`：Base/Target 方法级语义变化和前后代码证据

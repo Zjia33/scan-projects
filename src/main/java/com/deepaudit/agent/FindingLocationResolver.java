@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-// 封装 FindingLocationResolver 相关的数据与处理逻辑。
 public final class FindingLocationResolver {
     private static final int CONTEXT_LINES = 4;
     private static final int CRITIC_PRIMARY_CONTEXT_LINES = 20;
@@ -33,11 +32,9 @@ public final class FindingLocationResolver {
     private static final int CRITIC_TOTAL_MAX_CHARS = 20_000;
     private static final int MAX_VULNERABLE_LINES = 5;
 
-    // 创建 FindingLocationResolver 实例并初始化所需依赖或状态。
     private FindingLocationResolver() {
     }
 
-    // 解析并确定 resolve 对应的目标。
     public static Location resolve(LlmGateway.FindingProposal proposal, CodeChunk chunk) {
         return validateExplicit(proposal.vulnerabilityStartLine(), proposal.vulnerabilityEndLine(), chunk)
                 .orElseGet(() -> infer(proposal.type(), proposal.title() + " " + proposal.description(), chunk));
@@ -451,7 +448,6 @@ public final class FindingLocationResolver {
         return value != null && !value.isBlank();
     }
 
-    // 执行 FindingLocationResolver 中的 infer 处理。
     public static Location infer(VulnerabilityType type, String description, CodeChunk chunk) {
         String[] lines = contentLines(chunk);
         List<String> patterns = patterns(type);
@@ -478,7 +474,6 @@ public final class FindingLocationResolver {
         return new Location(line, line);
     }
 
-    // 格式化并输出 formatContext 对应的展示内容。
     public static String formatContext(CodeChunk chunk, Location location, boolean markVulnerability) {
         String[] lines = contentLines(chunk);
         int chunkStart = Math.max(1, chunk.getStartLine());
@@ -499,13 +494,11 @@ public final class FindingLocationResolver {
         return result.toString().stripTrailing();
     }
 
-    // 执行 FindingLocationResolver 中的 contentLines 处理。
     private static String[] contentLines(CodeChunk chunk) {
         String content = chunk.getContent() == null ? "" : chunk.getContent();
         return content.split("\\R", -1);
     }
 
-    // 执行 FindingLocationResolver 中的 firstExecutableLine 处理。
     private static int firstExecutableLine(String[] lines) {
         for (int index = 0; index < lines.length; index++) {
             String line = lines[index].strip();
@@ -515,7 +508,6 @@ public final class FindingLocationResolver {
         return 0;
     }
 
-    // 执行 FindingLocationResolver 中的 patterns 处理。
     private static List<String> patterns(VulnerabilityType type) {
         return switch (type) {
             case SQL_INJECTION -> List.of("execute(", "executequery", "executeupdate", "statement.",
@@ -531,13 +523,11 @@ public final class FindingLocationResolver {
         };
     }
 
-    // 格式化并输出 formatEvidence 对应的展示内容。
     public static String formatEvidence(LlmGateway.FindingProposal proposal,
                                         java.util.Map<Long, CodeChunk> chunks) {
         return formatEvidence(proposal, chunks, Map.of());
     }
 
-    // 格式化并输出 formatEvidence 对应的展示内容。
     public static String formatEvidence(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks,
                                         Map<Long, Integer> callSiteLines) {
         return proposal.evidenceChunkIds().stream().distinct().map(chunks::get)
@@ -635,12 +625,10 @@ public final class FindingLocationResolver {
         return false;
     }
 
-    // 执行 FindingLocationResolver 中的 validCallSite 处理。
     private static Optional<Location> validCallSite(Integer line, CodeChunk chunk) {
         return validateExplicit(line, line, chunk);
     }
 
-    // 封装 Location 使用的不可变结构化数据。
     public record Location(int startLine, int endLine) {
     }
 

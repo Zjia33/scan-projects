@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 
-// 封装 RemoteLlmGateway 相关的数据与处理逻辑。
 @Slf4j
 @Service
 public class RemoteLlmGateway implements LlmGateway {
@@ -34,7 +33,6 @@ public class RemoteLlmGateway implements LlmGateway {
     private final ObjectMapper tolerantObjectMapper;
     private final RestClient restClient;
 
-    // 创建 RemoteLlmGateway 实例并初始化所需依赖或状态。
     public RemoteLlmGateway(AiProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
@@ -152,9 +150,6 @@ public class RemoteLlmGateway implements LlmGateway {
 
     private <T> T call(UUID taskId, String operation, String system, String user, Class<T> responseType,
                        Function<T, String> responseValidator) {
-        if (!properties.isRequired()) {
-            throw new AiUnavailableException("Agent 模式要求 deepaudit.ai.required=true");
-        }
         List<Map<String, String>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", system));
         messages.add(Map.of("role", "user", "content", user));
@@ -290,7 +285,6 @@ public class RemoteLlmGateway implements LlmGateway {
                 .path("message").path("content").asText();
     }
 
-    // 执行 RemoteLlmGateway 中的 json 处理。
     private String json(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -386,7 +380,6 @@ public class RemoteLlmGateway implements LlmGateway {
         return repaired.toString();
     }
 
-    // 判断是否满足 isClosingQuote 对应的条件。
     private boolean isClosingQuote(String json, int start) {
         for (int index = start; index < json.length(); index++) {
             char next = json.charAt(index);
@@ -396,7 +389,6 @@ public class RemoteLlmGateway implements LlmGateway {
         return true;
     }
 
-    // 格式化并输出 formatLocation 对应的展示内容。
     private String formatLocation(JsonProcessingException exception) {
         if (exception == null) return "未知";
         JsonLocation location = exception.getLocation();

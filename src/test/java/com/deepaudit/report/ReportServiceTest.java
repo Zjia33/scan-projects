@@ -58,8 +58,7 @@ class ReportServiceTest {
         FindingMapper findingMapper = mock(FindingMapper.class);
         AuditTask task = new AuditTask(projectId, "base-commit", "target-commit", "base-commit");
         task.setId(taskId);
-        Project project = new Project(projectId, "示例项目", "https://example.test/repository.git",
-                "data/example", com.deepaudit.domain.ProjectSourceType.GIT,
+        Project project = new Project(projectId, "示例项目", "data/example",
                 "https://example.test/repository.git", "main");
         Finding finding = new Finding(taskId, VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
                 "动态 SQL 注入", "demo/UserService.java", 73, 73, null,
@@ -78,9 +77,10 @@ class ReportServiceTest {
 
         String html = service.html(taskId);
 
-        assertThat(html).contains("漏洞说明", "外部输入直接进入动态 SQL。", "CHUNK 1", "CHUNK 2")
+        assertThat(html).contains("漏洞说明", "外部输入直接进入动态 SQL。", "代码证据 1", "代码证据 2")
                 .contains("evidence-code-line vulnerable", "evidence-line-number'>73")
-                .doesNotContain("Critic Agent 复核", "&gt;&gt;&gt;", "#a22818", "#6b2429");
+                .doesNotContain("Critic Agent 复核", ">CHUNK 1<", ">CHUNK 2<",
+                        "&gt;&gt;&gt;", "#a22818", "#6b2429");
     }
 
     @Test
@@ -95,8 +95,7 @@ class ReportServiceTest {
         GitFileChangeMapper changeMapper = mock(GitFileChangeMapper.class);
         AuditTask task = new AuditTask(projectId, "base-commit", "target-commit", "base-commit");
         task.setId(taskId);
-        Project project = new Project(projectId, "示例项目", "https://example.test/repository.git",
-                "data/example", com.deepaudit.domain.ProjectSourceType.GIT,
+        Project project = new Project(projectId, "示例项目", "data/example",
                 "https://example.test/repository.git", "main");
         AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(),
                 VulnerabilityType.VALIDATION_BYPASS, "未验证指令可以执行", 2100L,

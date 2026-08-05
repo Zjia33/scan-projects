@@ -10,18 +10,15 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-// 负责 SqlInjectionAnalyzer 对应的确定性分析与事实提取。
 @Order(10)
 @Component
 public class SqlInjectionAnalyzer implements VulnerabilityAnalyzer {
 
     private static final String DYNAMIC_SQL = "\\$\\{|(?:select|update|delete|insert)\\s+[^\\n;]*(?:\\+|concat\\s*\\()|create(?:native)?query\\s*\\([^\\n;]*\\+|statement\\s*\\.\\s*execute";
 
-    // 执行 SqlInjectionAnalyzer 中的 type 处理。
     @Override
     public VulnerabilityType type() { return VulnerabilityType.SQL_INJECTION; }
 
-    // 分析并提取 analyze 对应的事实。
     @Override
     public List<FindingDraft> analyze(AnalysisContext context) {
         List<FindingDraft> results = new ArrayList<>();

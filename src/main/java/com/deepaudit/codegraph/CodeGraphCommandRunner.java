@@ -21,7 +21,6 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-// 封装 CodeGraphCommandRunner 相关的数据与处理逻辑。
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -81,20 +80,17 @@ class CodeGraphCommandRunner {
         }
     }
 
-    // 执行 CodeGraphCommandRunner 中的 operation 处理。
     private String operation(List<String> arguments) {
         if (arguments == null || arguments.isEmpty() || arguments.get(0) == null
                 || arguments.get(0).isBlank()) return "unknown";
         return arguments.get(0).strip();
     }
 
-    // 执行 CodeGraphCommandRunner 中的 logStarted 处理。
     private void logStarted(String operation, Path root) {
         TimingDetailLog.info("CodeGraph 命令开始：operation={}，workspace={}，timeoutSeconds={}",
                 operation, root.getFileName(), properties.getTimeoutSeconds());
     }
 
-    // 执行 CodeGraphCommandRunner 中的 logCompleted 处理。
     private void logCompleted(String operation, Path root, CommandOutput output,
                               long stdoutBytes, long stderrBytes) {
         long elapsedMs = output.duration().toMillis();
@@ -108,7 +104,6 @@ class CodeGraphCommandRunner {
         }
     }
 
-    // 执行 CodeGraphCommandRunner 中的 requireDirectory 处理。
     private Path requireDirectory(Path value) {
         if (value == null) throw new CodeGraphException("CodeGraph 工作目录不能为空");
         Path root = value.toAbsolutePath().normalize();
@@ -118,7 +113,6 @@ class CodeGraphCommandRunner {
         return root;
     }
 
-    // 执行 CodeGraphCommandRunner 中的 requireExecutable 处理。
     private String requireExecutable(String value) {
         if (value == null || value.isBlank() || value.indexOf('\0') >= 0
                 || value.contains("\n") || value.contains("\r")) {
@@ -127,7 +121,6 @@ class CodeGraphCommandRunner {
         return value.strip();
     }
 
-    // 执行 CodeGraphCommandRunner 中的 commandPrefix 处理。
     List<String> commandPrefix() {
         String configuredRoot = properties.getBundleRoot();
         if (configuredRoot == null || configuredRoot.isBlank()) {
@@ -135,14 +128,14 @@ class CodeGraphCommandRunner {
         }
         if (configuredRoot.indexOf('\0') >= 0 || configuredRoot.contains("\n")
                 || configuredRoot.contains("\r")) {
-            throw new CodeGraphException("CodeGraph ZIP 根目录配置无效");
+            throw new CodeGraphException("CodeGraph 发行包根目录配置无效");
         }
         Path bundleRoot = Path.of(configuredRoot.strip()).toAbsolutePath().normalize();
         Path node = bundleRoot.resolve("node.exe").normalize();
         Path script = bundleRoot.resolve("lib/dist/bin/codegraph.js").normalize();
         if (!node.startsWith(bundleRoot) || !script.startsWith(bundleRoot)
                 || !Files.isRegularFile(node) || !Files.isRegularFile(script)) {
-            throw new CodeGraphException("CodeGraph ZIP 目录缺少 node.exe 或 lib/dist/bin/codegraph.js: "
+            throw new CodeGraphException("CodeGraph 发行包目录缺少 node.exe 或 lib/dist/bin/codegraph.js: "
                     + bundleRoot);
         }
         return List.of(node.toString(), "--liftoff-only", "--disable-warning=ExperimentalWarning",
@@ -163,7 +156,6 @@ class CodeGraphCommandRunner {
         processEnvironment.putAll(explicitEnvironment);
     }
 
-    // 读取并返回 readBounded 对应的信息。
     private BoundedOutput readBounded(InputStream input, long configuredLimit) {
         long limit = Math.max(1_024, configuredLimit);
         try (input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
@@ -183,11 +175,9 @@ class CodeGraphCommandRunner {
         }
     }
 
-    // 封装 CommandOutput 使用的不可变结构化数据。
     record CommandOutput(int exitCode, String stdout, String stderr, Duration duration) {
     }
 
-    // 封装 BoundedOutput 使用的不可变结构化数据。
     private record BoundedOutput(String text, boolean overflow, long byteCount) {
     }
 }

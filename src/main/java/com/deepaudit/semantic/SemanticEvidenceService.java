@@ -18,7 +18,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-// 负责 SemanticEvidenceService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 public class SemanticEvidenceService {
@@ -189,7 +188,6 @@ public class SemanticEvidenceService {
         return text.toString();
     }
 
-    // 解析输入并生成 parseIds 对应的结构化结果。
     private Set<Long> parseIds(String value) {
         if (value == null || value.isBlank()) return Set.of();
         Set<Long> result = new LinkedHashSet<>();
@@ -199,10 +197,8 @@ public class SemanticEvidenceService {
         return result;
     }
 
-    // 封装 SemanticHints 使用的不可变结构化数据。
     public record SemanticHints(Map<Long, Set<VulnerabilityType>> typesByChunk,
                                 Map<Long, String> descriptionsByChunk) {}
-    // 封装 EvidenceResult 使用的不可变结构化数据。
     public record EvidenceResult(String text, Set<Long> evidenceChunkIds) {
         // 校验并规范化 EvidenceResult 的构造参数。
         public EvidenceResult {
@@ -211,6 +207,5 @@ public class SemanticEvidenceService {
         }
     }
 
-    // 封装 RelationVerification 使用的不可变结构化数据。
     public record RelationVerification(boolean verified, String reason) {}
 }

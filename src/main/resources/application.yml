@@ -42,7 +42,6 @@ deepaudit:
     # Base/Target 提交快照与 CodeGraph 索引按提交复用，超出数量后清理最旧缓存。
     max-cached-snapshots: ${DEEPAUDIT_GIT_MAX_CACHED_SNAPSHOTS:6}
   ai:
-    required: true
     base-url: ${DEEPAUDIT_AI_BASE_URL:https://api.deepseek.com}
     api-key: ${DEEPAUDIT_AI_API_KEY:}
     model: ${DEEPAUDIT_AI_MODEL:deepseek-v4-flash}
@@ -69,7 +68,7 @@ deepaudit:
     # CodeGraph 是生产环境唯一的全局调用拓扑与影响范围来源。
     enabled: ${DEEPAUDIT_CODEGRAPH_ENABLED:true}
     executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
-    # Windows 官方 ZIP 可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
+    # Windows 官方发行包可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
     bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
     expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
     timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:120}

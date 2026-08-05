@@ -4,7 +4,6 @@ import java.util.Locale;
 
 // 表示审计领域中的 ModelEnumNormalizer 数据实体。
 final class ModelEnumNormalizer {
-    // 创建 ModelEnumNormalizer 实例并初始化所需依赖或状态。
     private ModelEnumNormalizer() {
     }
 

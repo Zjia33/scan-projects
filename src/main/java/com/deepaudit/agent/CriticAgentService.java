@@ -29,7 +29,6 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-// 负责 CriticAgentService 对应的业务编排和处理。
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -191,28 +190,23 @@ public class CriticAgentService {
         }
     }
 
-    // 执行 CriticAgentService 中的 fallbackConfidence 处理。
     private Confidence fallbackConfidence(Confidence value) {
         return value == null ? Confidence.MEDIUM : value;
     }
 
-    // 执行 CriticAgentService 中的 truncate 处理。
     private String truncate(String value, int length) {
         String result = value == null || value.isBlank() ? "AI Agent 发现潜在安全问题" : value.strip();
         return result.substring(0, Math.min(result.length(), length));
     }
 
-    // 执行 CriticAgentService 中的 safe 处理。
     private String safe(String value) {
         return truncate(value, 2_000);
     }
 
-    // 执行 CriticAgentService 中的 safeText 处理。
     private String safeText(String value) {
         return value == null ? "" : value.strip();
     }
 
-    // 执行 CriticAgentService 中的 correctedProposal 处理。
     private Correction correctedProposal(
             LlmGateway.FindingProposal original, LlmGateway.CriticDecision decision,
             Map<Long, CodeChunk> chunks, Set<Long> allowed,
@@ -418,7 +412,6 @@ public class CriticAgentService {
         return false;
     }
 
-    // 执行 CriticAgentService 中的 affectedEndpoint 处理。
     private String affectedEndpoint(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks) {
         return proposal.evidenceChunkIds().stream().map(chunks::get).filter(java.util.Objects::nonNull)
                 .map(CodeChunk::getEndpoint).filter(value -> value != null && !value.isBlank())

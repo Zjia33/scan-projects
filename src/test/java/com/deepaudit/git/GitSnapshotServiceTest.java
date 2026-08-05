@@ -21,6 +21,11 @@ class GitSnapshotServiceTest {
         write(repositoryPath, "src/test/java/demo/AppTest.java", "class AppTest {}");
         write(repositoryPath, "target/generated-sources/demo/Generated.java", "class Generated {}");
         write(repositoryPath, "pom.xml", "<project/>");
+        write(repositoryPath, "README.md", "# Documentation");
+        write(repositoryPath, "frontend/src/App.vue", "<template>frontend</template>");
+        write(repositoryPath, "src/main/resources/static/app.js", "console.log('frontend');");
+        write(repositoryPath, "src/main/resources/templates/order.html", "<span th:text=\"${order.id}\"></span>");
+        write(repositoryPath, "src/main/resources/application.yml", "spring.application.name: demo");
 
         try (Git git = Git.init().setDirectory(repositoryPath.toFile()).call()) {
             git.add().addFilepattern(".").call();
@@ -33,12 +38,17 @@ class GitSnapshotServiceTest {
             GitSnapshotService.SnapshotResult result = new GitSnapshotService(new GitProperties())
                     .materialize(git.getRepository(), commit, snapshot);
 
-            assertThat(result.fileCount()).isEqualTo(2);
-            assertThat(result.skippedFileCount()).isEqualTo(2);
+            assertThat(result.fileCount()).isEqualTo(4);
+            assertThat(result.skippedFileCount()).isEqualTo(5);
             assertThat(snapshot.resolve("src/main/java/demo/App.java")).isRegularFile();
             assertThat(snapshot.resolve("pom.xml")).isRegularFile();
+            assertThat(snapshot.resolve("src/main/resources/templates/order.html")).isRegularFile();
+            assertThat(snapshot.resolve("src/main/resources/application.yml")).isRegularFile();
             assertThat(snapshot.resolve("src/test/java/demo/AppTest.java")).doesNotExist();
             assertThat(snapshot.resolve("target/generated-sources/demo/Generated.java")).doesNotExist();
+            assertThat(snapshot.resolve("README.md")).doesNotExist();
+            assertThat(snapshot.resolve("frontend/src/App.vue")).doesNotExist();
+            assertThat(snapshot.resolve("src/main/resources/static/app.js")).doesNotExist();
         }
     }
 
