@@ -77,9 +77,9 @@ class ReportServiceTest {
 
         String html = service.html(taskId);
 
-        assertThat(html).contains("漏洞说明", "外部输入直接进入动态 SQL。", "代码证据 1", "代码证据 2")
+        assertThat(html).contains("漏洞说明", "外部输入直接进入动态 SQL。", "代码证据")
                 .contains("evidence-code-line vulnerable", "evidence-line-number'>73")
-                .doesNotContain("Critic Agent 复核", ">CHUNK 1<", ">CHUNK 2<",
+                .doesNotContain("代码证据 1", "代码证据 2", "Critic Agent 复核", ">CHUNK 1<", ">CHUNK 2<",
                         "&gt;&gt;&gt;", "#a22818", "#6b2429");
     }
 

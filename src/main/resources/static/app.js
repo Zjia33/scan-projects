@@ -747,11 +747,10 @@ function buildFindingEvidence(value) {
     const section = el('section', 'finding-copy-section');
     section.append(el('h5', '', '代码证据'));
     const list = el('div', 'finding-evidence-list');
-    splitFindingEvidence(value).forEach((chunk, index) => {
+    splitFindingEvidence(value).forEach(chunk => {
         const card = el('article', 'finding-evidence-chunk');
         const header = el('header');
-        header.append(el('b', '', `代码证据 ${index + 1}`),
-            el('span', '', chunk.location || '代码上下文'));
+        header.append(el('span', '', chunk.location || '代码上下文'));
         const code = buildEvidenceCode(chunk.code || '暂无代码证据');
         card.append(header, code);
         list.append(card);

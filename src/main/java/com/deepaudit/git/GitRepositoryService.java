@@ -270,8 +270,8 @@ public class GitRepositoryService {
         return "main";
     }
 
-    // 校验 validateRepositoryUrl 对应的数据或约束。
-    private String validateRepositoryUrl(String value) {
+    // 默认仅允许 HTTPS；HTTP 主机必须同时命中通用白名单和专用 HTTP 白名单。
+    String validateRepositoryUrl(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Git 仓库地址不能为空");
         URI uri;
         try {
@@ -286,16 +286,27 @@ public class GitRepositoryService {
             }
             return uri.toString();
         }
-        if (!"https".equals(scheme) || uri.getHost() == null || uri.getUserInfo() != null
+        if (!("https".equals(scheme) || "http".equals(scheme))
+                || uri.getHost() == null || uri.getUserInfo() != null
                 || uri.getQuery() != null || uri.getFragment() != null) {
-            throw new IllegalArgumentException("只允许不含内嵌凭据的 HTTPS Git 仓库地址");
+            throw new IllegalArgumentException("只允许不含内嵌凭据的 HTTP/HTTPS Git 仓库地址");
         }
         String host = uri.getHost().toLowerCase(Locale.ROOT);
-        boolean allowed = properties.getAllowedHosts().stream()
-                .map(item -> item.toLowerCase(Locale.ROOT).strip())
-                .anyMatch(item -> host.equals(item));
-        if (!allowed) throw new IllegalArgumentException("Git 主机不在允许列表中: " + host);
+        if (!hostAllowed(properties.getAllowedHosts(), host)) {
+            throw new IllegalArgumentException("Git 主机不在允许列表中: " + host);
+        }
+        if ("http".equals(scheme) && !hostAllowed(properties.getAllowedHttpHosts(), host)) {
+            throw new IllegalArgumentException("Git 主机未获准使用 HTTP: " + host);
+        }
         return uri.toString();
+    }
+
+    private boolean hostAllowed(List<String> allowedHosts, String host) {
+        if (allowedHosts == null || host == null) return false;
+        return allowedHosts.stream()
+                .filter(item -> item != null && !item.isBlank())
+                .map(item -> item.toLowerCase(Locale.ROOT).strip())
+                .anyMatch(host::equals);
     }
 
     private CredentialsProvider credentials(String repositoryUrl, String username, String accessToken) {

@@ -6,7 +6,7 @@
 
 ## 当前能力
 
-- 只读导入 HTTPS Git 仓库、列出提交并安全物化不可变提交快照
+- 只读导入 HTTPS Git 仓库，以及显式白名单中的内网 HTTP Git 仓库，列出提交并安全物化不可变提交快照
 - 扫描项目基本信息维护、项目级扫描历史、归档/恢复和扫描派生数据清理
 - Base/Target 分支变更审计；分支分叉时自动使用共同祖先作为实际比较基线
 - 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
@@ -67,7 +67,7 @@
 - IDEA 中启用 Lombok 插件和 Annotation Processing（仅 IDE 代码提示需要，Maven 会自动处理）
 - 可访问的 OpenAI-compatible Chat Completions 服务
 - PostgreSQL 13+
-- 可访问的、已经获得审计授权的 HTTPS Git 仓库
+- 可访问的、已经获得审计授权的 Git 仓库；默认要求 HTTPS，仅显式白名单内网主机可使用 HTTP
 
 默认使用 PostgreSQL。应用会自动读取项目根目录的 `.env`，也支持使用同名的操作系统环境变量覆盖配置。首次运行可复制 `.env.example` 为 `.env`，然后填写真实连接信息：
 
@@ -76,6 +76,7 @@ DEEPAUDIT_DATASOURCE_URL=jdbc:postgresql://localhost:5432/deepaudit
 DEEPAUDIT_DATASOURCE_USERNAME=deepaudit
 DEEPAUDIT_DATASOURCE_PASSWORD=<由运行环境提供>
 DEEPAUDIT_GIT_ALLOWED_HOSTS=github.com,gitlab.com,gitee.com
+DEEPAUDIT_GIT_ALLOWED_HTTP_HOSTS=
 ```
 
 `.env` 已加入 `.gitignore`，不得强制提交；`.env.example` 只保存无效占位值。远程数据库端口应只放行受信任来源，不要把真实地址、用户名、密码或模型 API Key 写入受版本控制的配置文件。
@@ -168,7 +169,7 @@ MyBatis/SQL、服务端模板和构建描述。`src/test`、`tests`、`__tests__
 `pom.xml`/Gradle 描述只参与架构识别，不生成 Chunk；application/bootstrap 配置、受支持的
 安全 XML、MyBatis Mapper、数据库迁移以及 JSP/FreeMarker/Thymeleaf 服务端模板仍会保留。
 
-生产环境只允许 `deepaudit.git.allowed-hosts` 中的 HTTPS 主机。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
+生产环境只允许 `deepaudit.git.allowed-hosts` 中的主机，并默认强制 HTTPS。只有同时出现在 `deepaudit.git.allowed-hosts` 和 `deepaudit.git.allowed-http-hosts` 中的精确主机名才允许使用 HTTP；不支持通配符或子域名隐式匹配。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
 
 每次审计都必须选择基准分支提交和目标分支提交，并同时保存所选 Base、Target 和 Merge Base 的完整 SHA；若两个分支已经分叉，系统自动以 Merge Base 作为实际比较基线，只分析目标分支自共同祖先以来引入的变化。系统保留 Target 的完整项目结构和配置上下文，同时为实际比较基线和 Target 建立独立 CodeGraph 与方法快照索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的深度目标限制为直接变更块、CodeGraph 影响块以及全局安全配置相关块，范围扩展不按固定代码块数量截断。
 

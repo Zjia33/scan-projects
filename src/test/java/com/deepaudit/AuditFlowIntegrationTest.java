@@ -85,10 +85,10 @@ class AuditFlowIntegrationTest {
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(script).contains("中断审计", "/cancel", "确认中断",
                         "taskRequestSequence", "selectedTask() !== task",
-                        "withoutInternalChunkIds", "代码证据 ${index + 1}",
+                        "withoutInternalChunkIds", "finding-evidence-chunk",
                         "正在创建审计任务并加入队列", "queuedTaskFromSubmission",
                         "void loadTasks({ forceDetail: true })", "state.submittingAudit")
-                .doesNotContain("chunk.id ? `CHUNK");
+                .doesNotContain("chunk.id ? `CHUNK", "代码证据 ${index + 1}");
     }
 
     @Test
@@ -96,7 +96,8 @@ class AuditFlowIntegrationTest {
         String console = mockMvc.perform(get("/index.html"))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
-        assertThat(console).contains("SECURITY POSTURE / LIVE", "HTTPS Git 仓库地址", "Base → Target",
+        assertThat(console).contains("SECURITY POSTURE / LIVE", "Git 仓库地址",
+                "白名单内网主机可使用 HTTP", "Base → Target",
                 "扫描项目管理", "项目归档", "审计任务")
                 .doesNotContain("全量扫描", "id=\"scan-mode\"");
 
@@ -147,9 +148,9 @@ class AuditFlowIntegrationTest {
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(report).contains("代码安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
         assertThat(report).contains("class='finding-description'", "class='vulnerability-location'",
-                        "class='evidence-chunk'", "实际漏洞位置", "代码证据 1")
+                        "class='evidence-chunk'", "实际漏洞位置", "代码证据")
                 .doesNotContain("class='critic-review'", "class='vulnerable-line'", "&gt;&gt;&gt;",
-                        "[SEMANTIC_FLOW]", "[CRITIC]", ">CHUNK 1<");
+                        "[SEMANTIC_FLOW]", "[CRITIC]", ">CHUNK 1<", "代码证据 1");
 
         String events = mockMvc.perform(get("/api/tasks/{taskId}/events", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()

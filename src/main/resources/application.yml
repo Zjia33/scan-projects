@@ -32,7 +32,9 @@ deepaudit:
     # 高频的模型、CodeGraph、单位置 Agent 耗时仅写入此滚动文件，不输出到控制台。
     timing-detail-file: ${DEEPAUDIT_TIMING_DETAIL_FILE:logs/deepaudit-timing-detail.log}
   git:
-    allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
+    allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com,dev.nbcb.com}
+    # HTTP 只对同时位于 allowed-hosts 中的精确内网主机开放；其他主机仍强制 HTTPS。
+    allowed-http-hosts: ${DEEPAUDIT_GIT_ALLOWED_HTTP_HOSTS:dev.nbcb.com}
     allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
     transport-timeout-seconds: ${DEEPAUDIT_GIT_TIMEOUT_SECONDS:60}
     max-commits: ${DEEPAUDIT_GIT_MAX_COMMITS:200}

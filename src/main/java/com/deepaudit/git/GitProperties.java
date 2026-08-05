@@ -14,6 +14,7 @@ import java.util.List;
 @ConfigurationProperties(prefix = "deepaudit.git")
 public class GitProperties {
     private List<String> allowedHosts = new ArrayList<>(List.of("github.com", "gitlab.com", "gitee.com"));
+    private List<String> allowedHttpHosts = new ArrayList<>();
     private boolean allowLocalRepositories;
     private int transportTimeoutSeconds = 60;
     private int maxCommits = 200;
