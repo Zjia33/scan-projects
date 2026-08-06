@@ -12,7 +12,7 @@ deepaudit:
   ai:
     # 通过环境变量提供真实模型凭据，然后直接在 IDEA 中运行 ModelApiManualIT。
     base-url: https://api.deepseek.com
-    api-key: ${DEEPAUDIT_MODEL_TEST_AI_API_KEY:sk-2c65073721fe4852819d607d6b17b69a}
+    api-key: ${DEEPAUDIT_MODEL_TEST_AI_API_KEY:}
     model: deepseek-v4-flash
     connect-timeout-seconds: 10
     read-timeout-seconds: 120
