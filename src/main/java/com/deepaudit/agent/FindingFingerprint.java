@@ -8,7 +8,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 
 /**
- * Generates a stable identity for an evidence-gated vulnerability location.
+ * Generates a stable identity for a Critic-confirmed vulnerability location.
  *
  * <p>The affected HTTP endpoint and the evidence-chain order are deliberately
  * excluded: both can differ when separate professional agents reach the same

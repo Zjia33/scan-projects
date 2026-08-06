@@ -5,5 +5,5 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.AuditHypothesis;
 
 public record AgentCandidate(AgentType sourceAgent, LlmGateway.FindingProposal proposal,
-                             AuditHypothesis hypothesis) {
+                             String evidence, AuditHypothesis hypothesis) {
 }

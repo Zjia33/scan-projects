@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -87,84 +88,126 @@ class FindingLocationResolverTest {
     }
 
     @Test
-    void prefersActualUnsafeValueUseWhenModelMarksOnlyPreconditionChecks() {
-        CodeChunk chunk = chunk(78, 91, """
-                public TransactionResult purchase(PurchaseRequest request) {
-                    if (request == null
-                            || request.quotedUnitPrice() == null
-                            || request.quotedUnitPrice().signum() <= 0
-                            || request.quantity() <= 0) {
-                        throw new IllegalArgumentException("Invalid purchase request");
-                    }
-                    if (!PRODUCT_CATALOG.containsKey(request.productCode())) {
-                        throw new IllegalArgumentException("Invalid purchase request");
-                    }
-                    BigDecimal total = request.quotedUnitPrice().multiply(BigDecimal.valueOf(request.quantity()));
-                    accountRepository.debit(request.accountNo(), total);
-                    return completed(total);
-                }
-                """);
-        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
-                "购买接口接受客户端报价，绕过服务端目录价格校验",
-                "请求仅检查 quotedUnitPrice 非空和正数，未与 PRODUCT_CATALOG 目录价格比对，"
-                        + "随后使用 quotedUnitPrice 计算扣款金额。",
-                "使用服务端目录价格", 1L, List.of(1L), 78, 82);
+    void givesCriticTwentyLinesAroundPrimaryLocationInsteadOfFour() {
+        String content = IntStream.rangeClosed(100, 159)
+                .mapToObj(line -> line == 130 ? "statement.execute(userSql);" : "line" + line + "();")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        CodeChunk chunk = chunk(100, 159, content);
+        LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 130, 130);
 
-        FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, chunk);
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, Map.of(1L, chunk), Set.of(1L), Map.of());
 
-        assertThat(location).isEqualTo(new FindingLocationResolver.Location(88, 88));
-        assertThat(FindingLocationResolver.formatContext(chunk, location, true))
-                .contains(">>>    88 |     BigDecimal total = request.quotedUnitPrice().multiply")
-                .doesNotContain(">>>    78 | public TransactionResult purchase");
+        assertThat(evidence)
+                .contains("[CRITIC_PRIMARY_CONTEXT]")
+                .contains("    110 | line110();")
+                .contains(">>>   130 | statement.execute(userSql);")
+                .contains("    150 | line150();")
+                .doesNotContain("line109();", "line151();");
     }
 
     @Test
-    void omitsRelatedChunksThatHaveNoRenderableSource() {
-        CodeChunk primary = chunk(70, 76, """
-                public List<User> search(String name) {
-                    String sql = "select * from users where name='" + name + "'";
-                    audit(name);
-                    return statement.executeQuery(sql);
-                }
-                """);
-        CodeChunk empty = new CodeChunk(UUID.randomUUID(), "deleted/LegacyService.java", "LegacyService#run",
-                null, 80, 80, "   \n", "JAVA_METHOD", "", "", "run");
-        empty.setId(2L);
-        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
-                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
-                "动态 SQL 注入", "外部参数进入查询", "使用参数化查询", 1L, List.of(1L, 2L), 73, 73);
-
-        String evidence = FindingLocationResolver.formatEvidence(proposal,
-                Map.of(1L, primary, 2L, empty), Map.of());
-
-        assertThat(evidence).contains("[漏洞位置] demo/UserService.java:73")
-                .doesNotContain("LegacyService.java", "[关联证据]");
-    }
-
-    @Test
-    void keepsRelatedSourceWithoutInventingAnExactCallSite() {
-        CodeChunk primary = chunk(70, 76, """
-                public List<User> search(String name) {
-                    String sql = "select * from users where name='" + name + "'";
-                    audit(name);
-                    return statement.executeQuery(sql);
-                }
-                """);
-        CodeChunk related = new CodeChunk(UUID.randomUUID(), "controller/SearchController.java", "SearchController#search",
-                "/search", 200, 202, "return service.search(name);\n", "JAVA_METHOD", "", "", "search");
+    void givesCriticTwelveLinesAroundRelatedCallSite() {
+        CodeChunk primary = chunk(1, 3, "start();\nstatement.execute(sql);\nfinish();");
+        CodeChunk related = new CodeChunk(UUID.randomUUID(), "demo/Controller.java",
+                "Controller#search", "/search", 200, 259,
+                IntStream.rangeClosed(200, 259).mapToObj(line -> "line" + line + "();")
+                        .collect(java.util.stream.Collectors.joining("\n")),
+                "JAVA_METHOD", "String query", "", "search");
         related.setId(2L);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
                 VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
-                "动态 SQL 注入", "外部参数进入查询", "使用参数化查询", 1L, List.of(1L, 2L), 73, 73);
+                "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",
+                1L, List.of(1L, 2L), 2, 2);
 
-        String evidence = FindingLocationResolver.formatEvidence(proposal,
-                Map.of(1L, primary, 2L, related), Map.of(2L, 80));
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, Map.of(1L, primary, 2L, related), Set.of(1L, 2L), Map.of(2L, 230));
 
-        assertThat(evidence).contains("[漏洞位置] demo/UserService.java:73")
-                .contains("[关联证据] controller/SearchController.java:200-202")
-                .contains("return service.search(name);")
-                .doesNotContain("[调用入口] controller/SearchController.java:80");
+        assertThat(evidence)
+                .contains("[CRITIC_ENTRY_EVIDENCE]")
+                .contains("    218 | line218();")
+                .contains(">>>   230 | line230();")
+                .contains("    242 | line242();")
+                .doesNotContain("line217();", "line243();");
+    }
+
+    @Test
+    void capsCombinedCriticContextToAvoidUnboundedTokenGrowth() {
+        Map<Long, CodeChunk> chunks = new java.util.LinkedHashMap<>();
+        List<Long> ids = new java.util.ArrayList<>();
+        Map<Long, Integer> callSites = new java.util.LinkedHashMap<>();
+        String content = IntStream.rangeClosed(1, 60)
+                .mapToObj(line -> "line" + line + "_" + "x".repeat(180) + "();")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        for (long id = 1; id <= 7; id++) {
+            CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "demo/Chunk" + id + ".java",
+                    "Chunk" + id + "#run", id == 1 ? null : "/entry/" + id,
+                    1, 60, content, "JAVA_METHOD", "", "", "run");
+            chunk.setId(id);
+            chunks.put(id, chunk);
+            ids.add(id);
+            if (id > 1) callSites.put(id, 30);
+        }
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",
+                1L, ids, 30, 30);
+
+        String evidence = FindingLocationResolver.formatCriticEvidence(
+                proposal, chunks, Set.copyOf(ids), callSites);
+
+        assertThat(evidence.length()).isLessThanOrEqualTo(20_000);
+        assertThat(evidence).contains("[CRITIC_CONTEXT_TRUNCATED]");
+    }
+
+    @Test
+    void relocatesCriticLineThatDoesNotMatchStructuredRootCauseAndRole() {
+        CodeChunk chunk = chunk(70, 74, """
+                public List<User> search(String name) {
+                    audit(name);
+                    String sql = "select * from users where name='" + name + "'";
+                    return statement.executeQuery(sql);
+                }
+                """);
+        LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 71, 71);
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "外部参数进入动态查询", com.deepaudit.domain.FindingDeltaStatus.NEW,
+                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY", null);
+
+        assertThat(FindingLocationResolver.resolveCriticPrimary(
+                proposal, decision, Map.of(chunk.getId(), chunk), Set.of(chunk.getId())))
+                .get().satisfies(location -> {
+                    assertThat(location.chunkId()).isEqualTo(chunk.getId());
+                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(73, 73));
+                });
+    }
+
+    @Test
+    void acceptsHardcodedSecretAtConfigurationDefinitionInsteadOfAuthorizationLocation() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "src/main/resources/application.yml",
+                "application.yml#part-1", null, 20, 21,
+                "spring.datasource.password: committed-value\nserver.port: 8080",
+                "TEXT_YML", "", "", "");
+        chunk.setId(88L);
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                Map.of(88L, chunk), Set.of(88L));
+        LlmGateway.LocationCandidate secret = candidates.stream()
+                .filter(candidate -> candidate.roles().contains("SECRET_DEFINITION"))
+                .findFirst().orElseThrow();
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                "配置中包含硬编码密码", "Target 新增了密码字面量", "使用 Secret 管理服务",
+                88L, List.of(88L), 20, 20);
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "配置行直接定义了凭据", com.deepaudit.domain.FindingDeltaStatus.NEW,
+                88L, 20, 20, "HARDCODED_SECRET", "SECRET_DEFINITION", secret.candidateId());
+
+        assertThat(FindingLocationResolver.resolveCriticPrimary(
+                proposal, decision, Map.of(88L, chunk), Set.of(88L)))
+                .get().satisfies(location -> {
+                    assertThat(location.chunkId()).isEqualTo(88L);
+                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(20, 20));
+                });
     }
 
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {

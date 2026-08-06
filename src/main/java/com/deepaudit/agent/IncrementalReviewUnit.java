@@ -5,7 +5,7 @@ import com.deepaudit.domain.VulnerabilityType;
 import java.util.List;
 
 /**
- * 增量扫描的 CHANGED 纯事实审查载体。Triage 只据此定位可疑变更，不预载入跨方法源码。
+ * 增量扫描的纯事实审查载体。它描述实际变更、影响关系和可核验代码，不预判漏洞类型。
  */
 public record IncrementalReviewUnit(String unitId, long primaryChunkId, String filePath,
                                     String symbolName, String endpoint, String chunkType,
@@ -15,7 +15,7 @@ public record IncrementalReviewUnit(String unitId, long primaryChunkId, String f
                                     List<String> facts, String parameters, String annotations,
                                     String calledSymbols, String baseCodeExcerpt,
                                     String targetCodeExcerpt, String changeSummary,
-                                    String deterministicEvidence, int startLine, int endLine) {
+                                    String relatedContext, String deterministicEvidence) {
 
     public IncrementalReviewUnit {
         allowedTypes = immutable(allowedTypes);
@@ -27,7 +27,16 @@ public record IncrementalReviewUnit(String unitId, long primaryChunkId, String f
         baseCodeExcerpt = safe(baseCodeExcerpt);
         targetCodeExcerpt = safe(targetCodeExcerpt);
         changeSummary = safe(changeSummary);
+        relatedContext = safe(relatedContext);
         deterministicEvidence = safe(deterministicEvidence);
+    }
+
+    // 补充一次受控的调用关系和相关代码正文，供 NEED_CONTEXT 后复判。
+    public IncrementalReviewUnit withRelatedContext(String context) {
+        return new IncrementalReviewUnit(unitId, primaryChunkId, filePath, symbolName, endpoint,
+                chunkType, changeType, allowedTypes, mandatoryTypes, facts,
+                parameters, annotations, calledSymbols, baseCodeExcerpt, targetCodeExcerpt,
+                changeSummary, context, deterministicEvidence);
     }
 
     private static <T> List<T> immutable(List<T> values) {

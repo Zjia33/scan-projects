@@ -4,9 +4,10 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 
 import java.util.Locale;
 
-// 轻量分诊只负责路由：可疑变更进入专业调查，明确无安全意义才跳过。
+// 表示轻量编排阶段对审计单元的三态处理决定。
 public enum TriageDisposition {
     INVESTIGATE,
+    NEED_CONTEXT,
     SKIP;
 
     @JsonCreator

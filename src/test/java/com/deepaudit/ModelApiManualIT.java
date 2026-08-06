@@ -59,7 +59,7 @@ class ModelApiManualIT {
                 "JAVA_METHOD", "ADDED", List.of(VulnerabilityType.SQL_INJECTION), List.of(),
                 List.of("DIRECT_CHANGE", "HAS_EXTERNAL_ENDPOINT", "HAS_DATA_ACCESS"), "String name",
                 "@GetMapping(\"/search\")", "queryForList", "", VULNERABLE_CODE,
-                "METHOD_ADDED", "", 1, 20);
+                "METHOD_ADDED", "", "");
         LlmGateway.Target target = new LlmGateway.Target(TARGET_CHUNK_ID,
                 "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
                 "JAVA_METHOD", "String name", "@GetMapping(\"/search\")", "queryForList",
@@ -92,10 +92,7 @@ class ModelApiManualIT {
                     "没有预计算语义路径",
                     recon,
                     List.copyOf(observations),
-                    iteration,
-                    new LlmGateway.AgentBudget(iteration, 3, 3 - iteration,
-                            observations.size(), 3, Math.max(0, 3 - observations.size()),
-                            iteration == 3)
+                    iteration
             );
             LlmGateway.AgentDecision decision = llmGateway.decide(turn);
             printJson("专业 Agent 第 " + iteration + " 轮返回", decision);

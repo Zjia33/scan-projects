@@ -11,6 +11,7 @@ public enum AgentType {
     SENSITIVE_INFORMATION,
     STORED_XSS,
     VALIDATION_BYPASS,
+    CRITIC,
     REPORT;
 
     @JsonCreator

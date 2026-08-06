@@ -11,6 +11,7 @@ public enum AuditStatus {
     AGENT_RECON,
     PLANNING,
     ANALYSIS,
+    CRITIC_REVIEW,
     RESULT_VALIDATION,
     REPORTING,
     COMPLETED,

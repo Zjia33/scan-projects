@@ -66,31 +66,12 @@ class ProfessionalToolServiceTest {
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(
                 edge(1L, 2L, 8, "id -> id"), edge(2L, 3L, 15, "id -> id")));
 
-        ToolResult result = service.exploreFrameworkRelations(taskId, controller,
+        ToolResult result = service.exploreCallGraph(taskId, controller,
                 List.of(controller, serviceChunk, mapper),
                 ToolArguments.of(Map.of("direction", "CALLEES", "depth", 3, "targetChunkId", 3)), 5);
 
         assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(1L, 2L, 3L);
         assertThat(result.text()).contains("direction=CALLEES", "depth=2", "args=id -> id");
-    }
-
-    @Test
-    void excludesHistoricalPlainJavaCallEdgesFromFrameworkRelations() {
-        CodeChunk controller = chunk(1L, "demo/Controller.java", "Controller#entry", "/orders",
-                "service.load(id)");
-        CodeChunk serviceChunk = chunk(2L, "demo/OrderService.java", "OrderService#load", null,
-                "return repository.find(id)");
-        SemanticCallEdge historical = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
-                1L, 2L, 8, "load", "service.load(id)", "JAVA_CALL", Confidence.HIGH,
-                "历史普通 Java 调用边", "id -> id");
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(historical));
-
-        ToolResult result = service.exploreFrameworkRelations(taskId, controller,
-                List.of(controller, serviceChunk),
-                ToolArguments.of(Map.of("direction", "CALLEES", "depth", 2)), 5);
-
-        assertThat(result.status()).isEqualTo(ToolResult.Status.EMPTY);
-        assertThat(result.text()).contains("FRAMEWORK_SEMANTIC_RELATIONS");
     }
 
     @Test
@@ -163,7 +144,7 @@ class ProfessionalToolServiceTest {
     }
 
     @Test
-    void searchesCodeWithLineSnippetsWithoutPagination() {
+    void searchesCodeWithLineSnippetsAndCursorPagination() {
         CodeChunk current = chunk(1L, "src/main/java/demo/Controller.java",
                 "Controller#entry", "/orders", "return service.load(id);");
         CodeChunk first = chunk(2L, "src/main/java/demo/SecurityConfig.java",
@@ -179,14 +160,23 @@ class ProfessionalToolServiceTest {
                     .anyRequest().hasRole("ADMIN"));
                 """);
 
-        ToolResult result = service.searchCode(taskId, current,
+        ToolResult pageOne = service.searchCode(taskId, current,
                 List.of(current, first, second), ToolArguments.of(Map.of(
                         "query", "permitAll", "scope", "PROJECT", "contextLines", 1)), 1);
+        ToolResult pageTwo = service.searchCode(taskId, current,
+                List.of(current, first, second), ToolArguments.of(Map.of(
+                        "query", "permitAll", "scope", "PROJECT", "contextLines", 1,
+                        "cursor", pageOne.nextCursor())), 1);
 
-        assertThat(result.status()).isEqualTo(ToolResult.Status.OK);
-        assertThat(result.truncated()).isFalse();
-        assertThat(result.candidateChunkIds()).hasSize(1);
-        assertThat(result.text()).contains("CODE_SEARCH", ">>>", "permitAll", "RESULT_LIMIT");
+        assertThat(pageOne.status()).isEqualTo(ToolResult.Status.OK);
+        assertThat(pageOne.truncated()).isTrue();
+        assertThat(pageOne.nextCursor()).isEqualTo("1");
+        assertThat(pageOne.candidateChunkIds()).hasSize(1);
+        assertThat(pageOne.text()).contains("CODE_SEARCH", ">>>", "permitAll");
+        assertThat(pageTwo.truncated()).isFalse();
+        assertThat(pageTwo.nextCursor()).isNull();
+        assertThat(pageTwo.candidateChunkIds()).hasSize(1)
+                .doesNotContainAnyElementsOf(pageOne.candidateChunkIds());
     }
 
     @Test
@@ -204,7 +194,7 @@ class ProfessionalToolServiceTest {
 
     private SemanticCallEdge edge(long caller, long callee, int line, String mapping) {
         return new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(), caller, callee, line,
-                "call", "call(value)", "MYBATIS_XML", Confidence.HIGH, "框架语义映射", mapping);
+                "call", "call(value)", "JAVA_CALL", Confidence.HIGH, "精确符号解析", mapping);
     }
 
     private CodeChunk chunk(long id, String path, String symbol, String endpoint, String content) {

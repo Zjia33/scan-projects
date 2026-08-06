@@ -77,29 +77,6 @@ class DeepAuditApplicationTests {
     }
 
     @Test
-    void currentSchemaRejectsRemovedCriticAgentAndReviewStage() {
-        String agentRunConstraint = jdbcTemplate.queryForObject("""
-                SELECT CHECK_CLAUSE
-                FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS
-                WHERE UPPER(CONSTRAINT_NAME) = 'CHK_AGENT_RUN_CURRENT_TYPE'
-                """, String.class);
-        String agentEventConstraint = jdbcTemplate.queryForObject("""
-                SELECT CHECK_CLAUSE
-                FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS
-                WHERE UPPER(CONSTRAINT_NAME) = 'CHK_AGENT_EVENT_CURRENT_TYPE'
-                """, String.class);
-        String taskStatusConstraint = jdbcTemplate.queryForObject("""
-                SELECT CHECK_CLAUSE
-                FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS
-                WHERE UPPER(CONSTRAINT_NAME) = 'CHK_AUDIT_TASK_CURRENT_STATUS'
-                """, String.class);
-
-        assertThat(agentRunConstraint).doesNotContain("CRITIC");
-        assertThat(agentEventConstraint).doesNotContain("CRITIC");
-        assertThat(taskStatusConstraint).doesNotContain("CRITIC_REVIEW");
-    }
-
-    @Test
     void acceptsCaseInsensitiveEnumValuesReturnedByModels() throws Exception {
         String modelJson = """
                 {

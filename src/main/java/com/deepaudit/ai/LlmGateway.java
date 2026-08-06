@@ -6,6 +6,7 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.recon.ReconSummary;
 import com.deepaudit.recon.TechnologyProfile;
 
@@ -18,11 +19,22 @@ public interface LlmGateway {
 
     ReconInsight inspectProject(UUID taskId, ReconSummary summary);
 
-    // 只基于真实 Base/Target 变更对全部 CHANGED 审查位置做调查/跳过路由。
+    // 首次只基于真实 Base/Target 和轻量关系事实分流全部 CHANGED 审查位置。
     TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                  List<IncrementalReviewUnit> reviewUnits);
 
+    // 对补充上下文后的单个增量位置执行唯一一次明确复判；必须返回 INVESTIGATE 或 SKIP。
+    default TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                              IncrementalReviewUnit reviewUnit) {
+        return triageIncremental(taskId, recon, List.of(reviewUnit));
+    }
+
     AgentDecision decide(AgentTurn turn);
+
+    CriticDecision critique(CriticRequest request);
+
+    // Critic 已确认漏洞但首次定位不合法时，只修复位置选择，不重新判断漏洞是否成立。
+    LocationDecision repairLocation(LocationRepairRequest request);
 
     ReportNarrative writeReport(ReportRequest request);
 
@@ -49,22 +61,12 @@ public interface LlmGateway {
     }
 
     record TriageDecision(String unitId, long primaryChunkId, TriageDisposition disposition,
-                          List<VulnerabilityType> vulnerabilityTypes, String reason,
-                          List<LineRange> focusRanges, List<String> investigationQuestions) {
+                          List<VulnerabilityType> vulnerabilityTypes, String reason) {
         // 校验并规范化 TriageDecision 的构造参数。
         public TriageDecision {
             vulnerabilityTypes = vulnerabilityTypes == null ? List.of() : vulnerabilityTypes.stream()
                     .filter(java.util.Objects::nonNull).distinct().toList();
-            focusRanges = focusRanges == null ? List.of() : focusRanges.stream()
-                    .filter(java.util.Objects::nonNull).distinct().toList();
-            investigationQuestions = investigationQuestions == null ? List.of()
-                    : investigationQuestions.stream().filter(java.util.Objects::nonNull)
-                    .map(String::strip).filter(value -> !value.isBlank()).distinct().toList();
         }
-
-    }
-
-    record LineRange(int startLine, int endLine) {
     }
 
     record TriagePlan(String summary, List<TriageDecision> decisions) {
@@ -81,15 +83,9 @@ public interface LlmGateway {
         }
     }
 
-    record AgentBudget(int currentRound, int totalDecisionRounds,
-                       int decisionRoundsRemainingAfterThis,
-                       int toolCallsUsed, int toolCallsLimit, int toolCallsRemaining,
-                       boolean finalDecisionOnly) {
-    }
-
     record AgentTurn(UUID taskId, AgentType agentType, VulnerabilityType vulnerabilityType,
                      Target target, String ruleHint, String semanticEvidence, ReconInsight recon,
-                     List<Observation> observations, int iteration, AgentBudget budget) {
+                     List<Observation> observations, int iteration) {
     }
 
     record FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
@@ -115,6 +111,73 @@ public interface LlmGateway {
         public AgentDecision {
             arguments = safeArguments(arguments);
         }
+    }
+
+    record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
+                         String evidence, String independentSemanticEvidence, ReconInsight recon,
+                         String changeType, String analysisScope, String baseCodeExcerpt,
+                         List<LocationCandidate> locationCandidates) {
+        public CriticRequest {
+            locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
+        }
+    }
+
+    record CriticDecision(Boolean confirmed, Confidence confidence, String reason,
+                          FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                          Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                          String rootCauseKind, String locationRole, String locationCandidateId,
+                          CriticVerdict verdict, List<Long> counterEvidenceChunkIds) {
+        public CriticDecision {
+            counterEvidenceChunkIds = counterEvidenceChunkIds == null
+                    ? List.of() : List.copyOf(counterEvidenceChunkIds);
+        }
+
+        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                              String rootCauseKind, String locationRole, String locationCandidateId) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
+                    locationCandidateId, Boolean.TRUE.equals(confirmed)
+                    ? CriticVerdict.CONFIRMED : CriticVerdict.REJECTED, List.of());
+        }
+
+        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
+                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
+                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
+                              String rootCauseKind, String locationRole, String locationCandidateId,
+                              CriticVerdict verdict) {
+            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
+                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
+                    locationCandidateId, verdict, List.of());
+        }
+    }
+
+    enum CriticVerdict {
+        CONFIRMED, REJECTED, INSUFFICIENT_EVIDENCE
+    }
+
+    // 由后端从真实证据源码生成的可选位置；模型只能选择 candidateId，不能创造行号。
+    record LocationCandidate(String candidateId, long chunkId, String filePath, String symbolName,
+                             int startLine, int endLine, String source, List<String> roles,
+                             String analysisScope) {
+        public LocationCandidate {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+        }
+    }
+
+    // 位置修复只接收已经确认的漏洞事实和合法候选，不允许重新否决漏洞。
+    record LocationRepairRequest(UUID taskId, VulnerabilityType vulnerabilityType, String title,
+                                 String description, String criticReason, String rootCauseKind,
+                                 String previousLocation, String failureReason,
+                                 List<LocationCandidate> locationCandidates) {
+        public LocationRepairRequest {
+            locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
+        }
+    }
+
+    // 专用定位调用只返回后端生成的候选 ID。
+    record LocationDecision(String locationCandidateId, String reason) {
     }
 
     record ReportFinding(VulnerabilityType type, Severity severity, Confidence confidence,

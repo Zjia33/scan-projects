@@ -3,7 +3,6 @@ package com.deepaudit.agent;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
-import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.SemanticChangeKind;
 import com.deepaudit.domain.SemanticMethodChange;
@@ -11,7 +10,6 @@ import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
-import com.deepaudit.mapper.GitFileChangeMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,21 +23,18 @@ import static org.mockito.Mockito.when;
 class IncrementalReviewServiceTest {
 
     @Test
-    void buildsOnlyChangedUnitsWithoutEmbeddingImpactedSource() {
+    void buildsOnlyChangedUnitsAndAddsImpactedCodeOnDemand() {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
         SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
-        GitFileChangeMapper fileChangeMapper = mock(GitFileChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
         SemanticCallEdge impactEdge = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
                 1L, 2L, 2, "detail", "service.detail(id)", "CODEGRAPH_CALL",
                 Confidence.HIGH, "CodeGraph confirmed", "id -> id");
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(impactEdge));
         when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        IncrementalReviewService service = new IncrementalReviewService(
-                flowMapper, edgeMapper, changeMapper, fileChangeMapper);
+        IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
         CodeChunk changed = chunk(taskId, 1L, "Formatter#format", "return repository.findById(id);");
         changed.setAnalysisScope(AnalysisScope.CHANGED);
         changed.setBaseContent("return cache.get(id);");
@@ -61,8 +56,14 @@ class IncrementalReviewServiceTest {
         });
         assertThat(units.get(0).baseCodeExcerpt()).contains("cache.get");
         assertThat(units.get(0).targetCodeExcerpt()).contains("repository.findById");
-        assertThat(units.get(0).changeSummary()).contains("CODEGRAPH_CALL");
-        assertThat(units.get(0).targetCodeExcerpt()).doesNotContain("return service.detail(id)");
+        assertThat(units.get(0).relatedContext()).doesNotContain("return service.detail(id)");
+
+        IncrementalReviewUnit enriched = service.enrichImpact(
+                taskId, units, List.of(changed, impacted, context)).get(0);
+
+        assertThat(enriched.relatedContext()).contains("[IMPACTED_CONTEXT]", "CHUNK_ID=2",
+                "Controller#detail", "return service.detail(id)");
+        assertThat(enriched.relatedContext()).doesNotContain("Dto#value");
     }
 
     @Test
@@ -71,7 +72,6 @@ class IncrementalReviewServiceTest {
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
         SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
-        GitFileChangeMapper fileChangeMapper = mock(GitFileChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
         when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
         SemanticMethodChange removed = new SemanticMethodChange(taskId, SemanticChangeKind.GUARD_REMOVED,
@@ -79,9 +79,7 @@ class IncrementalReviewServiceTest {
                 "demo.OrderService.load", 10, 13, 10, 12, "checkOwner(id);", "return repository.findById(id);",
                 "删除对象归属校验");
         when(changeMapper.findByTaskId(taskId)).thenReturn(List.of(removed));
-        when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        IncrementalReviewService service = new IncrementalReviewService(
-                flowMapper, edgeMapper, changeMapper, fileChangeMapper);
+        IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
         CodeChunk changed = chunk(taskId, 10L, "OrderService#load", "return repository.findById(id);");
         changed.setFilePath("OrderService.java");
         changed.setStartLine(10);
@@ -95,78 +93,6 @@ class IncrementalReviewServiceTest {
         assertThat(unit.mandatoryTypes()).containsExactlyInAnyOrder(
                 VulnerabilityType.AUTHORIZATION, VulnerabilityType.VALIDATION_BYPASS);
         assertThat(unit.changeSummary()).contains("GUARD_REMOVED", "删除对象归属校验");
-    }
-
-    @Test
-    void centersTriageExcerptOnChangedLinesNearEndOfLongMethod() {
-        UUID taskId = UUID.randomUUID();
-        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
-        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
-        SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
-        GitFileChangeMapper fileChangeMapper = mock(GitFileChangeMapper.class);
-        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        GitFileChange fileChange = new GitFileChange(taskId, "Demo.java", "Demo.java",
-                "MODIFY", 1, 1, "120:120", "120:120", "tail diff", false);
-        when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of(fileChange));
-        IncrementalReviewService service = new IncrementalReviewService(
-                flowMapper, edgeMapper, changeMapper, fileChangeMapper);
-        String content = java.util.stream.IntStream.rangeClosed(1, 150)
-                .mapToObj(line -> line == 120 ? "dangerousSink(input);" : "safeLine" + line + "();")
-                .collect(java.util.stream.Collectors.joining("\n"));
-        CodeChunk changed = new CodeChunk(taskId, "Demo.java", "Demo#longMethod", null,
-                1, 150, content, "JAVA_METHOD", "String input", "", "dangerousSink");
-        changed.setId(99L);
-        changed.setAnalysisScope(AnalysisScope.CHANGED);
-
-        IncrementalReviewUnit unit = service.build(taskId, List.of(changed), Map.of(), Map.of()).get(0);
-
-        assertThat(unit.targetCodeExcerpt()).contains("120 | dangerousSink(input);")
-                .doesNotContain("1 | safeLine1();");
-    }
-
-    @Test
-    void reservesIndependentExcerptBudgetForEveryChangedRange() {
-        UUID taskId = UUID.randomUUID();
-        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
-        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
-        SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
-        GitFileChangeMapper fileChangeMapper = mock(GitFileChangeMapper.class);
-        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
-        GitFileChange fileChange = new GitFileChange(taskId, "Demo.java", "Demo.java",
-                "MODIFY", 3, 3, "20:20,80:80,140:140", "20:20,80:80,140:140",
-                "three distant changes", false);
-        when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of(fileChange));
-        IncrementalReviewService service = new IncrementalReviewService(
-                flowMapper, edgeMapper, changeMapper, fileChangeMapper);
-        String longSuffix = "x".repeat(1_700);
-        String content = java.util.stream.IntStream.rangeClosed(1, 160)
-                .mapToObj(line -> switch (line) {
-                    case 20 -> "CHANGE_ONE_" + longSuffix;
-                    case 80 -> "CHANGE_TWO_" + longSuffix;
-                    case 140 -> "CHANGE_THREE_" + longSuffix;
-                    default -> "safeLine" + line + "();";
-                })
-                .collect(java.util.stream.Collectors.joining("\n"));
-        CodeChunk changed = new CodeChunk(taskId, "Demo.java", "Demo#longMethod", null,
-                1, 160, content, "JAVA_METHOD", "String input", "", "dangerousSink");
-        changed.setId(100L);
-        changed.setBaseContent(content);
-        changed.setAnalysisScope(AnalysisScope.CHANGED);
-
-        IncrementalReviewUnit unit = service.build(taskId, List.of(changed), Map.of(), Map.of()).get(0);
-
-        assertThat(unit.targetCodeExcerpt())
-                .contains("[CHANGE_RANGE 20:20]", "20 | CHANGE_ONE_",
-                        "[CHANGE_RANGE 80:80]", "80 | CHANGE_TWO_",
-                        "[CHANGE_RANGE 140:140]", "140 | CHANGE_THREE_")
-                .hasSizeLessThanOrEqualTo(4_000);
-        assertThat(unit.baseCodeExcerpt())
-                .contains("[CHANGE_RANGE 20:20]", "[CHANGE_RANGE 80:80]", "[CHANGE_RANGE 140:140]")
-                .hasSizeLessThanOrEqualTo(4_000);
     }
 
     private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {

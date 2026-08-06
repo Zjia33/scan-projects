@@ -21,7 +21,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Performs authoritative task-local deduplication after source-location validation.
+ * Performs authoritative task-local deduplication after Critic relocation.
  */
 public final class FindingConsolidator {
     private static final Pattern EVIDENCE_CHUNK_HEADER =
@@ -50,11 +50,11 @@ public final class FindingConsolidator {
             outer:
             for (int left = 0; left < consolidated.size(); left++) {
                 for (int right = left + 1; right < consolidated.size(); right++) {
-                    Finding target = consolidated.get(left);
-                    Finding duplicate = consolidated.get(right);
-                    DuplicateKind duplicateKind = duplicateKind(target, duplicate, chunks);
-                    if (duplicateKind == DuplicateKind.NONE) continue;
-                    mergeInto(target, consolidated.remove(right), duplicateKind, chunks);
+                    if (!sameVulnerabilityLocation(
+                            consolidated.get(left), consolidated.get(right), chunks)) {
+                        continue;
+                    }
+                    mergeInto(consolidated.get(left), consolidated.remove(right));
                     merged = true;
                     break outer;
                 }
@@ -77,91 +77,24 @@ public final class FindingConsolidator {
         return leftSymbol.isBlank() || rightSymbol.isBlank() || leftSymbol.equals(rightSymbol);
     }
 
-    private static DuplicateKind duplicateKind(Finding left, Finding right,
-                                               List<CodeChunk> chunks) {
-        if (sameVulnerabilityLocation(left, right, chunks)) return DuplicateKind.SAME_LOCATION;
-        if (!sameTaskAndType(left, right) || sameFile(left, right)) return DuplicateKind.NONE;
-        Set<Long> leftEvidence = evidenceChunkIds(left.getEvidence());
-        Set<Long> rightEvidence = evidenceChunkIds(right.getEvidence());
-        if (leftEvidence.isEmpty() || rightEvidence.isEmpty()) return DuplicateKind.NONE;
-        boolean nested = leftEvidence.containsAll(rightEvidence)
-                || rightEvidence.containsAll(leftEvidence);
-        return nested ? DuplicateKind.SAME_VERIFIED_CHAIN : DuplicateKind.NONE;
-    }
-
-    private static boolean sameTaskAndType(Finding left, Finding right) {
-        return Objects.equals(left.getTaskId(), right.getTaskId()) && left.getType() == right.getType();
-    }
-
-    private static boolean sameFile(Finding left, Finding right) {
-        return FindingFingerprint.normalizePath(left.getFilePath())
-                .equals(FindingFingerprint.normalizePath(right.getFilePath()));
-    }
-
     private static boolean rangesOverlap(Finding left, Finding right) {
         return left.getStartLine() > 0 && right.getStartLine() > 0
                 && left.getStartLine() <= right.getEndLine()
                 && right.getStartLine() <= left.getEndLine();
     }
 
-    private static void mergeInto(Finding target, Finding duplicate,
-                                  DuplicateKind duplicateKind, List<CodeChunk> chunks) {
-        Finding canonical = duplicateKind == DuplicateKind.SAME_VERIFIED_CHAIN
-                ? preferredChainLocation(target, duplicate, chunks) : target;
-        String canonicalFile = canonical.getFilePath();
-        int canonicalStart = canonical.getStartLine();
-        int canonicalEnd = canonical.getEndLine();
+    private static void mergeInto(Finding target, Finding duplicate) {
         target.setSeverity(stronger(target.getSeverity(), duplicate.getSeverity()));
         target.setConfidence(stronger(target.getConfidence(), duplicate.getConfidence()));
         target.setTitle(specific(target.getTitle(), duplicate.getTitle()));
-        if (duplicateKind == DuplicateKind.SAME_LOCATION) {
-            target.setStartLine(Math.min(target.getStartLine(), duplicate.getStartLine()));
-            target.setEndLine(Math.max(target.getEndLine(), duplicate.getEndLine()));
-        } else {
-            target.setFilePath(canonicalFile);
-            target.setStartLine(canonicalStart);
-            target.setEndLine(canonicalEnd);
-        }
+        target.setStartLine(Math.min(target.getStartLine(), duplicate.getStartLine()));
+        target.setEndLine(Math.max(target.getEndLine(), duplicate.getEndLine()));
         target.setEndpoint(mergeEndpoints(target.getEndpoint(), duplicate.getEndpoint()));
         target.setDescription(specific(target.getDescription(), duplicate.getDescription()));
         target.setEvidence(mergeEvidence(target.getEvidence(), duplicate.getEvidence()));
         target.setRemediation(specific(target.getRemediation(), duplicate.getRemediation()));
         target.setDeltaStatus(stronger(target.getDeltaStatus(), duplicate.getDeltaStatus()));
         target.setCreatedAt(earlier(target.getCreatedAt(), duplicate.getCreatedAt()));
-    }
-
-    private static Finding preferredChainLocation(Finding left, Finding right,
-                                                  List<CodeChunk> chunks) {
-        CodeChunk leftChunk = chunkAt(left, chunks);
-        CodeChunk rightChunk = chunkAt(right, chunks);
-        int leftRole = evidenceRoleAt(left, leftChunk);
-        int rightRole = evidenceRoleAt(right, rightChunk);
-        if (leftRole != rightRole) return leftRole > rightRole ? left : right;
-        boolean leftIsEndpoint = hasEndpoint(leftChunk);
-        boolean rightIsEndpoint = hasEndpoint(rightChunk);
-        if (leftIsEndpoint != rightIsEndpoint) {
-            // 权限缺失通常发生在入口边界；其他类型的纯入口只承担可达性证据。
-            if (left.getType() == com.deepaudit.domain.VulnerabilityType.AUTHORIZATION) {
-                return leftIsEndpoint ? left : right;
-            }
-            return leftIsEndpoint ? right : left;
-        }
-        return stableLocation(left).compareTo(stableLocation(right)) <= 0 ? left : right;
-    }
-
-    private static int evidenceRoleAt(Finding finding, CodeChunk chunk) {
-        if (chunk == null || chunk.getId() == null) return 0;
-        String block = evidenceBlocks(finding.getEvidence()).get(chunk.getId());
-        return block == null ? 0 : evidenceRoleRank(block);
-    }
-
-    private static boolean hasEndpoint(CodeChunk chunk) {
-        return chunk != null && chunk.getEndpoint() != null && !chunk.getEndpoint().isBlank();
-    }
-
-    private static String stableLocation(Finding finding) {
-        return FindingFingerprint.normalizePath(finding.getFilePath()) + ":"
-                + finding.getStartLine() + ":" + finding.getEndLine();
     }
 
     private static void refreshFingerprint(Finding finding, List<CodeChunk> chunks) {
@@ -299,10 +232,6 @@ public final class FindingConsolidator {
         return blocks;
     }
 
-    private static Set<Long> evidenceChunkIds(String evidence) {
-        return new LinkedHashSet<>(evidenceBlocks(evidence).keySet());
-    }
-
     private static String preferredEvidenceBlock(String left, String right) {
         int leftRank = evidenceRoleRank(left);
         int rightRank = evidenceRoleRank(right);
@@ -319,12 +248,6 @@ public final class FindingConsolidator {
     }
 
     private record EvidenceHeader(long chunkId, int offset) {
-    }
-
-    private enum DuplicateKind {
-        NONE,
-        SAME_LOCATION,
-        SAME_VERIFIED_CHAIN
     }
 
     private static Instant earlier(Instant left, Instant right) {

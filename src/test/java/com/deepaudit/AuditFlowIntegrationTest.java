@@ -87,8 +87,7 @@ class AuditFlowIntegrationTest {
                         "taskRequestSequence", "selectedTask() !== task",
                         "withoutInternalChunkIds", "finding-evidence-chunk",
                         "正在创建审计任务并加入队列", "queuedTaskFromSubmission",
-                        "void loadTasks({ forceDetail: true })", "state.submittingAudit",
-                        "已核对当前代码行为，未发现足以确认该风险的事实")
+                        "void loadTasks({ forceDetail: true })", "state.submittingAudit")
                 .doesNotContain("chunk.id ? `CHUNK", "代码证据 ${index + 1}");
     }
 
@@ -139,7 +138,8 @@ class AuditFlowIntegrationTest {
                 .map(JsonNode::asText).collect(Collectors.toSet());
         assertThat(types).contains("SQL_INJECTION", "AUTHORIZATION",
                 "SENSITIVE_INFORMATION_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
-        assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]", "Critic Agent");
+        assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
+        assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
         assertThat(findingsJson).contains("[漏洞位置]", ">>>");
         assertThat(findingsJson).contains("\"deltaStatus\":\"NEW\"");
 
@@ -148,16 +148,15 @@ class AuditFlowIntegrationTest {
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(report).contains("代码安全审计报告", "越权漏洞", "SQL 注入", "严重", "可信度 高");
         assertThat(report).contains("class='finding-description'", "class='vulnerability-location'",
-                        "class='evidence-chunk'", "实际漏洞位置")
+                        "class='evidence-chunk'", "实际漏洞位置", "代码证据")
                 .doesNotContain("class='critic-review'", "class='vulnerable-line'", "&gt;&gt;&gt;",
-                        "[SEMANTIC_FLOW]", "[CRITIC]", ">CHUNK 1<", "代码证据");
+                        "[SEMANTIC_FLOW]", "[CRITIC]", ">CHUNK 1<", "代码证据 1");
 
         String events = mockMvc.perform(get("/api/tasks/{taskId}/events", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(events).contains("RECON", "ORCHESTRATOR", "MODEL_CALL", "REASONING", "TOOL_CALL",
-                "REPORT", "SEMANTIC_EVIDENCE", "Spring MVC", "证据门禁");
-        assertThat(events).doesNotContain("\"agentType\":\"CRITIC\"");
+                "CRITIC", "REPORT", "SEMANTIC_EVIDENCE", "Spring MVC");
 
         String jsonReport = mockMvc.perform(get("/api/tasks/{taskId}/report.json", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()

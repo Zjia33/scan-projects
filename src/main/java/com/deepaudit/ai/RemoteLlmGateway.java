@@ -67,10 +67,22 @@ public class RemoteLlmGateway implements LlmGateway {
         String userPrompt = json(Map.of("taskId", taskId,
                 "projectTechnology", recon.technologyProfile(), "reviewUnits", reviewUnits,
                 "outputSchema", Map.of("summary", "string", "decisions",
+                        "[{unitId,primaryChunkId,disposition:INVESTIGATE|NEED_CONTEXT|SKIP,"
+                                + "vulnerabilityTypes:[],reason}]")));
+        return call(taskId, "TRIAGE_INITIAL", systemPrompt, userPrompt, TriagePlan.class);
+    }
+
+    @Override
+    public TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                             IncrementalReviewUnit reviewUnit) {
+        String systemPrompt = AgentPrompts.incrementalTriageFinal();
+        String userPrompt = json(Map.of("taskId", taskId,
+                "projectTechnology", recon.technologyProfile(), "reviewUnit", reviewUnit,
+                "outputSchema", Map.of("summary", "string", "decisions",
                         "[{unitId,primaryChunkId,disposition:INVESTIGATE|SKIP,"
-                                + "vulnerabilityTypes:[],reason,"
-                                + "focusRanges:[{startLine,endLine}],investigationQuestions:[]}]")));
-        return call(taskId, "TRIAGE_CHANGED", systemPrompt, userPrompt, TriagePlan.class);
+                                + "vulnerabilityTypes:[],reason}]")));
+        return call(taskId, "TRIAGE_FINAL:" + reviewUnit.unitId(), systemPrompt, userPrompt, TriagePlan.class,
+                plan -> validateFinalTriagePlan(plan, reviewUnit));
     }
 
     // 请求专业 Agent 在 TOOL、FINDING 和 REJECT 三类受控动作中选择下一步。
@@ -86,6 +98,40 @@ public class RemoteLlmGateway implements LlmGateway {
                         + "primaryChunkId,evidenceChunkIds,vulnerabilityStartLine,vulnerabilityEndLine}")));
         return call(turn.taskId(), "PROFESSIONAL:" + turn.agentType() + ":" + turn.iteration(),
                 systemPrompt, userPrompt, AgentDecision.class);
+    }
+
+    // 请求独立 Critic 基于候选证据和反证判断是否确认漏洞。
+    @Override
+    public CriticDecision critique(CriticRequest request) {
+        String systemPrompt = AgentPrompts.criticAgent();
+        String userPrompt = json(Map.of("candidate", request, "outputSchema",
+                Map.ofEntries(
+                        Map.entry("verdict", "CONFIRMED|REJECTED|INSUFFICIENT_EVIDENCE"),
+                        Map.entry("confirmed", "boolean，与 verdict 保持一致"),
+                        Map.entry("confidence", "HIGH|MEDIUM|LOW"),
+                        Map.entry("reason", "非空中文理由；REJECTED 必须指出输入中真实存在的反证"),
+                        Map.entry("counterEvidenceChunkIds", "REJECTED 时必填，且只能引用 candidate 证据包中的真实 CHUNK_ID"),
+                        Map.entry("deltaStatus", "NEW|PERSISTING"),
+                        Map.entry("rootCauseKind", "INEFFECTIVE_SECURITY_CONTROL|MISSING_AUTHORIZATION_CHECK|"
+                                + "UNSAFE_DATA_EXPOSURE|HARDCODED_SECRET|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT"),
+                        Map.entry("locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|SECRET_DEFINITION|QUERY|VALIDATION|"
+                                + "DATA_ACCESS|DATA_OUTPUT|DANGEROUS_OPERATION|BUSINESS_OPERATION"),
+                        Map.entry("locationCandidateId", "confirmed=true 时优先填写，且必须来自 locationCandidates"),
+                        Map.entry("primaryChunkId", "confirmed=true 时复制所选 locationCandidate.chunkId"),
+                        Map.entry("vulnerabilityStartLine", "confirmed=true 时复制所选 locationCandidate.startLine"),
+                        Map.entry("vulnerabilityEndLine", "confirmed=true 时复制所选 locationCandidate.endLine"))));
+        return call(request.taskId(), "CRITIC:" + request.proposal().type() + ":"
+                + request.proposal().primaryChunkId(), systemPrompt, userPrompt, CriticDecision.class);
+    }
+
+    // 对已确认漏洞执行一次受约束的位置修复，模型只能选择服务器生成的候选 ID。
+    @Override
+    public LocationDecision repairLocation(LocationRepairRequest request) {
+        String userPrompt = json(Map.of("confirmedVulnerability", request, "outputSchema",
+                Map.of("locationCandidateId", "必须原样取自 locationCandidates.candidateId",
+                        "reason", "简短中文定位理由")));
+        return call(request.taskId(), "LOCATION_REPAIR:" + request.vulnerabilityType(),
+                AgentPrompts.locationRepair(), userPrompt, LocationDecision.class);
     }
 
     // 请求 Report Agent 只改写已确认事实，不允许在报告阶段新增漏洞。
@@ -136,6 +182,7 @@ public class RemoteLlmGateway implements LlmGateway {
                     repairAttempts + 1, requestElapsedMs, inputChars, outputChars);
             try {
                 T parsed = parseResponse(content, responseType);
+                validateStructuredResponse(parsed, responseType);
                 String validationError = responseValidator.apply(parsed);
                 if (validationError != null && !validationError.isBlank()) {
                     throw new com.fasterxml.jackson.core.JsonParseException((JsonParser) null,
@@ -164,6 +211,55 @@ public class RemoteLlmGateway implements LlmGateway {
         throw new AiResponseFormatException("必需的大模型调用失败: 模型在 " + (repairAttempts + 1)
                 + " 次响应后仍未返回合法结构化结果，最后错误位置: " + formatLocation(lastParsingException),
                 lastParsingException);
+    }
+
+    private String validateFinalTriagePlan(TriagePlan plan, IncrementalReviewUnit reviewUnit) {
+        if (plan == null) return "增量单位置复判返回空计划";
+        if (plan.decisions().size() != 1) {
+            return "增量单位置复判必须恰好返回一个决定，实际为 " + plan.decisions().size();
+        }
+        TriageDecision decision = plan.decisions().get(0);
+        if (decision == null) return "增量单位置复判返回 null 决定";
+        if (!reviewUnit.unitId().equals(decision.unitId())) {
+            return "增量单位置复判 unitId 不匹配";
+        }
+        if (reviewUnit.primaryChunkId() != decision.primaryChunkId()) {
+            return "增量单位置复判 primaryChunkId 不匹配";
+        }
+        if (decision.disposition() != com.deepaudit.agent.TriageDisposition.INVESTIGATE
+                && decision.disposition() != com.deepaudit.agent.TriageDisposition.SKIP) {
+            return "增量单位置复判 disposition 必须为 INVESTIGATE 或 SKIP";
+        }
+        if (decision.disposition() == com.deepaudit.agent.TriageDisposition.INVESTIGATE
+                && decision.vulnerabilityTypes().stream().noneMatch(reviewUnit.allowedTypes()::contains)) {
+            return "增量单位置复判 INVESTIGATE 缺少允许范围内的漏洞类型";
+        }
+        return null;
+    }
+
+    // JSON 语法正确不代表业务结构完整；关键字段缺失必须进入格式纠正，不能由 Java 默认值改变审计结论。
+    private <T> void validateStructuredResponse(T response, Class<T> responseType)
+            throws JsonProcessingException {
+        if (responseType != CriticDecision.class) return;
+        CriticDecision decision = (CriticDecision) response;
+        List<String> missing = new ArrayList<>();
+        if (decision.confirmed() == null) missing.add("confirmed");
+        if (decision.verdict() == null) missing.add("verdict");
+        if (decision.confidence() == null) missing.add("confidence");
+        if (decision.reason() == null || decision.reason().isBlank()) missing.add("reason");
+        if (decision.verdict() == CriticVerdict.REJECTED
+                && decision.counterEvidenceChunkIds().isEmpty()) missing.add("counterEvidenceChunkIds");
+        if (!missing.isEmpty()) {
+            throw new com.fasterxml.jackson.core.JsonParseException((JsonParser) null,
+                    "Critic 缺少必填字段: " + String.join(",", missing));
+        }
+        boolean confirmed = Boolean.TRUE.equals(decision.confirmed());
+        boolean verdictConfirmed = decision.verdict() == CriticVerdict.CONFIRMED;
+        if (confirmed != verdictConfirmed
+                || decision.verdict() == CriticVerdict.INSUFFICIENT_EVIDENCE && confirmed) {
+            throw new com.fasterxml.jackson.core.JsonParseException((JsonParser) null,
+                    "Critic 的 confirmed 与 verdict 不一致");
+        }
     }
 
     private String safeValidationMessage(JsonProcessingException exception) {

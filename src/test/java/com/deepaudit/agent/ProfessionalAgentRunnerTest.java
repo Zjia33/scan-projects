@@ -69,6 +69,6 @@ class ProfessionalAgentRunnerTest {
     }
 
     private AgentTask task(long chunkId, AgentType agentType, VulnerabilityType type) {
-        return new AgentTask(chunkId, agentType, type, "测试并行调查；规则提示");
+        return new AgentTask(chunkId, agentType, type, "测试并行调查", "规则提示");
     }
 }

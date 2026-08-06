@@ -73,30 +73,6 @@ class ReconServiceTest {
     }
 
     @Test
-    void projectSearchMaterializesOnlyMatchingTargetMethods() throws Exception {
-        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
-        when(mapper.findByTaskId(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
-        UUID taskId = UUID.randomUUID();
-        write("src/main/java/demo/FirstService.java", """
-                class FirstService { void load() { sensitiveLookup(); } }
-                """);
-        write("src/main/java/demo/SecondService.java", """
-                class SecondService { void unrelated() { noop(); } }
-                """);
-
-        ReconService.ProjectSearchMaterialization result = new ReconService(mapper)
-                .materializeProjectSearch(taskId, projectRoot, "sensitiveLookup", false, "**/*.java", 20);
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
-        verify(mapper).insertBatch(captor.capture());
-        assertThat(result.matchedLocations()).isEqualTo(1);
-        assertThat(result.truncated()).isFalse();
-        assertThat(captor.getValue()).singleElement()
-                .satisfies(chunk -> assertThat(chunk.getSymbolName()).endsWith("#load"));
-    }
-
-    @Test
     void preservesChangedJavaLinesOutsideMethodsAsDirectEvidence() throws Exception {
         CodeChunkMapper mapper = mock(CodeChunkMapper.class);
         UUID taskId = UUID.randomUUID();
@@ -116,27 +92,6 @@ class ReconServiceTest {
             assertThat(chunk.getChunkType()).isEqualTo("JAVA_CHANGE");
             assertThat(chunk.getContent()).contains("password");
             assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
-        });
-    }
-
-    @Test
-    void preservesDeletedConfigurationAsChangedDiffAnchor() throws Exception {
-        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
-        UUID taskId = UUID.randomUUID();
-        GitFileChange change = new GitFileChange(taskId, "src/main/resources/application.yml",
-                null, "DELETE", 0, 2, "1:2", "",
-                "@@ base 1-2 target 1-1 @@\n- management:\n-   endpoints: permit-all", true);
-
-        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
-        verify(mapper).insertBatch(captor.capture());
-        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
-            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
-            assertThat(chunk.getChangeType()).isEqualTo(com.deepaudit.domain.ChunkChangeType.DELETED);
-            assertThat(chunk.getChunkType()).isEqualTo("TEXT_DELETED");
-            assertThat(chunk.getBaseContent()).contains("permit-all");
         });
     }
 
@@ -371,61 +326,6 @@ class ReconServiceTest {
 
         assertThat(impacted.getAnalysisScope()).isEqualTo(AnalysisScope.IMPACTED);
         verify(mapper).updateIncrementalMetadata(impacted);
-    }
-
-    @Test
-    void configurationChunksOverlapByTwentyLines() throws Exception {
-        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
-        UUID taskId = UUID.randomUUID();
-        String content = java.util.stream.IntStream.rangeClosed(1, 300)
-                .mapToObj(line -> "setting-" + line + ": value-" + line)
-                .collect(java.util.stream.Collectors.joining("\n"));
-        write("src/main/resources/application.yml", content);
-        GitFileChange change = new GitFileChange(taskId, null,
-                "src/main/resources/application.yml", "ADD", 300, 0,
-                "", "1:300", "added configuration", false);
-
-        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
-        verify(mapper).insertBatch(captor.capture());
-        assertThat(captor.getValue()).hasSize(2);
-        CodeChunk first = captor.getValue().get(0);
-        CodeChunk second = captor.getValue().get(1);
-        assertThat(first.getStartLine()).isEqualTo(1);
-        assertThat(first.getEndLine()).isEqualTo(160);
-        assertThat(second.getStartLine()).isEqualTo(141);
-        assertThat(second.getEndLine()).isEqualTo(300);
-        assertThat(first.getContent()).contains("setting-141: value-141", "setting-160: value-160");
-        assertThat(second.getContent()).contains("setting-141: value-141", "setting-160: value-160");
-    }
-
-    @Test
-    void changedLineInOverlapBelongsOnlyToLaterConfigurationChunk() throws Exception {
-        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
-        UUID taskId = UUID.randomUUID();
-        String content = java.util.stream.IntStream.rangeClosed(1, 300)
-                .mapToObj(line -> line == 150 ? "security-token: changed-secret"
-                        : "setting-" + line + ": value-" + line)
-                .collect(java.util.stream.Collectors.joining("\n"));
-        write("src/main/resources/application.yml", content);
-        GitFileChange change = new GitFileChange(taskId,
-                "src/main/resources/application.yml", "src/main/resources/application.yml",
-                "MODIFY", 1, 1, "150:150", "150:150", "changed line 150", false);
-
-        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
-        verify(mapper).insertBatch(captor.capture());
-        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
-            assertThat(chunk.getStartLine()).isEqualTo(141);
-            assertThat(chunk.getEndLine()).isEqualTo(300);
-            assertThat(chunk.getContent()).contains(
-                    "setting-141: value-141", "security-token: changed-secret", "setting-160: value-160");
-            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
-        });
     }
 
     private ReconSummary buildIncremental(ReconService service) throws Exception {

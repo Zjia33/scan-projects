@@ -13,7 +13,6 @@ import org.mockito.ArgumentCaptor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.ArrayList;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,10 +52,10 @@ class IncrementalSemanticDiffServiceTest {
                 """);
 
         UUID taskId = UUID.randomUUID();
-        List<CodeChunk> chunks = new ArrayList<>(List.of(
+        List<CodeChunk> chunks = List.of(
                 chunk(taskId, path, "OrderService#find", 3, 5),
                 chunk(taskId, path, "OrderService#update", 6, 7),
-                chunk(taskId, path, "OrderService#created", 8, 8)));
+                chunk(taskId, path, "OrderService#created", 8, 8));
         GitFileChange fileChange = new GitFileChange(taskId, path, path, "MODIFY",
                 3, 3, "4:8", "4:8", "", false);
         SemanticMethodChangeMapper mapper = mock(SemanticMethodChangeMapper.class);
@@ -76,11 +75,6 @@ class IncrementalSemanticDiffServiceTest {
         assertThat(summary.targetMethodCount()).isEqualTo(3);
         assertThat(chunks.get(0).getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
         assertThat(chunks.get(0).getBaseContent()).contains("checkOwner(id)");
-        assertThat(chunks).anySatisfy(chunk -> {
-            assertThat(chunk.getChunkType()).isEqualTo("JAVA_METHOD_DELETED");
-            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
-            assertThat(chunk.getBaseContent()).contains("removeLegacy");
-        });
         assertThat(changes).filteredOn(change -> change.getChangeKind() == SemanticChangeKind.GUARD_REMOVED)
                 .singleElement().satisfies(change -> assertThat(change.getDetails()).contains("checkOwner"));
     }

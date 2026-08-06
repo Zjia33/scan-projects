@@ -16,6 +16,7 @@ public class CodeGraphProperties {
     private String expectedVersion = "";
     private int timeoutSeconds = 120;
     private long maxOutputBytes = 8L * 1024L * 1024L;
+    private int impactDepth = 2;
     private int relationLimit = 100;
     private int agentContextLimit = 10;
     private String indexDirectory = ".codegraph-deepaudit";

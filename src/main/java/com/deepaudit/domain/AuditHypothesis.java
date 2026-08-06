@@ -7,23 +7,23 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
-/** 专业 Agent 调查期间形成的可验证安全假设。 */
+// 表示审计领域中的 AuditHypothesis 数据实体。
 @Getter
 @Setter
 @NoArgsConstructor
 public class AuditHypothesis {
-    private UUID id;
-    private UUID taskId;
-    private UUID runId;
-    private VulnerabilityType type;
-    private HypothesisStatus status;
-    private String claim;
-    private Long primaryChunkId;
-    private String evidenceChunkIds;
-    private Confidence confidence;
-    private String validationReason;
-    private Instant createdAt;
-    private Instant updatedAt;
+    private UUID id; // 漏洞假设的唯一标识
+    private UUID taskId; // 假设所属的审计任务 ID
+    private UUID runId; // 提出假设的 Agent 运行 ID
+    private VulnerabilityType type; // 假设对应的漏洞类型
+    private HypothesisStatus status; // 假设在调查与评审流程中的状态
+    private String claim; // 专业 Agent 提出的可验证安全主张
+    private Long primaryChunkId; // 假设聚焦的主代码块 ID
+    private String evidenceChunkIds; // 支撑假设的代码块 ID 集合序列化文本
+    private Confidence confidence; // Agent 对假设成立程度的置信度
+    private String criticReason; // Critic 确认或驳回假设的理由
+    private Instant createdAt; // 假设创建时间
+    private Instant updatedAt; // 假设状态最后更新时间
 
     public AuditHypothesis(UUID taskId, UUID runId, VulnerabilityType type, String claim,
                            Long primaryChunkId, String evidenceChunkIds, Confidence confidence) {
@@ -39,4 +39,5 @@ public class AuditHypothesis {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
     }
+
 }

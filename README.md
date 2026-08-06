@@ -1,6 +1,6 @@
 # DeepAudit Java Agent
 
-面向 Java/Spring 项目的 AI Agent 代码安全审计平台。用户导入 Git 仓库并选择提交后，系统以确定性代码解析提供真实事实，再由 Recon、Triage Orchestrator、专业审计和 Report Agents 检索上下文、建立漏洞假设并生成可复核报告。
+面向 Java/Spring 项目的 AI Agent 代码安全审计平台。用户导入 Git 仓库并选择提交后，系统以确定性代码解析提供真实事实，再由 Recon、Orchestrator、专业审计、Critic 和 Report Agents 自主规划、检索上下文、建立漏洞假设并生成可复核报告。
 
 项目只做授权范围内的静态代码审查，不运行仓库代码、不生成 PoC、不触发 Hook/Submodule/LFS/构建脚本，也不包含 CI/CD。系统只支持比较两个不可变提交的增量安全审计。
 
@@ -11,23 +11,24 @@
 - Base/Target 分支变更审计；分支分叉时自动使用共同祖先作为实际比较基线
 - 同时建立 Base/Target Java 方法索引，按完整签名、重命名路径、所属类型、位置和方法体相似度建立稳定对应
 - 将增量语义变化分类为方法新增、修改、删除、签名变化、Guard 新增和 Guard 删除，纯删除行不再依赖 Target 新增行范围
-- Git Diff 行区间与方法语义差异共同确定 CHANGED 变更块；CodeGraph 不预先扩张整个影响范围
-- 增量任务只分诊直接变更块；进入专业调查前预取直接 callers/callees 符号元数据，专业 Agent 再按需读取 Target 上下文
+- Git Diff 行区间与方法语义差异共同确定变更块，由 Base/Target CodeGraph 索引计算跨文件影响范围
+- 增量任务只深入调查直接变更块和语义影响块，同时保留完整 Target 项目事实
 - 漏洞使用独立于行号的稳定指纹进行跨扫描匹配
-- 专业 Agent 作出最终漏洞判断，服务端确定性门禁校验证据 ID、CHANGED 因果锚点和可信源码位置
+- Critic 只输出本次变更新增或 Base/Target 持续存在的确认结果
 - JavaParser 方法级切块、接口、参数、注解和调用方法提取；模板与配置文件按行数和字符数切窗
-- 轻量语义分析只解析 CHANGED，提取局部参数、Guard、Sink 和框架事实；本地调用点复验只作为 CodeGraph 证据的质量标记
+- JavaParser 只解析 CHANGED/IMPACTED 及直接上下文，验证 CodeGraph 调用现场并提取参数流、Guard 和框架语义
 - Spring 依赖注入、MyBatis Mapper→XML SQL、持久化字段→模板输出语义补边
 - 面向五类新任务漏洞的受限跨过程 Source→Sink→Guard 数据流和路径覆盖置信度
 - 统一文件角色白名单：索引 Java 后端源码、运行与安全配置、MyBatis/SQL、服务端模板；构建描述只用于架构识别
 - Markdown、独立前端源码与静态资源在 Git 快照物化前即被忽略，不进入 Diff、分块、语义分析或模型上下文
 - Recon Agent：只读取去计数后的框架事实、构建描述和 application/bootstrap 配置，生成技术架构摘要；不接收普通业务源码或增量作用域
-- Triage Orchestrator：逐行比较 CHANGED 的 Base/Target，只执行 `INVESTIGATE / SKIP` 二态分流并给出可疑行和调查问题
-- 专业 Agent：首轮直接看到 CodeGraph 的 callers/callees 符号与位置候选；明确选择后由服务端物化并自动确认对应源码为 IMPACTED
+- Triage Orchestrator：对紧凑审计单元执行 `INVESTIGATE / NEED_CONTEXT / SKIP` 三态轻量分流
+- `NEED_CONTEXT` 单元按需补充调用链、安全流和相关代码位置后复判
 - 只有 `INVESTIGATE` 单元创建 SQL 注入、权限、敏感信息泄露、XSS 或验证绕过专业 Agent
 - SQL 注入、越权、敏感信息泄露、存储 XSS、验证绕过五类独立专业 Agents
 - 受控多轮工具调用，返回真实代码块而不是只有文件名
-- Report Agent：仅依据通过确定性证据门禁的结果生成管理摘要和覆盖说明
+- Critic Agent：主动寻找全局权限、参数化查询、归属校验等反证
+- Report Agent：仅依据确认结果生成管理摘要和覆盖说明
 - Agent 运行、工具调用、漏洞假设和模型调用次数持久化
 - 文件、行号、代码块 ID 和证据引用真实性校验
 - MyBatis 持久层与 Flyway 数据库版本管理
@@ -40,15 +41,16 @@
   → Base/Target ChangeSet
   → Base/Target 方法索引、稳定方法映射和六类语义差异
   → 确定性技术栈、项目结构画像和语义索引
-  → 轻量语义分析只处理 CHANGED 的局部参数、Guard、Sink 和确定性安全事实
+  → CodeGraph 扩展调用方、被调用方和安全配置影响面
+  → JavaParser 在作用域内验证调用现场并构建轻量安全数据流
   → Recon Agent 读取构建描述、application/bootstrap 配置和去计数框架事实，归纳技术架构
   → 按入口、危险操作、安全配置、变更和语义流构建紧凑审计单元
-  → Triage Orchestrator 逐行执行 INVESTIGATE / SKIP 二态分流
-  → 服务端预取 CHANGED 的直接 callers/callees 符号和位置元数据，不读取候选源码
-  → 专业 Agents 按需批量选择、物化并验证 IMPACTED 源码
-  → 专业 Agents 继续多轮调用只读代码工具
+  → Triage Orchestrator 三态轻量分流
+  → NEED_CONTEXT 定向补充调用链和安全上下文后复判
+  → 专业 Agents 多轮调用代码工具
   → 形成结构化漏洞假设
-  → 确定性门禁校验证据、增量因果、文件和行号
+  → Critic Agent 寻找反证
+  → 文件和行号校验
   → Report Agent 汇总报告
 ```
 
@@ -112,15 +114,12 @@ AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解
 
 ## CodeGraph 全局拓扑
 
-DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供 Target 跨文件调用符号候选，
-JavaParser 不再构建第二套全项目调用图。每个专业调查在首次模型调用前预取 CHANGED 方法的直接 callers 和 callees，
-只发送候选标识、方向、符号和位置，不发送候选源码。CodeGraph 不直接判定漏洞；专业 Agent 只物化明确选择的候选源码，服务端根据候选来源和 Target 映射自动确认其证据资格。
-`CALLERS` 只执行 `codegraph callers`，`CALLEES` 只执行 `codegraph callees`，只有 `BOTH` 才执行两个方向的查询。
-JavaParser 仅保留 CHANGED 方法结构、注解、Guard、局部参数依赖、非阻断调用点复验，以及 Spring Event、MyBatis XML、持久化边界等 CodeGraph 不能完整表达的框架语义关系。
+DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供跨文件全局调用拓扑，
+JavaParser 不再构建第二套全项目调用图。CodeGraph 只决定影响范围和关系候选，不直接判定漏洞。
 CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
 可以从 `PATH` 调用，也可以配置 Windows 官方发行包的解压根目录。无需为被审计项目单独执行
-`codegraph init`。增量任务只在不可变 Target 快照中建立临时索引；Base 由 Git Diff 和方法快照用于变更比较，
-不再建立未被调查链路使用的 CodeGraph 索引。
+`codegraph init`。增量任务会在不可变 Comparison Base 和 Target 快照中分别建立临时索引：Target
+用于当前影响范围和作用域关系，Base 用于删除方法、签名变化和历史调用者。
 
 Windows 官方发行包无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
 然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI
@@ -146,9 +145,12 @@ DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT=
 DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION=<codegraph version 的完整输出>
 ```
 
-CodeGraph 是唯一的全局拓扑主来源，生产环境没有降级模式；Target 索引或必要关系查询失败会使任务失败。`enabled=false` 仅用于使用确定性替身的自动化测试配置。
+CodeGraph 是唯一的全局拓扑主来源，生产环境没有降级模式；Base/Target 索引或必要关系查询失败会使任务失败。`enabled=false` 仅用于使用确定性替身的自动化测试配置。
 
-CodeGraph 返回的直接关系先标记为候选。专业 Agent 可用 `read_verified_relations` 一次选择多个候选；服务端物化源码后确认候选来自当前锚点且能唯一映射到 Target 代码块，即返回可引用的证据块。本地真实调用点校验只用于质量说明，不能单独否决 CodeGraph 候选。CLI 通过参数数组启动而非 Shell，禁用遥测、提示 Hook 和守护进程；索引只写入不可变 Target 任务快照的单级相对目录，并在任务结束时随快照清理。
+CodeGraph 返回的直接关系先标记为候选。JavaParser 仅在调用方局部 AST 中找到唯一调用现场时，将其
+提升为 `CODEGRAPH_VERIFIED` 并补充实参到形参映射；歧义关系保持 `CODEGRAPH_CANDIDATE`，不能进入
+安全流或通过 `verify_relation` 证据门禁。CLI 通过参数数组启动而非 Shell，禁用遥测、提示 Hook 和
+守护进程；两个索引分别写入 Base/Target 任务快照内的单级相对目录，并在任务结束时随快照清理。
 
 ## Git 仓库安全边界
 
@@ -169,9 +171,9 @@ MyBatis/SQL、服务端模板和构建描述。`src/test`、`tests`、`__tests__
 
 生产环境只允许 `deepaudit.git.allowed-hosts` 中的主机，并默认强制 HTTPS。只有同时出现在 `deepaudit.git.allowed-hosts` 和 `deepaudit.git.allowed-http-hosts` 中的精确主机名才允许使用 HTTP；不支持通配符或子域名隐式匹配。私有仓库令牌只在导入或刷新请求内使用，不写入数据库、日志和 API 响应。本地 `file:` 仓库只在测试配置显式开启。
 
-每次审计都必须选择基准分支提交和目标分支提交，并同时保存所选 Base、Target 和 Merge Base 的完整 SHA；若两个分支已经分叉，系统自动以 Merge Base 作为实际比较基线，只分析目标分支自共同祖先以来引入的变化。系统保留 Target 的完整项目结构和配置上下文，为 Base/Target 建立方法快照用于稳定变更匹配，并仅为 Target 建立 CodeGraph 临时调用索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的上下文范围由直接变更块、明确选择的 CodeGraph 影响块和显式读取的安全配置组成，不预先物化完整调用邻域。
+每次审计都必须选择基准分支提交和目标分支提交，并同时保存所选 Base、Target 和 Merge Base 的完整 SHA；若两个分支已经分叉，系统自动以 Merge Base 作为实际比较基线，只分析目标分支自共同祖先以来引入的变化。系统保留 Target 的完整项目结构和配置上下文，同时为实际比较基线和 Target 建立独立 CodeGraph 与方法快照索引。方法通过完整签名优先匹配，签名变化再使用重命名路径、所属类型、源码位置和方法体相似度建立唯一对应。专业 Agent 的深度目标限制为直接变更块、CodeGraph 影响块以及全局安全配置相关块，范围扩展不按固定代码块数量截断。
 
-增量报告只记录 Target 中仍可验证且与本次变更有因果关系的漏洞。纯删除行通过 Base/Target 方法正文比较定位到 Target 方法；被删除方法会保存独立语义变化，并通过剩余调用者和同文件方法提供调查线索。当前不单独生成 `FIXED` 漏洞项，因为 Target 中已不存在可通过证据门禁的主代码位置。
+增量报告只对 Target 中仍可验证的漏洞分类：`NEW` 表示本次变更直接引入、防护削弱或调用影响导致的确认问题，`PERSISTING` 表示有明确证据证明漏洞在 Base 与 Target 中均存在。纯删除行通过 Base/Target 方法正文比较定位到 Target 方法；被删除方法会保存独立语义变化，并通过剩余调用者和同文件方法扩展影响范围。当前仍不单独生成 `FIXED` 漏洞项，因为 Target 中已不存在可通过 Critic 证据门禁的主代码块。
 
 Base/Target 临时快照只在分析期间存在；任务完成或失败后会清理。裸仓库、完整提交 SHA、结构化 Diff、代码块、Agent 轨迹和报告结果会保留。
 
@@ -217,19 +219,19 @@ http://localhost:8080/
 专业 Agent 只能选择以下受控工具，不能执行 Shell、网络请求或仓库代码：
 
 - `get_chunk({chunkId})`：读取指定代码块
+- `verify_relation({candidateChunkId})`：验证候选与当前目标的确定性关系
 - `call_context({})`：读取直接调用和同文件候选上下文
 - `get_call_chain({})`：读取已有语义安全流或调用出边
 - `trace_data_flow({})`：读取当前漏洞类型的 Source-to-Sink 路径
 - `find_security_guards({})`：读取路径上的权限、租户和验证控制
 - `search_symbols({symbol,kind,annotation,filePath,endpoint,text})`：确定性检索符号和代码位置
 - `explore_call_graph({direction,depth,targetChunkId,targetSymbol})`：按方向和深度探索调用路径
-- `read_verified_relations({candidateIds,anchorChunkId,limit})`：批量物化预取的调用关系候选，并由服务端自动确认来源和 Target 映射
 - `get_change_context({selector,includeConfiguration})`：读取 Base/Target 方法和文件差异
 - `resolve_data_access({selector,depth})`：解析 Mapper、Repository、SQL 与参数绑定
 - `inspect_security_policy({endpoint})`：检查方法安全注解和匹配入口的全局规则
 - `trace_value({source,sink,variable,depth})`：定向追踪安全流和跨调用参数映射
 
-模型只通过结构化 `arguments` 调用工具，结果数量使用 `arguments.limit` 控制。确定性符号搜索和同文件上下文只用于发现候选；CodeGraph 候选经 `read_verified_relations` 读取后，由服务端确认候选来源和 Target 映射才能作为漏洞证据。仓库源码始终作为不可信数据传递给模型。Agent 提交的主证据和关联证据必须来自当前目标或工具返回的已确认代码块 ID；确定性门禁还要求至少包含一个 CHANGED 因果锚点，并校验最终文件和行号，否则候选会被拒绝。
+模型只通过结构化 `arguments` 调用工具，结果数量使用 `arguments.limit` 控制。确定性符号搜索、同文件上下文和未映射的 CodeGraph 结果只用于发现候选，必须通过 `verify_relation` 后才能作为漏洞证据。仓库源码始终作为不可信数据传递给模型。Agent 提交的主证据和关联证据必须来自当前目标或工具返回的已验证代码块 ID，否则候选会被拒绝。增量任务还要求 Critic 验证漏洞与直接变更或语义影响链之间的因果关系。
 
 ## API
 
@@ -250,7 +252,7 @@ http://localhost:8080/
 - `GET /api/tasks/{taskId}/agents`：Agent 运行记录
 - `GET /api/tasks/{taskId}/events`：Agent 操作摘要和工具日志
 - `GET /api/tasks/{taskId}/events/stream`：任务实时事件流（SSE）
-- `GET /api/tasks/{taskId}/hypotheses`：漏洞假设及确定性证据门禁状态
+- `GET /api/tasks/{taskId}/hypotheses`：漏洞假设及 Critic 状态
 - `GET /api/tasks/{taskId}/changes`：结构化 Git 文件和行范围差异
 - `GET /api/tasks/{taskId}/method-changes`：Base/Target 方法级语义变化和前后代码证据
 - `GET /api/tasks/{taskId}/findings`：确认漏洞列表
@@ -285,7 +287,7 @@ mvn test
 mvn clean package
 ```
 
-测试环境使用确定性的测试 LLM Gateway，并完整经过 Recon、增量分流、专业 Agent、工具调用、确定性证据门禁和 Report 协议，不会通过关闭 AI 绕过 Agent 工作流。
+测试环境使用确定性的测试 LLM Gateway，并完整经过 Recon、规划、专业 Agent、工具调用、Critic 和 Report 协议，不会通过关闭 AI 绕过 Agent 工作流。
 
 ### 在 IDEA 中测试真实对话模型
 

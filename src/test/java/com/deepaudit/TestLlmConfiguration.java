@@ -51,8 +51,7 @@ public class TestLlmConfiguration {
                             ? TriageDisposition.SKIP : TriageDisposition.INVESTIGATE;
                     return new TriageDecision(unit.unitId(), unit.primaryChunkId(), disposition,
                             List.copyOf(types),
-                            types.isEmpty() ? "真实差异不支持具体安全假设" : "真实差异包含需要深入调查的安全操作",
-                            List.of(), List.of());
+                            types.isEmpty() ? "真实差异不支持具体安全假设" : "真实差异包含需要深入调查的安全操作");
                 }).toList();
                 return new TriagePlan("测试模型已完成真实增量差异审查", decisions);
             }
@@ -68,13 +67,31 @@ public class TestLlmConfiguration {
                         title(type), "测试 Agent 根据目标代码和工具返回的实际代码形成证据链。",
                         "根据漏洞类型补充服务端校验并避免信任客户端输入。", turn.target().chunkId(),
                         evidenceIds(turn));
-                return new AgentDecision("FINDING", null, Map.of(), "证据足以提交确定性门禁", finding);
+                return new AgentDecision("FINDING", null, Map.of(), "证据足以提交 Critic", finding);
+            }
+
+            @Override
+            public CriticDecision critique(CriticRequest request) {
+                com.deepaudit.domain.FindingDeltaStatus delta =
+                        com.deepaudit.domain.FindingDeltaStatus.NEW;
+                return new CriticDecision(true, Confidence.HIGH,
+                        "未找到能够推翻候选的权限或参数化反证", delta,
+                        request.proposal().primaryChunkId(), request.proposal().vulnerabilityStartLine(),
+                        request.proposal().vulnerabilityEndLine(), rootCause(request.proposal().type()),
+                        locationRole(request.proposal().type()), null);
+            }
+
+            @Override
+            public LocationDecision repairLocation(LocationRepairRequest request) {
+                return request.locationCandidates().stream().findFirst()
+                        .map(candidate -> new LocationDecision(candidate.candidateId(), "测试模型选择真实源码候选"))
+                        .orElse(new LocationDecision(null, "没有可用位置候选"));
             }
 
             @Override
             public ReportNarrative writeReport(ReportRequest request) {
                 return new ReportNarrative("AI Agents 已完成订单接口安全审查并确认 "
-                        + request.findings().size() + " 个问题。", "已执行 Recon、增量分流、专业调查和证据门禁。");
+                        + request.findings().size() + " 个问题。", "已执行 Recon、规划、专业调查和 Critic 复核。");
             }
 
             private String tool(VulnerabilityType type) {
@@ -120,6 +137,24 @@ public class TestLlmConfiguration {
                 };
             }
 
+            private String rootCause(VulnerabilityType type) {
+                return switch (type) {
+                    case SQL_INJECTION -> "UNSAFE_QUERY";
+                    case AUTHORIZATION -> "MISSING_AUTHORIZATION_CHECK";
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> "UNSAFE_DATA_EXPOSURE";
+                    case STORED_XSS -> "UNSAFE_OUTPUT";
+                    case VALIDATION_BYPASS -> "MISSING_VALIDATION";
+                };
+            }
+
+            private String locationRole(VulnerabilityType type) {
+                return switch (type) {
+                    case SQL_INJECTION -> "QUERY";
+                    case AUTHORIZATION -> "SECURITY_BOUNDARY";
+                    case SENSITIVE_INFORMATION_DISCLOSURE, STORED_XSS -> "DATA_OUTPUT";
+                    case VALIDATION_BYPASS -> "VALIDATION";
+                };
+            }
         };
     }
 }

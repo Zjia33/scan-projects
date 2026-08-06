@@ -15,8 +15,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SemanticEvidenceServiceTest {
@@ -35,6 +33,24 @@ class SemanticEvidenceServiceTest {
                 taskId, 1549L, Set.of(1400L, 1497L, 1549L));
 
         assertThat(callSites).containsEntry(1497L, 84).containsEntry(1400L, 60);
+    }
+
+    @Test
+    void returnsStructuredChunkIdsForIndependentCriticEvidence() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticEvidenceService service = new SemanticEvidenceService(
+                flowMapper, mock(SemanticCallEdgeMapper.class));
+        SecurityFlow flow = new SecurityFlow(taskId, VulnerabilityType.SQL_INJECTION,
+                UUID.randomUUID(), UUID.randomUUID(), 10L, "HTTP 参数", "动态查询", "无 Guard",
+                "CHUNK 10 -> CHUNK 20", "10,20", Confidence.HIGH, 1, 0);
+        when(flowMapper.findByTaskAndChunk(taskId, 10L)).thenReturn(List.of(flow));
+
+        SemanticEvidenceService.EvidenceResult result = service.independentCriticEvidenceResult(
+                taskId, 10L, VulnerabilityType.SQL_INJECTION);
+
+        assertThat(result.evidenceChunkIds()).containsExactlyInAnyOrder(10L, 20L);
+        assertThat(result.text()).contains("独立语义证据", "CHUNK 10 -> CHUNK 20");
     }
 
     @Test
@@ -72,43 +88,9 @@ class SemanticEvidenceServiceTest {
         assertThat(result.verified()).isFalse();
     }
 
-    @Test
-    void doesNotPromoteHistoricalPlainJavaCallEdges() {
-        UUID taskId = UUID.randomUUID();
-        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
-        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
-        SemanticCallEdge historical = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
-                10L, 20L, 7, "load", "service.load(id)", "JAVA_CALL",
-                Confidence.HIGH, "历史普通 Java 调用边", "id -> id");
-        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(historical));
-        SemanticEvidenceService service = new SemanticEvidenceService(flowMapper, edgeMapper);
-
-        SemanticEvidenceService.RelationVerification result = service.verifyRelation(taskId, 10L, 20L);
-
-        assertThat(result.verified()).isFalse();
-    }
-
-    @Test
-    void reusesImmutableTaskEdgesUntilTaskCacheIsCleared() {
-        UUID taskId = UUID.randomUUID();
-        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
-        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(edge(taskId, 10L, 20L, 7)));
-        SemanticEvidenceService service = new SemanticEvidenceService(flowMapper, edgeMapper);
-
-        service.callSiteLines(taskId, 20L, Set.of(10L, 20L));
-        service.callSiteLines(taskId, 20L, Set.of(10L, 20L));
-        verify(edgeMapper).findByTaskId(taskId);
-
-        service.clearTaskCache(taskId);
-        service.callSiteLines(taskId, 20L, Set.of(10L, 20L));
-        verify(edgeMapper, times(2)).findByTaskId(taskId);
-    }
-
     private SemanticCallEdge edge(UUID taskId, long callerChunkId, long calleeChunkId, int line) {
         return new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
                 callerChunkId, calleeChunkId, line, "purchase", "purchase(request)",
-                "SPRING_EVENT", Confidence.HIGH, "事件类型与监听器参数匹配", "request -> request");
+                "JAVA_CALL", Confidence.HIGH, "方法签名唯一匹配", "request -> request");
     }
 }

@@ -3,7 +3,6 @@ package com.deepaudit.agent;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
-import com.deepaudit.domain.GitFileChange;
 import com.deepaudit.domain.SecurityFlow;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.SemanticChangeKind;
@@ -12,28 +11,31 @@ import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
-import com.deepaudit.mapper.GitFileChangeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 为增量扫描构建只包含 CHANGED 事实的轻量审查单元。
+ * 为增量扫描构建 CHANGED 审查单元，并在分流决定需要时按需附加相关 IMPACTED 代码。
  */
 @Service
 @RequiredArgsConstructor
 public class IncrementalReviewService {
     private static final int MAX_CODE_CHARS = 4_000;
-    private static final int CHANGE_CONTEXT_LINES = 10;
+    private static final int MAX_CONTEXT_CHARS = 8_000;
     private static final Set<String> SECURITY_ANNOTATIONS = Set.of(
             "preauthorize", "postauthorize", "secured", "rolesallowed", "permitall", "denyall");
     private static final Set<String> SECURITY_CONFIGURATION = Set.of(
@@ -54,20 +56,14 @@ public class IncrementalReviewService {
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
     private final SemanticMethodChangeMapper semanticChangeMapper;
-    private final GitFileChangeMapper fileChangeMapper;
 
-    // 每个 CHANGED 代码块都是分诊目标；跨方法上下文由专业 Agent 后续按需获取。
+    // 每个 CHANGED 代码块都是审查目标；IMPACTED 代码块只作为对应目标的影响证据。
     public List<IncrementalReviewUnit> build(UUID taskId, List<CodeChunk> chunks,
                                              Map<Long, Set<VulnerabilityType>> hints,
                                              Map<Long, String> hintDescriptions) {
         List<SemanticCallEdge> edges = safeList(edgeMapper.findByTaskId(taskId));
         List<SecurityFlow> flows = safeList(flowMapper.findByTaskId(taskId));
         List<SemanticMethodChange> changes = safeList(semanticChangeMapper.findByTaskId(taskId));
-        Map<String, GitFileChange> fileChanges = safeList(fileChangeMapper.findByTaskId(taskId)).stream()
-                .filter(change -> change.getNewPath() != null || change.getOldPath() != null)
-                .collect(Collectors.toMap(change -> normalizePath(change.getNewPath() == null
-                                ? change.getOldPath() : change.getNewPath()), change -> change,
-                        (left, right) -> left));
         List<VulnerabilityType> allowedTypes = java.util.Arrays.stream(VulnerabilityType.values()).sorted().toList();
         List<IncrementalReviewUnit> result = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
@@ -77,7 +73,6 @@ public class IncrementalReviewService {
                     .filter(flow -> flow.getPrimaryChunkId() != null && flow.getPrimaryChunkId().equals(chunk.getId()))
                     .toList();
             List<SemanticMethodChange> relatedChanges = relatedChanges(chunk, changes, relatedEdges);
-            GitFileChange fileChange = fileChanges.get(normalizePath(chunk.getFilePath()));
             Set<String> facts = facts(chunk, relatedEdges, relatedFlows, relatedChanges,
                     hints.getOrDefault(chunk.getId(), Set.of()));
             Set<VulnerabilityType> mandatoryTypes = mandatoryTypes(
@@ -88,12 +83,63 @@ public class IncrementalReviewService {
                     chunk.getFilePath(), chunk.getSymbolName(), chunk.getEndpoint(), chunk.getChunkType(),
                     chunk.getChangeType().name(), allowedTypes,
                     mandatoryTypes.stream().sorted().toList(), List.copyOf(facts), chunk.getParameters(),
-                    chunk.getAnnotations(), chunk.getCalledSymbols(), baseExcerpt(chunk, relatedChanges, fileChange),
-                    targetExcerpt(chunk, fileChange), joinNonBlank(changeSummary(relatedChanges),
-                            fileChangeSummary(fileChange), edgeSummary(relatedEdges)),
-                    truncate(deterministicEvidence, 4_000), chunk.getStartLine(), chunk.getEndLine()));
+                    chunk.getAnnotations(), chunk.getCalledSymbols(), excerpt(chunk.getBaseContent()),
+                    excerpt(chunk.getContent()), changeSummary(relatedChanges), edgeSummary(relatedEdges),
+                    truncate(deterministicEvidence, 4_000)));
         }
         return List.copyOf(result);
+    }
+
+    // NEED_CONTEXT 后补充对应 IMPACTED 和少量直接相关 CONTEXT，再进行唯一一次复判。
+    public List<IncrementalReviewUnit> enrich(UUID taskId, List<IncrementalReviewUnit> units,
+                                              List<CodeChunk> chunks) {
+        return enrichRelated(taskId, units, chunks, true);
+    }
+
+    // 只有已经决定 INVESTIGATE 的单元才在进入专业 Agent 前补充 IMPACTED 依据。
+    public List<IncrementalReviewUnit> enrichImpact(UUID taskId, List<IncrementalReviewUnit> units,
+                                                    List<CodeChunk> chunks) {
+        return enrichRelated(taskId, units, chunks, false);
+    }
+
+    private List<IncrementalReviewUnit> enrichRelated(UUID taskId, List<IncrementalReviewUnit> units,
+                                                      List<CodeChunk> chunks, boolean includeContext) {
+        Map<Long, CodeChunk> chunksById = chunks.stream().filter(chunk -> chunk.getId() != null)
+                .collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
+        List<SemanticCallEdge> edges = safeList(edgeMapper.findByTaskId(taskId));
+        List<SecurityFlow> flows = safeList(flowMapper.findByTaskId(taskId));
+        return units.stream().map(unit -> {
+            List<SemanticCallEdge> related = relatedEdges(unit.primaryChunkId(), edges);
+            Set<Long> impactedIds = impactedIds(unit.primaryChunkId(), edges, chunksById);
+            List<CodeChunk> impactedChunks = impactedIds.stream().map(chunksById::get)
+                    .filter(java.util.Objects::nonNull)
+                    .sorted(Comparator.comparing(CodeChunk::getFilePath, Comparator.nullsLast(String::compareTo))
+                            .thenComparingInt(CodeChunk::getStartLine))
+                    .toList();
+            Set<Long> impactScopeIds = new LinkedHashSet<>(impactedIds);
+            impactScopeIds.add(unit.primaryChunkId());
+            List<SecurityFlow> impactFlows = flows.stream()
+                    .filter(flow -> flow.getPrimaryChunkId() != null
+                            && impactScopeIds.contains(flow.getPrimaryChunkId()))
+                    .toList();
+            Set<Long> relatedIds = new LinkedHashSet<>();
+            for (SemanticCallEdge edge : related) {
+                if (edge.getCallerChunkId() != null) relatedIds.add(edge.getCallerChunkId());
+                if (edge.getCalleeChunkId() != null) relatedIds.add(edge.getCalleeChunkId());
+            }
+            relatedIds.remove(unit.primaryChunkId());
+            String codeContext = relatedIds.stream().map(chunksById::get)
+                    .filter(java.util.Objects::nonNull)
+                    .filter(chunk -> includeContext && chunk.getAnalysisScope() == AnalysisScope.CONTEXT)
+                    .limit(8)
+                    .map(chunk -> "[CONTEXT CHUNK_ID=" + chunk.getId() + "] "
+                            + safe(chunk.getFilePath()) + ":" + chunk.getStartLine() + " "
+                            + safe(chunk.getSymbolName()) + "\n<UNTRUSTED_CODE>\n"
+                            + excerpt(chunk.getContent(), 1_200) + "\n</UNTRUSTED_CODE>")
+                    .collect(Collectors.joining("\n\n"));
+            return unit.withRelatedContext(truncate(joinNonBlank(unit.relatedContext(),
+                    impactedCodeContext(impactedChunks), flowSummary(impactFlows), codeContext), MAX_CONTEXT_CHARS));
+        }).toList();
     }
 
     private boolean insideIncrementalScope(CodeChunk chunk) {
@@ -113,6 +159,10 @@ public class IncrementalReviewService {
         if (containsAny(searchable, VALIDATION)) facts.add("HAS_VALIDATION_OPERATION");
         if (containsAny(searchable, SENSITIVE_INFORMATION)) facts.add("HAS_SENSITIVE_INFORMATION");
         if (!edges.isEmpty()) facts.add("HAS_CALL_RELATIONS");
+        if (edges.stream().anyMatch(edge -> "CODEGRAPH_CALL".equals(edge.getEdgeType())
+                && edge.getConfidence() == com.deepaudit.domain.Confidence.MEDIUM)) {
+            facts.add("HAS_CONSERVATIVE_ARGUMENT_MAPPING");
+        }
         if (!flows.isEmpty()) facts.add("HAS_SEMANTIC_FLOW");
         if (!hints.isEmpty()) facts.add("HAS_DETERMINISTIC_HINT");
         changes.stream().map(SemanticMethodChange::getChangeKind).filter(java.util.Objects::nonNull)
@@ -131,35 +181,58 @@ public class IncrementalReviewService {
             result.add(VulnerabilityType.AUTHORIZATION);
             result.add(VulnerabilityType.VALIDATION_BYPASS);
         }
-        boolean deletedSecurityBoundary = changes.stream()
-                .filter(change -> change.getChangeKind() == SemanticChangeKind.METHOD_DELETED)
-                .map(SemanticMethodChange::getBaseContent).map(this::safe)
-                .map(value -> value.toLowerCase(Locale.ROOT))
-                .anyMatch(value -> containsAny(value, SECURITY_ANNOTATIONS)
-                        || containsAny(value, VALIDATION)
-                        || value.contains("checkowner") || value.contains("checkpermission")
-                        || value.contains("hasauthority") || value.contains("hasrole"));
-        if (deletedSecurityBoundary) {
-            result.add(VulnerabilityType.AUTHORIZATION);
-            result.add(VulnerabilityType.VALIDATION_BYPASS);
+        return result;
+    }
+
+    private Set<Long> impactedIds(long changedChunkId, List<SemanticCallEdge> edges,
+                                  Map<Long, CodeChunk> chunksById) {
+        Map<Long, Set<Long>> adjacency = new LinkedHashMap<>();
+        for (SemanticCallEdge edge : edges) {
+            Long caller = edge.getCallerChunkId();
+            Long callee = edge.getCalleeChunkId();
+            if (caller == null || callee == null || edge.getConfidence() == Confidence.LOW) continue;
+            adjacency.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
+            adjacency.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
+        }
+        Set<Long> visited = new LinkedHashSet<>();
+        Set<Long> result = new LinkedHashSet<>();
+        ArrayDeque<Long> queue = new ArrayDeque<>();
+        visited.add(changedChunkId);
+        queue.add(changedChunkId);
+        while (!queue.isEmpty()) {
+            Long current = queue.removeFirst();
+            for (Long candidateId : adjacency.getOrDefault(current, Set.of())) {
+                if (!visited.add(candidateId)) continue;
+                CodeChunk candidate = chunksById.get(candidateId);
+                if (candidate == null || candidate.getAnalysisScope() != AnalysisScope.IMPACTED) continue;
+                result.add(candidateId);
+                queue.addLast(candidateId);
+            }
         }
         return result;
     }
 
+    private String impactedCodeContext(List<CodeChunk> impactedChunks) {
+        if (impactedChunks.isEmpty()) return "";
+        String chunks = impactedChunks.stream().map(chunk -> "[IMPACTED CHUNK_ID=" + chunk.getId() + "] "
+                        + safe(chunk.getFilePath()) + ":" + chunk.getStartLine() + "-" + chunk.getEndLine()
+                        + " | " + safe(chunk.getSymbolName()) + " | endpoint=" + safe(chunk.getEndpoint())
+                        + "\n<UNTRUSTED_CODE>\n" + excerpt(chunk.getContent(), 1_200)
+                        + "\n</UNTRUSTED_CODE>")
+                .collect(Collectors.joining("\n\n"));
+        return "[IMPACTED_CONTEXT] 以下未变更代码块受当前 CHANGED 代码影响，"
+                + "仅作为本次变更的判断依据，不是独立审查目标。\n" + chunks;
+    }
 
     private List<SemanticMethodChange> relatedChanges(CodeChunk chunk, List<SemanticMethodChange> changes,
                                                        List<SemanticCallEdge> relatedEdges) {
         Set<String> calledNames = relatedEdges.stream().map(SemanticCallEdge::getCalledName)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
         return changes.stream().filter(change -> {
-            boolean samePath = safe(change.getTargetPath()).equals(safe(chunk.getFilePath()))
-                    || change.getTargetPath() == null
-                    && safe(change.getBasePath()).equals(safe(chunk.getFilePath()));
-            boolean sameTarget = samePath && (change.getTargetStartLine() != null
-                    ? change.getTargetStartLine() >= chunk.getStartLine()
-                    && change.getTargetStartLine() <= chunk.getEndLine()
-                    : safe(chunk.getSymbolName()).toLowerCase(Locale.ROOT)
-                    .contains(safe(change.getMethodName()).toLowerCase(Locale.ROOT)));
+            boolean sameTarget = safe(change.getTargetPath()).equals(safe(chunk.getFilePath()))
+                    && (change.getTargetStartLine() == null
+                    || change.getTargetStartLine() >= chunk.getStartLine()
+                    && change.getTargetStartLine() <= chunk.getEndLine());
             boolean deletedDependency = change.getChangeKind() == SemanticChangeKind.METHOD_DELETED
                     && calledNames.contains(change.getMethodName());
             return sameTarget || deletedDependency;
@@ -194,159 +267,20 @@ public class IncrementalReviewService {
     private String searchable(CodeChunk chunk) {
         return String.join(" ", safe(chunk.getFilePath()), safe(chunk.getSymbolName()),
                 safe(chunk.getEndpoint()), safe(chunk.getAnnotations()), safe(chunk.getCalledSymbols()),
-                safe(chunk.getContent()), safe(chunk.getBaseContent())).toLowerCase(Locale.ROOT);
+                safe(chunk.getContent())).toLowerCase(Locale.ROOT);
     }
 
     private boolean containsAny(String value, Set<String> markers) {
         return markers.stream().anyMatch(value::contains);
     }
 
-    private String targetExcerpt(CodeChunk chunk, GitFileChange change) {
-        if (chunk.getContent() == null || chunk.getContent().isBlank()) return "";
-        String ranges = change == null ? "" : change.getNewRanges();
-        return changedWindow(chunk.getContent(), chunk.getStartLine(), ranges, MAX_CODE_CHARS);
+    private String excerpt(String value) {
+        return excerpt(value, MAX_CODE_CHARS);
     }
 
-    private String baseExcerpt(CodeChunk chunk, List<SemanticMethodChange> changes,
-                               GitFileChange fileChange) {
-        String base = safe(chunk.getBaseContent());
-        if (base.isBlank()) return "";
-        // 文本/config 块的基线内容是带 +/- 标记的真实 Git 差异，不伪装成完整 Base 源码。
-        if (base.stripLeading().startsWith("@@ base")) return truncate(base, MAX_CODE_CHARS);
-        int baseStart = changes.stream().map(SemanticMethodChange::getBaseStartLine)
-                .filter(java.util.Objects::nonNull).findFirst().orElse(chunk.getStartLine());
-        String ranges = fileChange == null ? "" : fileChange.getOldRanges();
-        return changedWindow(base, baseStart, ranges, MAX_CODE_CHARS);
-    }
-
-    private String changedWindow(String content, int contentStartLine, String ranges, int limit) {
-        String[] lines = safe(content).split("\\R", -1);
-        List<ChangeWindow> selected = new ArrayList<>();
-        int contentEndLine = contentStartLine + lines.length - 1;
-        if (ranges != null && !ranges.isBlank()) {
-            for (String value : ranges.split(",")) {
-                String[] bounds = value.split(":", 2);
-                if (bounds.length != 2) continue;
-                try {
-                    int changedStart = Integer.parseInt(bounds[0]);
-                    int changedEnd = Integer.parseInt(bounds[1]);
-                    int coreStart = Math.max(contentStartLine, Math.min(changedStart, changedEnd));
-                    int coreEnd = Math.min(contentEndLine, Math.max(changedStart, changedEnd));
-                    if (coreStart > coreEnd) continue;
-                    selected.add(new ChangeWindow(
-                            Math.max(contentStartLine, coreStart - CHANGE_CONTEXT_LINES),
-                            Math.min(contentEndLine, coreEnd + CHANGE_CONTEXT_LINES),
-                            coreStart, coreEnd));
-                } catch (NumberFormatException ignored) {
-                }
-            }
-        }
-        if (selected.isEmpty()) {
-            return renderContiguousWindow(lines, contentStartLine, contentStartLine,
-                    Math.min(contentEndLine, contentStartLine + 40), limit);
-        }
-
-        // 每个 Git 变更区间独立分配剩余预算，避免前面的长区间吞掉全部源码窗口。
-        StringBuilder result = new StringBuilder();
-        for (int index = 0; index < selected.size(); index++) {
-            String separator = result.isEmpty() ? "" : "\n...\n";
-            int available = limit - result.length() - separator.length();
-            int remainingWindows = selected.size() - index;
-            if (available <= 0) break;
-            int windowBudget = Math.max(1, available / remainingWindows);
-            String windowText = renderChangeWindow(lines, contentStartLine,
-                    selected.get(index), windowBudget);
-            if (windowText.isBlank()) continue;
-            result.append(separator).append(windowText);
-        }
-        return result.toString().strip();
-    }
-
-    private String renderChangeWindow(String[] lines, int contentStartLine,
-                                      ChangeWindow window, int limit) {
-        String header = "[CHANGE_RANGE " + window.coreStart() + ":" + window.coreEnd() + "]\n";
-        if (header.length() >= limit) return header.substring(0, limit).stripTrailing();
-
-        java.util.SortedSet<Integer> selectedLines = new java.util.TreeSet<>();
-        selectedLines.add(window.coreStart());
-        String rendered = renderSelectedLines(lines, contentStartLine, window, selectedLines, header);
-        if (rendered.length() > limit) {
-            return truncateSourceLine(header, window.coreStart(),
-                    lines[window.coreStart() - contentStartLine], limit);
-        }
-
-        for (int line : prioritizedLines(window)) {
-            if (selectedLines.contains(line)) continue;
-            selectedLines.add(line);
-            String candidate = renderSelectedLines(lines, contentStartLine, window, selectedLines, header);
-            if (candidate.length() <= limit) {
-                rendered = candidate;
-            } else {
-                selectedLines.remove(line);
-            }
-        }
-        return rendered.stripTrailing();
-    }
-
-    private List<Integer> prioritizedLines(ChangeWindow window) {
-        List<Integer> result = new ArrayList<>();
-        if (window.coreEnd() != window.coreStart()) result.add(window.coreEnd());
-        for (int line = window.coreStart() + 1; line < window.coreEnd(); line++) result.add(line);
-        for (int distance = 1; distance <= CHANGE_CONTEXT_LINES; distance++) {
-            int before = window.coreStart() - distance;
-            int after = window.coreEnd() + distance;
-            if (before >= window.from()) result.add(before);
-            if (after <= window.to()) result.add(after);
-        }
-        return result;
-    }
-
-    private String renderSelectedLines(String[] lines, int contentStartLine, ChangeWindow window,
-                                       java.util.SortedSet<Integer> selectedLines, String header) {
-        StringBuilder result = new StringBuilder(header);
-        int previous = Integer.MIN_VALUE;
-        for (int line : selectedLines) {
-            if (previous != Integer.MIN_VALUE && line > previous + 1) result.append("...\n");
-            result.append(line).append(" | ").append(lines[line - contentStartLine]).append('\n');
-            previous = line;
-        }
-        if (selectedLines.first() > window.from() || selectedLines.last() < window.to()) {
-            result.append("[WINDOW_TRUNCATED]\n");
-        }
-        return result.toString();
-    }
-
-    private String truncateSourceLine(String header, int line, String source, int limit) {
-        String prefix = header + line + " | ";
-        if (prefix.length() >= limit) return prefix.substring(0, limit).stripTrailing();
-        int sourceLimit = Math.max(0, limit - prefix.length());
-        return prefix + source.substring(0, Math.min(source.length(), sourceLimit));
-    }
-
-    private String renderContiguousWindow(String[] lines, int contentStartLine,
-                                          int from, int to, int limit) {
-        StringBuilder result = new StringBuilder();
-        for (int line = from; line <= to; line++) {
-            String numbered = (result.isEmpty() ? "" : "\n")
-                    + line + " | " + lines[line - contentStartLine];
-            if (result.length() + numbered.length() > limit) break;
-            result.append(numbered);
-        }
-        return result.toString().strip();
-    }
-
-    private record ChangeWindow(int from, int to, int coreStart, int coreEnd) {
-    }
-
-    private String fileChangeSummary(GitFileChange change) {
-        if (change == null) return "";
-        return "Git文件变化=" + safe(change.getChangeType()) + "，Base范围="
-                + safe(change.getOldRanges()) + "，Target范围=" + safe(change.getNewRanges())
-                + "\n" + truncate(change.getContextText(), 4_000);
-    }
-
-    private String normalizePath(String value) {
-        return value == null ? "" : value.replace('\\', '/');
+    private String excerpt(String value, int limit) {
+        String safe = safe(value);
+        return safe.substring(0, Math.min(limit, safe.length()));
     }
 
     private String truncate(String value, int maxLength) {

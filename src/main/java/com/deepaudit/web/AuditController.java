@@ -200,7 +200,7 @@ public class AuditController {
         return eventStreamService.subscribe(taskId);
     }
 
-    // 返回专业 Agent 提交并经过确定性证据门禁处理的调查假设。
+    // 返回专业 Agent 提交且由 Critic 处理过的调查假设。
     @GetMapping("/tasks/{taskId}/hypotheses")
     public List<AuditHypothesis> hypotheses(@PathVariable UUID taskId) {
         requireTask(taskId);

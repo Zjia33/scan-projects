@@ -5,20 +5,22 @@ import java.util.List;
 import java.util.UUID;
 
 public interface CodeGraphClient {
-    void prepare(UUID taskId, Path projectRoot);
+    void prepare(UUID taskId, CodeGraphSnapshot snapshot, Path projectRoot);
 
-    RelationLocations callers(UUID taskId, String symbol, int limit);
+    List<CodeGraphLocation> impact(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int depth);
 
-    RelationLocations callees(UUID taskId, String symbol, int limit);
+    RelatedLocations related(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit);
 
     void release(UUID taskId);
 
     record CodeGraphLocation(String name, String kind, String filePath, Integer startLine) {
     }
 
-    record RelationLocations(List<CodeGraphLocation> locations, boolean truncated) {
-        public RelationLocations {
-            locations = locations == null ? List.of() : List.copyOf(locations);
+    record RelatedLocations(List<CodeGraphLocation> callers, List<CodeGraphLocation> callees) {
+        // 校验并规范化 RelatedLocations 的构造参数。
+        public RelatedLocations {
+            callers = callers == null ? List.of() : List.copyOf(callers);
+            callees = callees == null ? List.of() : List.copyOf(callees);
         }
     }
 }

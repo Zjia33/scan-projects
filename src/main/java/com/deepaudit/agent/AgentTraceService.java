@@ -34,16 +34,7 @@ public class AgentTraceService {
 
     // 持久化截断后的事件消息并实时推送给当前 SSE 订阅者。
     public void event(UUID taskId, UUID runId, AgentType type, AgentEventType eventType, String message) {
-        String normalized = message == null ? "" : message.strip();
-        if (normalized.isBlank()) {
-            normalized = switch (eventType) {
-                case REJECTED -> "已核对当前代码行为，未发现足以确认该风险的事实";
-                case INSUFFICIENT_EVIDENCE -> "当前已发现的代码行为不足以确认该风险";
-                case ERROR, FORMAT_ERROR -> "当前安全核查未能完成";
-                default -> "已记录本次安全核查进展";
-            };
-        }
-        String safe = normalized.substring(0, Math.min(normalized.length(), 12_000));
+        String safe = message == null ? "" : message.substring(0, Math.min(message.length(), 12_000));
         AgentEvent event = new AgentEvent(taskId, runId, type, eventType, safe);
         eventMapper.insert(event);
         eventStreamService.publish(event);

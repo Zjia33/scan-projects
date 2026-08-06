@@ -107,14 +107,16 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.INVENTORY, 28,
                             "已读取变更清单，准备增量安全上下文");
                     task = update(task, AuditStatus.INDEXING, 42,
-                            "正在切分直接变更代码并登记 Target 按需上下文");
+                            "仅索引变更代码，并准备 Base/Target CodeGraph 影响分析");
                     long indexStageStarted = ExecutionTiming.start();
-                    codeGraphIntegrationService.bindTarget(taskId, targetRoot);
+                    stageStarted = ExecutionTiming.start();
+                    codeGraphIntegrationService.prepare(taskId, baseRoot, targetRoot);
+                    logTiming(taskId, "CODEGRAPH_PREPARE", stageStarted, taskStarted, "snapshots=2");
                     stageStarted = ExecutionTiming.start();
                     var recon = reconService.buildIndex(taskId, targetRoot, baseRoot, changes);
                     logTiming(taskId, "INCREMENTAL_RECON_INDEX", stageStarted, taskStarted,
                             "changedChunks=" + recon.chunkCount());
-                    log.info("阶段耗时：taskId={}，阶段=增量索引准备，耗时={}ms，说明=切分直接变更代码；CodeGraph将在专业Agent首次查询调用关系时按需准备，变更代码块数={}",
+                    log.info("阶段耗时：taskId={}，阶段=增量索引准备，耗时={}ms，说明=建立Base/Target CodeGraph索引并切分直接变更代码，变更代码块数={}",
                             taskId, ExecutionTiming.elapsedMillis(indexStageStarted), recon.chunkCount());
 
                     task = update(task, AuditStatus.RECON, 55,
@@ -122,17 +124,17 @@ public class AuditOrchestrator {
                     task = update(task, AuditStatus.AGENT_RECON, 62, "Recon Agent 解析框架、模块与技术架构");
                     task = update(task, AuditStatus.PLANNING, 68, "Triage Orchestrator 正在轻量分流审计单元");
                     task = update(task, AuditStatus.ANALYSIS, 74,
-                            "专业安全 Agents 调查变更，并按需选择关联调用上下文");
+                            "专业安全 Agents 调查变更及语义影响面");
                     stageStarted = ExecutionTiming.start();
                     AnalysisService.AnalysisResult analysis = analysisService.analyze(
                             taskId, targetRoot, recon, project.getName(), task);
                     logTiming(taskId, "ANALYSIS_AGENT_PIPELINE", stageStarted, taskStarted,
                             "plannedTasks=" + analysis.plannedAgentTasks() + ",findings=" + analysis.findingCount());
-                    TimingDetailLog.info("阶段明细：taskId={}，阶段=智能增量审计，耗时={}ms，说明=完成调用符号预取、分诊、专业调查、确定性证据门禁和报告生成，正式漏洞数={}",
+                    TimingDetailLog.info("阶段明细：taskId={}，阶段=智能增量审计，耗时={}ms，说明=完成影响分析、分诊、专业调查、Critic复核和报告生成，正式漏洞数={}",
                             taskId, ExecutionTiming.elapsedMillis(stageStarted), analysis.findingCount());
 
-                    task = update(task, AuditStatus.RESULT_VALIDATION, 94,
-                            "已完成专业调查并通过确定性证据、增量因果和源码位置校验");
+                    task = update(task, AuditStatus.CRITIC_REVIEW, 90, "Critic Agent 已完成独立反证复核");
+                    task = update(task, AuditStatus.RESULT_VALIDATION, 94, "校验提交、文件、行号和代码证据");
                     task = update(task, AuditStatus.REPORTING, 97, "Report Agent 汇总 Git 安全审计报告");
                     update(task, AuditStatus.COMPLETED, 100,
                             "扫描完成，共发现 " + analysis.findingCount() + " 个问题");
@@ -143,7 +145,6 @@ public class AuditOrchestrator {
                 // 释放任务绑定，并按提交缓存上限清理最旧的 Git/CodeGraph 快照。
                 long cleanupStarted = ExecutionTiming.start();
                 codeGraphIntegrationService.release(taskId);
-                analysisService.clearTaskCaches(taskId);
                 snapshotService.pruneCache(cacheDirectory, Set.of());
                 logTiming(taskId, "RESOURCE_CLEANUP", cleanupStarted, taskStarted, "status=SUCCESS");
             }

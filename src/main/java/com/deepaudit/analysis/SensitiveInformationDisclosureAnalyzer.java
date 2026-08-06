@@ -22,7 +22,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 为新增或修改的真实代码行生成敏感信息泄露调查线索。规则只负责定位候选，最终结论由专业 Agent 给出并经过证据门禁。
+ * 为新增或修改的真实代码行生成敏感信息泄露调查线索。规则只负责定位候选，最终结论仍由专业 Agent 和 Critic 给出。
  */
 @Order(40)
 @Component

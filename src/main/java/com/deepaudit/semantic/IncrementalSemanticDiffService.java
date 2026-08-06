@@ -199,32 +199,7 @@ public class IncrementalSemanticDiffService {
                 after == null ? null : after.endLine(), before == null ? "" : before.source(),
                 after == null ? "" : after.source(), details);
         changes.add(change);
-        if (after != null) {
-            markTargetChunk(after, before, kind, targetChunks);
-        } else if (kind == SemanticChangeKind.METHOD_DELETED && before != null) {
-            addDeletedMethodAnchor(taskId, before, targetPath, targetChunks);
-        }
-    }
-
-    /**
-     * 删除方法在 Target 中没有实体，仍必须保留一个只用于增量因果追踪的 CHANGED 锚点。
-     * 该锚点不能直接成为最终报告位置；专业 Agent 需要把实际影响定位到仍存在的 Target 代码。
-     */
-    private void addDeletedMethodAnchor(UUID taskId, MethodSnapshot before, String targetPath,
-                                        List<CodeChunk> targetChunks) {
-        String path = targetPath == null || targetPath.isBlank() ? before.path() : targetPath;
-        boolean exists = targetChunks.stream()
-                .filter(chunk -> chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED)
-                .anyMatch(chunk -> path.equals(chunk.getFilePath())
-                        && before.stableSignature().equals(chunk.getSymbolName())
-                        && chunk.getChangeType() == ChunkChangeType.DELETED);
-        if (exists) return;
-        CodeChunk anchor = new CodeChunk(taskId, path, before.stableSignature(), null,
-                before.startLine(), before.endLine(), "", "JAVA_METHOD_DELETED", "", "", "");
-        anchor.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
-        anchor.setChangeType(ChunkChangeType.DELETED);
-        anchor.setBaseContent(truncate(before.source(), MAX_METHOD_CONTENT_CHARS));
-        targetChunks.add(anchor);
+        if (after != null) markTargetChunk(after, before, kind, targetChunks);
     }
 
     private void markTargetChunk(MethodSnapshot after, MethodSnapshot before, SemanticChangeKind kind,
