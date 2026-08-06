@@ -5,6 +5,8 @@ import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.List;
+import java.util.ArrayList;
 
 final class ToolArguments {
     private final Map<String, Object> values;
@@ -25,6 +27,24 @@ final class ToolArguments {
     String string(String name) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
         return value == null ? "" : String.valueOf(value).strip();
+    }
+
+    List<String> strings(String name) {
+        Object value = values.get(name.toLowerCase(Locale.ROOT));
+        if (value == null) return List.of();
+        List<String> result = new ArrayList<>();
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) addString(result, item);
+        } else {
+            for (String item : String.valueOf(value).split(",")) addString(result, item);
+        }
+        return List.copyOf(result);
+    }
+
+    private void addString(List<String> result, Object value) {
+        if (value == null) return;
+        String item = String.valueOf(value).strip();
+        if (!item.isBlank() && !result.contains(item)) result.add(item);
     }
 
     int integer(String name, int defaultValue, int minimum, int maximum) {

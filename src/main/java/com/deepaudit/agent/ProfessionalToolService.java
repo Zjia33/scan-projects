@@ -13,6 +13,7 @@ import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.mapper.SemanticSymbolMapper;
+import com.deepaudit.semantic.FrameworkSemanticEdgePolicy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -68,11 +69,7 @@ public class ProfessionalToolService {
                         .thenComparing(item -> item.chunk().getFilePath())
                         .thenComparingInt(item -> item.chunk().getStartLine()))
                 .toList();
-        int offset = cursorOffset(arguments);
-        if (offset >= allMatches.size()) {
-            return ToolResult.empty("[SEARCH_RESULT] 没有更多满足结构化条件的代码符号。");
-        }
-        List<ScoredChunk> matches = allMatches.stream().skip(offset).limit(limit).toList();
+        List<ScoredChunk> matches = allMatches.stream().limit(limit).toList();
         if (matches.isEmpty()) return ToolResult.empty("[SEARCH_RESULT] 没有找到满足结构化条件的代码符号。");
 
         Set<Long> candidates = matches.stream().map(ScoredChunk::chunk).map(CodeChunk::getId)
@@ -81,10 +78,11 @@ public class ProfessionalToolService {
         String body = matches.stream().map(item -> formatChunk(item.chunk(),
                         "deterministicScore=" + item.score(), 1_600))
                 .collect(Collectors.joining("\n\n"));
-        boolean truncated = offset + matches.size() < allMatches.size();
-        String nextCursor = truncated ? String.valueOf(offset + matches.size()) : null;
+        if (matches.size() < allMatches.size()) {
+            body += "\n\n[RESULT_LIMIT] 结构化搜索结果已达到本次返回上限；请缩小检索条件，未返回结果不代表不存在。";
+        }
         return new ToolResult(ToolResult.Status.OK, "[SEARCH_RESULT][UNVERIFIED_CANDIDATE]\n" + body,
-                Set.of(current.getId()), candidates, truncated, nextCursor);
+                Set.of(current.getId()), candidates);
     }
 
     // 在不可变任务源码块上执行受控文本搜索；结果只作为候选线索。
@@ -124,9 +122,7 @@ public class ProfessionalToolService {
         }
         allMatches.sort(Comparator.comparing((CodeMatch match) -> match.chunk().getFilePath())
                 .thenComparingInt(CodeMatch::lineNumber));
-        int offset = cursorOffset(arguments);
-        if (offset >= allMatches.size()) return ToolResult.empty("[CODE_SEARCH] 没有更多匹配结果。");
-        List<CodeMatch> matches = allMatches.stream().skip(offset).limit(limit).toList();
+        List<CodeMatch> matches = allMatches.stream().limit(limit).toList();
         if (matches.isEmpty()) return ToolResult.empty("[CODE_SEARCH] 没有找到匹配源码。");
         Set<Long> evidence = matches.stream().map(CodeMatch::chunk).map(CodeChunk::getId)
                 .filter(current.getId()::equals)
@@ -135,14 +131,15 @@ public class ProfessionalToolService {
                 .filter(id -> !evidence.contains(id))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         String body = matches.stream().map(CodeMatch::format).collect(Collectors.joining("\n\n"));
-        boolean truncated = offset + matches.size() < allMatches.size();
-        String nextCursor = truncated ? String.valueOf(offset + matches.size()) : null;
+        if (matches.size() < allMatches.size()) {
+            body += "\n\n[RESULT_LIMIT] 源码搜索结果已达到本次返回上限；请缩小 query、scope 或 filePattern，未返回结果不代表不存在。";
+        }
         return new ToolResult(ToolResult.Status.OK, "[CODE_SEARCH][UNVERIFIED_CANDIDATE] scope="
-                + scope + "\n" + body, evidence, candidates, truncated, nextCursor);
+                + scope + "\n" + body, evidence, candidates);
     }
 
-    public ToolResult exploreCallGraph(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
-                                   ToolArguments arguments, int limit) {
+    public ToolResult exploreFrameworkRelations(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+                                                ToolArguments arguments, int limit) {
         String direction = arguments.string("direction").toUpperCase(Locale.ROOT);
         if (!Set.of("CALLERS", "CALLEES", "BOTH").contains(direction)) direction = "BOTH";
         int depth = arguments.integer("depth", 3, 1, 5);
@@ -153,20 +150,21 @@ public class ProfessionalToolService {
                     .map(CodeChunk::getId).findFirst().orElse(null);
         }
 
-        List<SemanticCallEdge> allEdges = edgeMapper.findByTaskId(taskId);
+        List<SemanticCallEdge> allEdges = edgeMapper.findByTaskId(taskId).stream()
+                .filter(FrameworkSemanticEdgePolicy::supports).toList();
         Map<Long, List<GraphStep>> graph = directedGraph(allEdges, direction);
         List<GraphPath> paths = breadthFirstPaths(current.getId(), targetId, graph, depth, limit);
         if (paths.isEmpty()) {
             String target = targetId == null ? "" : "，目标代码块=" + targetId;
-            return ToolResult.empty("[CALL_GRAPH] 在方向=" + direction + "、深度=" + depth + target
-                    + " 的范围内没有找到已物化的局部框架关系路径。");
+            return ToolResult.empty("[FRAMEWORK_SEMANTIC_RELATIONS] 在方向=" + direction + "、深度="
+                    + depth + target + " 的范围内没有找到已验证的框架语义关系。");
         }
 
         Set<Long> evidence = new LinkedHashSet<>();
         evidence.add(current.getId());
         paths.forEach(path -> path.steps().forEach(step -> evidence.add(step.to())));
         String body = paths.stream().map(this::formatPath).collect(Collectors.joining("\n\n"));
-        return new ToolResult("[CALL_GRAPH] direction=" + direction + " depth=" + depth
+        return new ToolResult("[FRAMEWORK_SEMANTIC_RELATIONS] direction=" + direction + " depth=" + depth
                 + "\n" + body, evidence, Set.of());
     }
 
@@ -425,7 +423,7 @@ public class ProfessionalToolService {
     }
 
     private boolean reliable(SemanticCallEdge edge) {
-        return edge.getConfidence() != Confidence.LOW;
+        return FrameworkSemanticEdgePolicy.supports(edge) && edge.getConfidence() != Confidence.LOW;
     }
 
     private boolean changeMatches(SemanticMethodChange change, CodeChunk current, String selector) {
@@ -582,12 +580,6 @@ public class ProfessionalToolService {
                 + " line=" + edge.getCallSiteLine() + " confidence=" + edge.getConfidence()
                 + " mapping=" + safe(edge.getArgumentMapping(), 600)
                 + "\n<UNTRUSTED_CODE>" + safe(edge.getExpression(), 600) + "</UNTRUSTED_CODE>";
-    }
-
-    private int cursorOffset(ToolArguments arguments) {
-        Long cursor = arguments.longValue("cursor");
-        if (cursor == null || cursor < 0) return 0;
-        return (int) Math.min(cursor, Integer.MAX_VALUE);
     }
 
     private boolean inSearchScope(CodeChunk chunk, CodeChunk current, String scope, Set<Long> related) {

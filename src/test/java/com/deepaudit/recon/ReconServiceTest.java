@@ -373,6 +373,61 @@ class ReconServiceTest {
         verify(mapper).updateIncrementalMetadata(impacted);
     }
 
+    @Test
+    void configurationChunksOverlapByTwentyLines() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        UUID taskId = UUID.randomUUID();
+        String content = java.util.stream.IntStream.rangeClosed(1, 300)
+                .mapToObj(line -> "setting-" + line + ": value-" + line)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        write("src/main/resources/application.yml", content);
+        GitFileChange change = new GitFileChange(taskId, null,
+                "src/main/resources/application.yml", "ADD", 300, 0,
+                "", "1:300", "added configuration", false);
+
+        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).hasSize(2);
+        CodeChunk first = captor.getValue().get(0);
+        CodeChunk second = captor.getValue().get(1);
+        assertThat(first.getStartLine()).isEqualTo(1);
+        assertThat(first.getEndLine()).isEqualTo(160);
+        assertThat(second.getStartLine()).isEqualTo(141);
+        assertThat(second.getEndLine()).isEqualTo(300);
+        assertThat(first.getContent()).contains("setting-141: value-141", "setting-160: value-160");
+        assertThat(second.getContent()).contains("setting-141: value-141", "setting-160: value-160");
+    }
+
+    @Test
+    void changedLineInOverlapBelongsOnlyToLaterConfigurationChunk() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        UUID taskId = UUID.randomUUID();
+        String content = java.util.stream.IntStream.rangeClosed(1, 300)
+                .mapToObj(line -> line == 150 ? "security-token: changed-secret"
+                        : "setting-" + line + ": value-" + line)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        write("src/main/resources/application.yml", content);
+        GitFileChange change = new GitFileChange(taskId,
+                "src/main/resources/application.yml", "src/main/resources/application.yml",
+                "MODIFY", 1, 1, "150:150", "150:150", "changed line 150", false);
+
+        new ReconService(mapper).buildIndex(taskId, projectRoot, projectRoot, List.of(change));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getStartLine()).isEqualTo(141);
+            assertThat(chunk.getEndLine()).isEqualTo(300);
+            assertThat(chunk.getContent()).contains(
+                    "setting-141: value-141", "security-token: changed-secret", "setting-160: value-160");
+            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CHANGED);
+        });
+    }
+
     private ReconSummary buildIncremental(ReconService service) throws Exception {
         UUID taskId = UUID.randomUUID();
         List<GitFileChange> changes = new ArrayList<>();

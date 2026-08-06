@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FindingConsolidatorTest {
 
     @Test
-    void mergesCriticResultsThatRelocateToTheSameVulnerability() {
+    void mergesValidatedResultsThatResolveToTheSameVulnerability() {
         UUID taskId = UUID.randomUUID();
         CodeChunk chunk = noticeChunk(taskId);
         Finding fromController = finding(taskId, VulnerabilityType.STORED_XSS,
@@ -76,7 +76,7 @@ class FindingConsolidatorTest {
     }
 
     @Test
-    void mergesOverlappingCriticRangesAndRebuildsFingerprintFromTheirUnion() {
+    void mergesOverlappingValidatedRangesAndRebuildsFingerprintFromTheirUnion() {
         UUID taskId = UUID.randomUUID();
         CodeChunk chunk = noticeChunk(taskId);
         Finding first = finding(taskId, VulnerabilityType.STORED_XSS,
@@ -112,6 +112,141 @@ class FindingConsolidatorTest {
 
         assertThat(result).hasSize(2);
         assertThat(result).extracting(Finding::getFingerprint).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void mergesControllerAndServiceReportsFromTheSameVerifiedEvidenceChain() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk controller = new CodeChunk(taskId,
+                "src/main/java/demo/SensitiveController.java", "SensitiveController#records",
+                "/records/{id}", 30, 40, "return service.records(id);",
+                "JAVA_METHOD", "Long id", "@GetMapping", "records");
+        controller.setId(3708L);
+        CodeChunk service = new CodeChunk(taskId,
+                "src/main/java/demo/SensitiveService.java", "SensitiveService#records",
+                null, 48, 52, "return repository.findWithSecrets(id);",
+                "JAVA_METHOD", "Long id", "", "findWithSecrets");
+        service.setId(3717L);
+        Finding entryReport = finding(taskId, VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE,
+                Severity.HIGH, Confidence.HIGH, 37, 37, "/records/{id}", """
+                [CHUNK 3708] [调用入口] src/main/java/demo/SensitiveController.java:37
+                return service.records(id);
+
+                [CHUNK 3717] [漏洞位置] src/main/java/demo/SensitiveService.java:50
+                return repository.findWithSecrets(id);
+                """, FindingDeltaStatus.NEW);
+        entryReport.setFilePath(controller.getFilePath());
+        Finding sinkReport = finding(taskId, VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE,
+                Severity.HIGH, Confidence.HIGH, 50, 50, null, """
+                [CHUNK 3717] [漏洞位置] src/main/java/demo/SensitiveService.java:50
+                return repository.findWithSecrets(id);
+                """, FindingDeltaStatus.NEW);
+        sinkReport.setFilePath(service.getFilePath());
+
+        List<Finding> result = FindingConsolidator.consolidate(
+                List.of(entryReport, sinkReport), List.of(controller, service));
+
+        assertThat(result).singleElement().satisfies(merged -> {
+            assertThat(merged.getFilePath()).isEqualTo(service.getFilePath());
+            assertThat(merged.getStartLine()).isEqualTo(50);
+            assertThat(merged.getEndpoint()).isEqualTo("/records/{id}");
+            assertThat(occurrences(merged.getEvidence(), "[CHUNK 3717]")).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void mergesEqualCrossLayerEvidenceAndKeepsTheRealEndpointBoundary() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk controller = new CodeChunk(taskId,
+                "src/main/java/demo/AccountController.java", "AccountController#diagnostics",
+                "/accounts/diagnostics", 40, 45, "return service.diagnostics(accountNo);",
+                "JAVA_METHOD", "String accountNo", "@GetMapping", "diagnostics");
+        controller.setId(3709L);
+        CodeChunk service = new CodeChunk(taskId,
+                "src/main/java/demo/AccountService.java", "AccountService#diagnostics",
+                null, 53, 57, "return repository.diagnostics(accountNo);",
+                "JAVA_METHOD", "String accountNo", "", "diagnostics");
+        service.setId(3718L);
+        String sharedEvidence = """
+                [CHUNK 3709] [调用入口] src/main/java/demo/AccountController.java:43
+                return service.diagnostics(accountNo);
+
+                [CHUNK 3718] [关联证据] src/main/java/demo/AccountService.java:55
+                return repository.diagnostics(accountNo);
+                """;
+        Finding controllerReport = finding(taskId, VulnerabilityType.AUTHORIZATION,
+                Severity.HIGH, Confidence.HIGH, 43, 43, "/accounts/diagnostics",
+                sharedEvidence, FindingDeltaStatus.NEW);
+        controllerReport.setFilePath(controller.getFilePath());
+        Finding serviceReport = finding(taskId, VulnerabilityType.AUTHORIZATION,
+                Severity.HIGH, Confidence.HIGH, 55, 55, "/accounts/diagnostics",
+                sharedEvidence, FindingDeltaStatus.NEW);
+        serviceReport.setFilePath(service.getFilePath());
+
+        Finding merged = FindingConsolidator.consolidate(
+                List.of(serviceReport, controllerReport), List.of(controller, service)).get(0);
+
+        assertThat(merged.getFilePath()).isEqualTo(controller.getFilePath());
+        assertThat(merged.getStartLine()).isEqualTo(43);
+    }
+
+    @Test
+    void mergesValidationReportsAcrossLayersAndKeepsConcreteServiceOperation() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk controller = new CodeChunk(taskId,
+                "src/main/java/demo/LabScenarioController.java", "LabScenarioController#purchase",
+                "/payments/purchase", 80, 85, "return service.purchase(request);",
+                "JAVA_METHOD", "PurchaseRequest request", "@PostMapping", "purchase");
+        controller.setId(4101L);
+        CodeChunk service = new CodeChunk(taskId,
+                "src/main/java/demo/LabScenarioService.java", "LabScenarioService#purchase",
+                null, 78, 89, "BigDecimal total = request.quotedUnitPrice().multiply(quantity);",
+                "JAVA_METHOD", "PurchaseRequest request", "", "multiply,debit");
+        service.setId(4102L);
+        String evidence = """
+                [CHUNK 4101] [漏洞位置] src/main/java/demo/LabScenarioController.java:84
+                return service.purchase(request);
+
+                [CHUNK 4102] [漏洞位置] src/main/java/demo/LabScenarioService.java:86
+                BigDecimal total = request.quotedUnitPrice().multiply(quantity);
+                """;
+        Finding entry = finding(taskId, VulnerabilityType.VALIDATION_BYPASS,
+                Severity.HIGH, Confidence.HIGH, 84, 84, "/payments/purchase",
+                evidence, FindingDeltaStatus.NEW);
+        entry.setFilePath(controller.getFilePath());
+        Finding operation = finding(taskId, VulnerabilityType.VALIDATION_BYPASS,
+                Severity.HIGH, Confidence.HIGH, 86, 86, "/payments/purchase",
+                evidence, FindingDeltaStatus.NEW);
+        operation.setFilePath(service.getFilePath());
+
+        Finding merged = FindingConsolidator.consolidate(
+                List.of(entry, operation), List.of(controller, service)).get(0);
+
+        assertThat(merged.getFilePath()).isEqualTo(service.getFilePath());
+        assertThat(merged.getStartLine()).isEqualTo(86);
+    }
+
+    @Test
+    void keepsCrossLayerFindingsWithOnlyPartiallyOverlappingEvidenceSeparate() {
+        UUID taskId = UUID.randomUUID();
+        Finding first = finding(taskId, VulnerabilityType.AUTHORIZATION,
+                Severity.HIGH, Confidence.HIGH, 20, 20, "/first", """
+                [CHUNK 100] [调用入口] FirstController.java:20
+                first();
+                [CHUNK 300] [关联证据] SharedService.java:50
+                shared();
+                """, FindingDeltaStatus.NEW);
+        first.setFilePath("src/main/java/demo/FirstController.java");
+        Finding second = finding(taskId, VulnerabilityType.AUTHORIZATION,
+                Severity.HIGH, Confidence.HIGH, 30, 30, "/second", """
+                [CHUNK 200] [调用入口] SecondController.java:30
+                second();
+                [CHUNK 300] [关联证据] SharedService.java:50
+                shared();
+                """, FindingDeltaStatus.NEW);
+        second.setFilePath("src/main/java/demo/SecondController.java");
+
+        assertThat(FindingConsolidator.consolidate(List.of(first, second), List.of())).hasSize(2);
     }
 
     private Finding finding(UUID taskId, VulnerabilityType type,

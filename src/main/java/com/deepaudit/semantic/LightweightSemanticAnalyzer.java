@@ -625,7 +625,7 @@ public class LightweightSemanticAnalyzer {
 
     private String formatPath(VulnerabilityType type, PathState state, String source, String sink,
                               String guard, int localSemanticGaps) {
-        // 统一格式化 TYPE、SOURCE、CALL、SINK、GUARD 和 COVERAGE，供工具结果与 Critic 直接读取。
+        // 统一格式化 TYPE、SOURCE、CALL、SINK、GUARD 和 COVERAGE，供专业 Agent 工具结果直接读取。
         StringBuilder result = new StringBuilder();
         result.append("[TYPE] ").append(type).append('\n');
         result.append("[SOURCE] ").append(source).append(" @ ").append(location(state.nodes.get(0).symbol())).append('\n');

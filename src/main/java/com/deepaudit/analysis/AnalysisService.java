@@ -1,16 +1,14 @@
 package com.deepaudit.analysis;
 
 import com.deepaudit.agent.AgentCandidate;
-import com.deepaudit.agent.AgentCandidateConsolidator;
 import com.deepaudit.agent.AgentTask;
 import com.deepaudit.agent.AgentTraceService;
-import com.deepaudit.agent.CriticAgentService;
+import com.deepaudit.agent.FindingGateService;
 import com.deepaudit.agent.OrchestratorAgentService;
 import com.deepaudit.agent.ProfessionalAgentRunner;
 import com.deepaudit.agent.ReconAgentService;
 import com.deepaudit.agent.ReportAgentService;
 import com.deepaudit.ai.LlmGateway;
-import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.AuditTask;
@@ -51,7 +49,7 @@ public class AnalysisService {
     private final ReconAgentService reconAgent;
     private final OrchestratorAgentService orchestratorAgent;
     private final ProfessionalAgentRunner professionalAgentRunner;
-    private final CriticAgentService criticAgent;
+    private final FindingGateService findingGateService;
     private final ReportAgentService reportAgent;
     private final SemanticAnalysisService semanticAnalysisService;
     private final SemanticEvidenceService semanticEvidenceService;
@@ -59,13 +57,14 @@ public class AnalysisService {
     private final AiReportSummaryMapper reportSummaryMapper;
     private final AuditCancellationService cancellationService;
 
-    // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
+    // 执行从语义索引和调查线索到确定性证据门禁、落库及报告生成的完整分析链。
     public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
                                   String projectName, AuditTask task) {
         long analysisStarted = ExecutionTiming.start();
         long stageStarted = ExecutionTiming.start();
         cancellationService.throwIfCancellationRequested(taskId);
         // 清理旧发现和 Agent 轨迹，保证重跑结果不混入历史数据。
+        semanticEvidenceService.clearTaskCache(taskId);
         findingMapper.deleteByTaskId(taskId);
         traceService.reset(taskId);
         cancellationService.throwIfCancellationRequested(taskId);
@@ -131,7 +130,7 @@ public class AnalysisService {
         ProfessionalAgentRunner.BatchResult investigation = professionalAgentRunner.investigate(
                 taskId, plan, recon, chunks);
         cancellationService.throwIfCancellationRequested(taskId);
-        // 专业 Agent 可能按需物化了 IMPACTED/CONTEXT，Critic 必须读取最新证据集合。
+        // 专业 Agent 可能按需物化了 IMPACTED/CONTEXT，证据门禁必须读取最新证据集合。
         chunks = chunkMapper.findByTaskId(taskId);
         int impactedCount = (int) chunks.stream()
                 .filter(chunk -> chunk.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED)
@@ -148,37 +147,22 @@ public class AnalysisService {
                         + ",formatFailures=" + investigation.formatFailures()
                         + ",incomplete=" + investigation.incompleteInvestigations());
 
-        // Critic 前只合并同一主代码块、同一类型且建议行范围重叠的明确重复候选，
-        // 减少重复模型调用；最终权威去重仍以 Critic 重定位后的真实位置为准。
-        List<AgentCandidate> criticCandidates = AgentCandidateConsolidator.consolidate(candidates);
-        if (criticCandidates.size() < candidates.size()) {
-            TimingDetailLog.info("任务 {} 在 Critic 前合并了 {} 个位置完全重叠的专业 Agent 候选",
-                    taskId, candidates.size() - criticCandidates.size());
-        }
-        List<Finding> reviewedFindings = new ArrayList<>();
+        List<Finding> gatedFindings = new ArrayList<>();
         stageStarted = ExecutionTiming.start();
-        for (AgentCandidate candidate : criticCandidates) {
-            cancellationService.throwIfCancellationRequested(taskId);
-            try {
-                criticAgent.review(taskId, candidate, recon, chunks)
-                        .filter(finding -> validateEvidence(projectRoot, finding))
-                        .ifPresent(reviewedFindings::add);
-            } catch (AiResponseFormatException exception) {
-                log.warn("任务 {} 的 Critic 对候选 {} 返回不可解析 JSON，候选不进入最终报告",
-                        taskId, candidate.proposal().primaryChunkId());
-            }
-        }
-        logTiming(taskId, "CRITIC_REVIEW", stageStarted, analysisStarted,
-                "candidates=" + criticCandidates.size() + ",reviewedFindings=" + reviewedFindings.size());
-        log.info("阶段耗时：taskId={}，阶段=Critic独立复核，耗时={}ms，说明=验证漏洞因果、反证和精确位置，候选数={}，通过定位审查数={}",
-                taskId, ExecutionTiming.elapsedMillis(stageStarted), criticCandidates.size(),
-                reviewedFindings.size());
-        // 不使用标题、endpoint 或证据链顺序判断身份。相同漏洞类型、文件、方法且最终
-        // 行范围重叠的结果会合并，并基于合并后的真实源码锚点重新生成稳定指纹。
-        List<Finding> confirmed = FindingConsolidator.consolidate(reviewedFindings, chunks);
-        if (confirmed.size() < reviewedFindings.size()) {
-            TimingDetailLog.info("任务 {} 在 Critic 后合并了 {} 个定位到同一代码位置的确认漏洞",
-                    taskId, reviewedFindings.size() - confirmed.size());
+        findingGateService.evaluate(taskId, candidates, chunks).stream()
+                .filter(finding -> validateEvidence(projectRoot, finding))
+                .forEach(gatedFindings::add);
+        logTiming(taskId, "DETERMINISTIC_FINDING_GATE", stageStarted, analysisStarted,
+                "candidates=" + candidates.size() + ",acceptedFindings=" + gatedFindings.size());
+        log.info("阶段耗时：taskId={}，阶段=确定性漏洞证据门禁，耗时={}ms，说明=校验证据引用、增量因果锚点和源码位置，候选数={}，通过数={}",
+                taskId, ExecutionTiming.elapsedMillis(stageStarted), candidates.size(),
+                gatedFindings.size());
+        // 不使用标题或 endpoint 判断身份。相同真实位置，或同一已验证调用链上归一到
+        // 同一根因的结果会合并，并基于最终源码锚点重新生成稳定指纹。
+        List<Finding> confirmed = FindingConsolidator.consolidate(gatedFindings, chunks);
+        if (confirmed.size() < gatedFindings.size()) {
+            TimingDetailLog.info("任务 {} 在证据门禁后合并了 {} 个归一到同一根因位置的确认漏洞",
+                    taskId, gatedFindings.size() - confirmed.size());
         }
         // 批量持久化确认结果，最终报告只接收这一组经过证据门禁的发现。
         for (int start = 0; start < confirmed.size(); start += 200) {
@@ -202,24 +186,15 @@ public class AnalysisService {
             auditContext += "；有 " + investigation.incompleteInvestigations()
                     + " 个专业调查因模型响应、工具错误、覆盖上限或预算耗尽未完成，结果覆盖不完整";
         }
-        long confirmedUnlocated = candidates.stream()
-                .filter(candidate -> candidate.hypothesis().getStatus()
-                        == com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED)
-                .count();
-        if (confirmedUnlocated > 0) {
-            auditContext += "；另有 " + confirmedUnlocated + " 个漏洞已由 Critic 确认但精确位置待复核";
-        }
         long insufficientEvidence = candidates.stream()
                 .filter(candidate -> candidate.hypothesis().getStatus()
                         == com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE)
                 .count();
         if (insufficientEvidence > 0) {
-            auditContext += "；另有 " + insufficientEvidence + " 个漏洞假设因 Critic 证据不足或响应异常保留待复核";
+            auditContext += "；另有 " + insufficientEvidence + " 个专业漏洞提案未通过确定性证据门禁";
         }
-        int rejectedHypotheses = (int) candidates.stream()
-                .filter(candidate -> candidate.hypothesis().getStatus()
-                        == com.deepaudit.domain.HypothesisStatus.REJECTED)
-                .count();
+        int rejectedHypotheses = Math.max(0, plan.size() - candidates.size()
+                - investigation.incompleteInvestigations());
         stageStarted = ExecutionTiming.start();
         cancellationService.throwIfCancellationRequested(taskId);
         reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
@@ -227,7 +202,7 @@ public class AnalysisService {
         cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "REPORT_AGENT", stageStarted, analysisStarted,
                 "confirmed=" + confirmed.size() + ",rejected=" + rejectedHypotheses);
-        TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、Critic和报告，专业任务数={}，候选数={}，正式漏洞数={}",
+        TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、确定性证据门禁和报告，专业任务数={}，候选数={}，正式漏洞数={}",
                 taskId, ExecutionTiming.elapsedMillis(analysisStarted), plan.size(), candidates.size(), confirmed.size());
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
     }
@@ -236,6 +211,10 @@ public class AnalysisService {
     public void discardFinalResults(UUID taskId) {
         findingMapper.deleteByTaskId(taskId);
         reportSummaryMapper.deleteByTaskId(taskId);
+    }
+
+    public void clearTaskCaches(UUID taskId) {
+        semanticEvidenceService.clearTaskCache(taskId);
     }
 
     private void logTiming(UUID taskId, String stage, long stageStarted, long analysisStarted, String details) {
@@ -255,7 +234,7 @@ public class AnalysisService {
         for (VulnerabilityAnalyzer provider : hintProviders) {
             if (provider.type() == null) continue;
             try {
-                // 每个分析器只生成线索草稿，不能绕过专业 Agent 和 Critic 直接形成发现。
+                // 每个分析器只生成线索草稿，不能绕过专业 Agent 和确定性证据门禁直接形成发现。
                 for (FindingDraft draft : provider.analyze(context)) {
                     findChunk(changedChunks, draft).ifPresent(chunk -> {
                         types.computeIfAbsent(chunk.getId(), ignored -> new LinkedHashSet<>()).add(draft.type());

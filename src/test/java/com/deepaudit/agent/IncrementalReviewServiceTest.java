@@ -126,6 +126,49 @@ class IncrementalReviewServiceTest {
                 .doesNotContain("1 | safeLine1();");
     }
 
+    @Test
+    void reservesIndependentExcerptBudgetForEveryChangedRange() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
+        GitFileChangeMapper fileChangeMapper = mock(GitFileChangeMapper.class);
+        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        GitFileChange fileChange = new GitFileChange(taskId, "Demo.java", "Demo.java",
+                "MODIFY", 3, 3, "20:20,80:80,140:140", "20:20,80:80,140:140",
+                "three distant changes", false);
+        when(fileChangeMapper.findByTaskId(taskId)).thenReturn(List.of(fileChange));
+        IncrementalReviewService service = new IncrementalReviewService(
+                flowMapper, edgeMapper, changeMapper, fileChangeMapper);
+        String longSuffix = "x".repeat(1_700);
+        String content = java.util.stream.IntStream.rangeClosed(1, 160)
+                .mapToObj(line -> switch (line) {
+                    case 20 -> "CHANGE_ONE_" + longSuffix;
+                    case 80 -> "CHANGE_TWO_" + longSuffix;
+                    case 140 -> "CHANGE_THREE_" + longSuffix;
+                    default -> "safeLine" + line + "();";
+                })
+                .collect(java.util.stream.Collectors.joining("\n"));
+        CodeChunk changed = new CodeChunk(taskId, "Demo.java", "Demo#longMethod", null,
+                1, 160, content, "JAVA_METHOD", "String input", "", "dangerousSink");
+        changed.setId(100L);
+        changed.setBaseContent(content);
+        changed.setAnalysisScope(AnalysisScope.CHANGED);
+
+        IncrementalReviewUnit unit = service.build(taskId, List.of(changed), Map.of(), Map.of()).get(0);
+
+        assertThat(unit.targetCodeExcerpt())
+                .contains("[CHANGE_RANGE 20:20]", "20 | CHANGE_ONE_",
+                        "[CHANGE_RANGE 80:80]", "80 | CHANGE_TWO_",
+                        "[CHANGE_RANGE 140:140]", "140 | CHANGE_THREE_")
+                .hasSizeLessThanOrEqualTo(4_000);
+        assertThat(unit.baseCodeExcerpt())
+                .contains("[CHANGE_RANGE 20:20]", "[CHANGE_RANGE 80:80]", "[CHANGE_RANGE 140:140]")
+                .hasSizeLessThanOrEqualTo(4_000);
+    }
+
     private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {
         CodeChunk chunk = new CodeChunk(taskId, "Demo.java", symbol, null, 1, 3, content,
                 "JAVA_METHOD", "Long id", "", "findById");

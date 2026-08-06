@@ -18,6 +18,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -57,22 +58,36 @@ public class AgentRuntime {
         allowedEvidence.addAll(semanticEvidence.evidenceChunkIds());
         try {
             int maxIterations = Math.max(1, properties.getMaxIterationsPerAgent());
+            int maxToolCalls = Math.max(0, properties.getMaxToolCallsPerAgent());
+            int totalDecisionRounds = maxIterations + 1;
             // 每轮只允许继续调用只读工具、提交发现或结束调查。
             // 额外保留一轮只用于消费最后一次工具观察并形成结论，避免最后一个工具结果永远不被模型看到。
-            for (int iteration = 1; iteration <= maxIterations + 1; iteration++) {
+            for (int iteration = 1; iteration <= totalDecisionRounds; iteration++) {
                 cancellationService.throwIfCancellationRequested(taskId);
                 run.setStepCount(iteration);
                 run.setModelCallCount(run.getModelCallCount() + 1);
+                int toolCallsRemaining = Math.max(0, maxToolCalls - run.getToolCallCount());
+                boolean finalDecisionOnly = toolCallsRemaining == 0
+                        || iteration == totalDecisionRounds;
+                LlmGateway.AgentBudget budget = new LlmGateway.AgentBudget(
+                        iteration, totalDecisionRounds, totalDecisionRounds - iteration,
+                        run.getToolCallCount(), maxToolCalls, toolCallsRemaining,
+                        finalDecisionOnly);
                 LlmGateway.AgentTurn turn = new LlmGateway.AgentTurn(taskId, task.agentType(),
-                        task.vulnerabilityType(), AgentPromptSupport.target(target, Set.of(task.vulnerabilityType())),
+                        task.vulnerabilityType(), AgentPromptSupport.target(target,
+                                Set.of(task.vulnerabilityType()), task.baseChangeExcerpt(),
+                                task.targetChangeExcerpt()),
                         task.ruleHint(), semanticEvidence.text(), recon,
-                        promptObservations(observations), iteration);
+                        promptObservations(observations), iteration, budget);
                 String observationContext = observations.isEmpty()
                         ? "结合 Recon 架构事实与 CHANGED 局部安全语义进行判断，必要时按需查询调用上下文"
                         : "结合 Recon 架构事实、CHANGED 局部安全语义和 " + observations.size()
                         + " 条工具观察进行安全判断";
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
-                        "第 " + iteration + " 轮：" + observationContext);
+                        (finalDecisionOnly
+                                ? "正在基于已有证据形成调查结论："
+                                : "正在分析现有证据并按需补充上下文：")
+                                + observationContext);
                 long modelStarted = ExecutionTiming.start();
                 LlmGateway.AgentDecision decision = llmGateway.decide(turn);
                 cancellationService.throwIfCancellationRequested(taskId);
@@ -80,21 +95,21 @@ public class AgentRuntime {
                 TimingDetailLog.info("模型阶段结束：taskId={}，stage=PROFESSIONAL_AGENT_MODEL，agentType={}，chunkId={}，iteration={}，elapsedMs={}",
                         taskId, task.agentType(), task.chunkId(), iteration, modelElapsedMs);
                 traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REASONING,
-                        "模型调用完成，耗时 " + modelElapsedMs + " ms；" + safe(decision.summary()));
+                        "模型调用完成；" + safe(decision.summary()));
                 traceService.update(run);
                 String action = decision.action() == null ? "" : decision.action().toUpperCase();
                 if ("TOOL".equals(action)) {
-                    // 工具返回分别标记为已验证证据或仍需关系验证的候选。
-                    if (iteration > maxIterations
-                            || run.getToolCallCount() >= properties.getMaxToolCallsPerAgent()) {
+                    // 工具返回分别标记为已验证证据或仍需进一步读取的搜索候选。
+                    if (finalDecisionOnly) {
                         incompleteCoverage = true;
-                        String budgetMessage = "调查工具或轮次预算已耗尽，当前结论不完整；"
-                                + "不能把未继续查询解释为已经证明安全。";
+                        String budgetMessage = "当前轮次只能形成最终结论，工具请求未执行；"
+                                + "请立即依据已有证据返回 FINDING，或仅在已有事实足以排除漏洞时返回 REJECT。";
                         observations.add(new RuntimeObservation("investigation_budget", Map.of(),
-                                "[INCOMPLETE_INVESTIGATION] " + budgetMessage,
-                                ToolResult.Status.ERROR, Set.of(), Set.of()));
+                                "[FINAL_DECISION_REQUIRED] " + budgetMessage,
+                                ToolResult.Status.DENIED, Set.of(), Set.of()));
                         traceService.event(taskId, run.getId(), task.agentType(),
                                 AgentEventType.INSUFFICIENT_EVIDENCE, budgetMessage);
+                        if (iteration < totalDecisionRounds) continue;
                         break;
                     }
                     run.setToolCallCount(run.getToolCallCount() + 1);
@@ -109,13 +124,10 @@ public class AgentRuntime {
                     if (result.status() == ToolResult.Status.ERROR
                             || result.code().contains("PARTIAL")
                             || result.code().contains("COVERAGE_LIMIT")
-                            || result.truncated() && result.nextCursor() == null) {
+                            || result.truncated()) {
                         incompleteCoverage = true;
                     }
-                    int remaining = Math.max(0,
-                            properties.getMaxToolCallsPerAgent() - run.getToolCallCount());
-                    String observationText = result.observationText()
-                            + "\n[TOOL_BUDGET remaining=" + remaining + "]";
+                    String observationText = result.observationText();
                     observations.add(new RuntimeObservation(decision.tool(), decision.arguments(),
                             observationText, result.status(), result.evidenceChunkIds(),
                             result.candidateChunkIds()));
@@ -137,10 +149,6 @@ public class AgentRuntime {
                         traceService.update(run);
                         continue;
                     }
-                    String evidence = buildEvidence(taskId, proposal, byId);
-                    if (!semanticEvidence.evidenceChunkIds().isEmpty()) {
-                        evidence += "\n\n[SEMANTIC_FLOW]\n" + semanticEvidence.text();
-                    }
                     String evidenceIds = proposal.evidenceChunkIds().stream().map(String::valueOf)
                             .collect(Collectors.joining(","));
                     AuditHypothesis hypothesis = new AuditHypothesis(taskId, run.getId(), proposal.type(),
@@ -149,9 +157,9 @@ public class AgentRuntime {
                     hypothesisMapper.insert(hypothesis);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.HYPOTHESIS,
                             safe(decision.summary()));
-                    run.complete("已形成待 Critic 复核的漏洞假设");
+                    run.complete("已形成待确定性证据门禁校验的漏洞提案");
                     traceService.update(run);
-                    return Optional.of(new AgentCandidate(task.agentType(), proposal, evidence, hypothesis));
+                    return Optional.of(new AgentCandidate(task.agentType(), proposal, hypothesis));
                 }
                 // 非工具、非发现动作视为专业 Agent 主动结束且没有充分证据。
                 String rejectionReason = rejectionReason(decision.summary(), task, observations);
@@ -230,7 +238,8 @@ public class AgentRuntime {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (!unverifiedCandidates.isEmpty()) {
             return "[EVIDENCE_REJECTED] 代码块 " + unverifiedCandidates
-                    + " 仍是未验证候选。必须逐个调用 verify_relation，验证通过后才能提交 FINDING。";
+                    + " 仍是未确认候选。请先使用 read_verified_relations 读取 CodeGraph 候选，"
+                    + "服务端会自动确认其来源和 Target 映射后再提交 FINDING。";
         }
         Set<Long> invalid = submitted.stream().filter(id -> !allowedEvidence.contains(id))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -239,42 +248,48 @@ public class AgentRuntime {
                 + "。请只引用当前目标、SEMANTIC_EVIDENCE 或 VERIFIED_EVIDENCE。";
     }
 
-    // 只从已加载的真实代码块构造带文件和行号的证据正文。
-    private String buildEvidence(UUID taskId, LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks) {
-        Set<Long> evidenceIds = new LinkedHashSet<>(proposal.evidenceChunkIds());
-        evidenceIds.add(proposal.primaryChunkId());
-        Map<Long, Integer> callSites = semanticEvidenceService.callSiteLines(
-                taskId, proposal.primaryChunkId(), evidenceIds);
-        return FindingLocationResolver.formatEvidence(proposal, chunks, callSites);
-    }
-
     private List<LlmGateway.Observation> promptObservations(List<RuntimeObservation> observations) {
         int detailedCount = Math.max(1, properties.getMaxDetailedObservations());
         int maxChars = Math.max(500, properties.getMaxObservationChars());
         int detailedFrom = Math.max(0, observations.size() - detailedCount);
         List<LlmGateway.Observation> result = new ArrayList<>();
-        for (int index = 0; index < observations.size(); index++) {
+        if (detailedFrom > 0) {
+            result.add(summarizeEarlierObservations(observations.subList(0, detailedFrom), maxChars));
+        }
+        for (int index = detailedFrom; index < observations.size(); index++) {
             RuntimeObservation observation = observations.get(index);
-            String text = index >= detailedFrom
-                    ? truncate(observation.result(), maxChars)
-                    : compactObservation(observation);
             result.add(new LlmGateway.Observation(
-                    observation.tool(), observation.arguments(), text));
+                    observation.tool(), observation.arguments(), truncate(observation.result(), maxChars)));
         }
         return List.copyOf(result);
+    }
+
+    private LlmGateway.Observation summarizeEarlierObservations(
+            List<RuntimeObservation> observations, int maxChars) {
+        Set<String> tools = new LinkedHashSet<>();
+        Map<ToolResult.Status, Integer> statusCounts = new LinkedHashMap<>();
+        Set<Long> evidenceChunkIds = new LinkedHashSet<>();
+        Set<Long> candidateChunkIds = new LinkedHashSet<>();
+        for (RuntimeObservation observation : observations) {
+            tools.add(observation.tool());
+            statusCounts.merge(observation.status(), 1, Integer::sum);
+            evidenceChunkIds.addAll(observation.evidenceChunkIds());
+            candidateChunkIds.addAll(observation.candidateChunkIds());
+        }
+        String summary = "[EARLIER_OBSERVATIONS count=" + observations.size()
+                + " tools=" + tools
+                + " statuses=" + statusCounts
+                + " evidenceChunkIds=" + evidenceChunkIds
+                + " candidateChunkIds=" + candidateChunkIds + "]";
+        return new LlmGateway.Observation(
+                "earlier_observations",
+                Map.of("count", observations.size()),
+                truncate(summary, maxChars));
     }
 
     private Map<Long, CodeChunk> chunkIndex(List<CodeChunk> chunks) {
         return chunks.stream().filter(chunk -> chunk.getId() != null).collect(Collectors.toMap(
                 CodeChunk::getId, Function.identity(), (left, right) -> right));
-    }
-
-    private String compactObservation(RuntimeObservation observation) {
-        String firstLine = observation.result().lines().findFirst().orElse("");
-        return "[COMPACT_OBSERVATION status=" + observation.status()
-                + " evidenceChunkIds=" + observation.evidenceChunkIds()
-                + " candidateChunkIds=" + observation.candidateChunkIds() + "] "
-                + truncate(firstLine, 300);
     }
 
     private String truncate(String value, int maxChars) {

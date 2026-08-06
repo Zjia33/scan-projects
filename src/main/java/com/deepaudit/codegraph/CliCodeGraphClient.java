@@ -50,15 +50,22 @@ public class CliCodeGraphClient implements CodeGraphClient {
     }
 
     @Override
-    public RelatedLocations related(UUID taskId, String symbol, int limit) {
+    public RelationLocations callers(UUID taskId, String symbol, int limit) {
+        return relation(taskId, "callers", symbol, limit);
+    }
+
+    @Override
+    public RelationLocations callees(UUID taskId, String symbol, int limit) {
+        return relation(taskId, "callees", symbol, limit);
+    }
+
+    private RelationLocations relation(UUID taskId, String command, String symbol, int limit) {
         Path root = requirePrepared(taskId);
         int safeLimit = Math.max(1, Math.min(limit, 1000));
         String query = requireSymbol(symbol);
-        List<CodeGraphLocation> callers = relation(root, "callers", query, safeLimit);
-        List<CodeGraphLocation> callees = relation(root, "callees", query, safeLimit);
+        List<CodeGraphLocation> locations = runRelation(root, command, query, safeLimit);
         // CLI 没有返回总量；达到 limit 时必须按“可能仍有更多”处理，不能宣称结果完整。
-        return new RelatedLocations(callers, callees,
-                callers.size() >= safeLimit, callees.size() >= safeLimit);
+        return new RelationLocations(locations, locations.size() >= safeLimit);
     }
 
     @Override
@@ -66,7 +73,7 @@ public class CliCodeGraphClient implements CodeGraphClient {
         roots.remove(taskId);
     }
 
-    private List<CodeGraphLocation> relation(Path root, String command, String symbol, int limit) {
+    private List<CodeGraphLocation> runRelation(Path root, String command, String symbol, int limit) {
         CodeGraphCommandRunner.CommandOutput output = runner.run(root, List.of(
                 command, symbol, "--path", root.toString(), "--limit", String.valueOf(limit),
                 "--json", "--no-color"), environment());

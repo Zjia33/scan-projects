@@ -37,10 +37,10 @@ public class AgentTraceService {
         String normalized = message == null ? "" : message.strip();
         if (normalized.isBlank()) {
             normalized = switch (eventType) {
-                case REJECTED -> "Agent 未获得能够支持当前漏洞假设的已验证证据，已结束本次调查";
-                case INSUFFICIENT_EVIDENCE -> "当前调查因上下文、工具结果或证据不足而未形成最终结论";
-                case ERROR, FORMAT_ERROR -> "Agent 执行异常，但没有返回可展示的错误详情";
-                default -> "Agent 已记录 " + eventType + " 事件，但没有返回补充说明";
+                case REJECTED -> "已核对当前代码行为，未发现足以确认该风险的事实";
+                case INSUFFICIENT_EVIDENCE -> "当前已发现的代码行为不足以确认该风险";
+                case ERROR, FORMAT_ERROR -> "当前安全核查未能完成";
+                default -> "已记录本次安全核查进展";
             };
         }
         String safe = normalized.substring(0, Math.min(normalized.length(), 12_000));

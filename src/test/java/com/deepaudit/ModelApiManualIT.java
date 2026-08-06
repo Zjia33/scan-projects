@@ -92,7 +92,10 @@ class ModelApiManualIT {
                     "没有预计算语义路径",
                     recon,
                     List.copyOf(observations),
-                    iteration
+                    iteration,
+                    new LlmGateway.AgentBudget(iteration, 3, 3 - iteration,
+                            observations.size(), 3, Math.max(0, 3 - observations.size()),
+                            iteration == 3)
             );
             LlmGateway.AgentDecision decision = llmGateway.decide(turn);
             printJson("专业 Agent 第 " + iteration + " 轮返回", decision);

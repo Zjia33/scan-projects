@@ -15,6 +15,7 @@ import java.util.List;
 public class StoredXssAnalyzer implements VulnerabilityAnalyzer {
 
     private static final String UNSAFE_SINK = "v-html|dangerouslySetInnerHTML|th:utext|innerHTML\\s*=|<%=|\\|\\s*safe";
+    private static final String JAVA_HTML_LITERAL = "<(?:html|body|article|div|span|h[1-6])\\b";
 
     @Override
     public VulnerabilityType type() { return VulnerabilityType.STORED_XSS; }
@@ -30,6 +31,15 @@ public class StoredXssAnalyzer implements VulnerabilityAnalyzer {
                         "模板或前端代码使用了原始 HTML 渲染能力；如果数据来自评论、公告等持久化字段，可能形成存储型 XSS。",
                         AnalyzerSupport.evidence(chunk, line),
                         "保存时使用可靠 HTML 白名单清洗，输出时按上下文编码；不需要富文本时移除原始 HTML 渲染。"));
+            } else if (javaHtmlOutputWithoutEncoding(chunk)) {
+                int line = AnalyzerSupport.matchingLine(chunk, JAVA_HTML_LITERAL);
+                results.add(new FindingDraft(type(), Severity.HIGH, Confidence.MEDIUM,
+                        "持久化文本可能未经编码进入 HTML 响应", chunk.getFilePath(), line, line,
+                        chunk.getEndpoint(),
+                        "Java 代码把持久化读取结果拼接为 HTML，当前变化范围内未发现可靠的上下文编码或白名单清洗；"
+                                + "需要继续核对共享存储对象的写入入口。",
+                        AnalyzerSupport.evidence(chunk, line),
+                        "对普通文本执行上下文相关的 HTML 编码；需要富文本时在写入端使用可靠白名单清洗。"));
             } else if (AnalyzerSupport.containsAny(chunk.getContent(), ".save(", "insert(", "updatebyid(")
                     && AnalyzerSupport.containsAny(chunk.getContent(), "content", "comment", "description", "notice", "nickname")
                     && !AnalyzerSupport.containsAny(chunk.getContent(), "sanitize", "encodeforhtml", "htmlclean", "jsoup.clean")) {
@@ -42,5 +52,14 @@ public class StoredXssAnalyzer implements VulnerabilityAnalyzer {
             }
         }
         return results;
+    }
+
+    private boolean javaHtmlOutputWithoutEncoding(CodeChunk chunk) {
+        String content = chunk.getContent();
+        return AnalyzerSupport.matches(content, JAVA_HTML_LITERAL)
+                && AnalyzerSupport.containsAny(content, ".findall(", ".findby", ".query(",
+                ".select(", ".title()", ".content()", ".comment()", ".description()")
+                && !AnalyzerSupport.containsAny(content, "htmlutils.htmlescape", "encodeforhtml",
+                "sanitize", "htmlclean", "jsoup.clean");
     }
 }

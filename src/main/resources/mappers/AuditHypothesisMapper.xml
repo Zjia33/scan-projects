@@ -11,26 +11,26 @@
         <result column="primary_chunk_id" property="primaryChunkId"/>
         <result column="evidence_chunk_ids" property="evidenceChunkIds"/>
         <result column="confidence" property="confidence" javaType="com.deepaudit.domain.Confidence"/>
-        <result column="critic_reason" property="criticReason"/>
+        <result column="validation_reason" property="validationReason"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
     <insert id="insert" parameterType="com.deepaudit.domain.AuditHypothesis">
         INSERT INTO audit_hypothesis
             (id, task_id, run_id, type, status, claim, primary_chunk_id, evidence_chunk_ids,
-             confidence, critic_reason, created_at, updated_at)
+             confidence, validation_reason, created_at, updated_at)
         VALUES
             (#{id}, #{taskId}, #{runId}, #{type}, #{status}, #{claim}, #{primaryChunkId},
-             #{evidenceChunkIds}, #{confidence}, #{criticReason}, #{createdAt}, #{updatedAt})
+             #{evidenceChunkIds}, #{confidence}, #{validationReason}, #{createdAt}, #{updatedAt})
     </insert>
     <update id="update" parameterType="com.deepaudit.domain.AuditHypothesis">
         UPDATE audit_hypothesis SET status=#{status}, confidence=#{confidence},
             primary_chunk_id=#{primaryChunkId}, evidence_chunk_ids=#{evidenceChunkIds},
-            critic_reason=#{criticReason}, updated_at=#{updatedAt} WHERE id=#{id}
+            validation_reason=#{validationReason}, updated_at=#{updatedAt} WHERE id=#{id}
     </update>
     <select id="findByTaskId" resultMap="HypothesisResultMap">
         SELECT id, task_id, run_id, type, status, claim, primary_chunk_id, evidence_chunk_ids,
-               confidence, critic_reason, created_at, updated_at
+               confidence, validation_reason, created_at, updated_at
         FROM audit_hypothesis WHERE task_id=#{taskId} ORDER BY created_at
     </select>
     <delete id="deleteByTaskId">DELETE FROM audit_hypothesis WHERE task_id=#{taskId}</delete>

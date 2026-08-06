@@ -17,7 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管理任务级 CodeGraph 索引，并向专业 Agent 提供按需、分页的符号关系候选。
+ * 管理任务级 CodeGraph 索引，并向专业 Agent 提供按需、受控数量的符号关系候选。
  * CodeGraph 不再预先扩张审计范围；只有模型明确选择的位置才会物化为源码上下文。
  */
 @Slf4j
@@ -30,17 +30,31 @@ public class CodeGraphIntegrationService {
     private final Set<UUID> preparedTasks = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Path> targetRoots = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, ImpactCandidate>> candidates = new ConcurrentHashMap<>();
-    private final Map<UUID, Map<QueryKey, QueryCache>> candidatePages = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<QueryKey, QueryCache>> candidateCaches = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, Long>> materializedLocations = new ConcurrentHashMap<>();
     private final Map<UUID, Object> materializationLocks = new ConcurrentHashMap<>();
     private final Set<UUID> globalContextMaterialized = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Set<String>> projectSearches = new ConcurrentHashMap<>();
 
     /** 为不可变 Target 提交建立临时调用关系索引；Base 只用于本地差异比较。 */
     public boolean prepare(UUID taskId, Path targetRoot) {
+        bindTarget(taskId, targetRoot);
+        return ensurePrepared(taskId);
+    }
+
+    /** 只登记不可变 Target 工作区；第一次调用关系查询时才构建索引。 */
+    public void bindTarget(UUID taskId, Path targetRoot) {
         if (targetRoot != null) targetRoots.put(taskId, targetRoot.toAbsolutePath().normalize());
+    }
+
+    public boolean ensurePrepared(UUID taskId) {
         if (!properties.isEnabled()) return false;
-        boolean target = prepareTarget(taskId, targetRoot);
-        return target;
+        if (preparedTasks.contains(taskId)) return true;
+        Path targetRoot = targetRoots.get(taskId);
+        if (targetRoot == null) return false;
+        synchronized (materializationLock(taskId)) {
+            return preparedTasks.contains(taskId) || prepareTarget(taskId, targetRoot);
+        }
     }
 
     private boolean prepareTarget(UUID taskId, Path root) {
@@ -61,42 +75,37 @@ public class CodeGraphIntegrationService {
     }
 
     /**
-     * 只返回直接调用者/被调用者的符号和位置，不读取源码。cursor 是零基偏移量。
+     * 只返回直接调用者/被调用者的符号和位置，不读取源码；一次调用返回受控数量，
+     * 不向 Agent 暴露跨调用续读状态。
      */
     public CandidatePage relatedCandidates(UUID taskId, CodeChunk anchor, Direction direction,
-                                           int cursor, int requestedLimit) {
-        if (!preparedTasks.contains(taskId) || anchor == null
+                                           int requestedLimit) {
+        if (anchor == null
                 || anchor.getChunkType() == null
                 || !anchor.getChunkType().startsWith("JAVA_METHOD")) return CandidatePage.empty();
         String symbol = codeGraphSymbol(anchor.getSymbolName());
         if (symbol.isBlank()) return CandidatePage.empty();
         int limit = Math.max(1, Math.min(requestedLimit, properties.getAgentContextLimit()));
-        int offset = Math.max(0, cursor);
         try {
+            if (!ensurePrepared(taskId)) return CandidatePage.empty();
             QueryKey queryKey = new QueryKey(anchor.getId(), direction);
-            Map<QueryKey, QueryCache> taskPages = candidatePages.computeIfAbsent(taskId,
+            Map<QueryKey, QueryCache> taskCaches = candidateCaches.computeIfAbsent(taskId,
                     ignored -> new ConcurrentHashMap<>());
-            int desiredLimit = Math.min(1000, Math.max(safeRelationLimit(), offset + limit));
-            QueryCache cache = taskPages.get(queryKey);
-            if (cache == null || cache.sourceTruncated() && cache.fetchedLimit() < desiredLimit) {
+            QueryCache cache = taskCaches.get(queryKey);
+            if (cache == null) {
                 synchronized (materializationLock(taskId)) {
-                    cache = taskPages.get(queryKey);
-                    if (cache == null || cache.sourceTruncated() && cache.fetchedLimit() < desiredLimit) {
-                        int fetchLimit = cache == null ? desiredLimit
-                                : Math.min(1000, Math.max(desiredLimit, cache.fetchedLimit() * 2));
+                    cache = taskCaches.get(queryKey);
+                    if (cache == null) {
+                        int fetchLimit = Math.min(1000, Math.max(safeRelationLimit(), limit));
                         cache = loadCandidates(taskId, anchor, direction, symbol, fetchLimit);
-                        taskPages.put(queryKey, cache);
+                        taskCaches.put(queryKey, cache);
                     }
                 }
             }
             List<ImpactCandidate> all = cache.candidates();
-            int from = Math.min(offset, all.size());
-            int to = Math.min(from + limit, all.size());
-            boolean canFetchMore = cache.sourceTruncated() && cache.fetchedLimit() < 1000;
+            int to = Math.min(limit, all.size());
             boolean truncated = to < all.size() || cache.sourceTruncated();
-            String nextCursor = to < all.size() || canFetchMore ? String.valueOf(to) : null;
-            return new CandidatePage(List.copyOf(all.subList(from, to)), all.size(), truncated,
-                    nextCursor);
+            return new CandidatePage(List.copyOf(all.subList(0, to)), all.size(), truncated, null);
         } catch (RuntimeException exception) {
             log.warn("任务 {} CodeGraph 符号候选查询失败，anchor={}，原因={}",
                     taskId, anchor.getId(), exception.getMessage());
@@ -106,18 +115,19 @@ public class CodeGraphIntegrationService {
 
     private QueryCache loadCandidates(UUID taskId, CodeChunk anchor, Direction direction,
                                       String symbol, int fetchLimit) {
-        CodeGraphClient.RelatedLocations related = client.related(taskId, symbol, fetchLimit);
         List<ImpactCandidate> loaded = new ArrayList<>();
         boolean sourceTruncated = false;
         if (direction != Direction.CALLEES) {
-            addCandidates(taskId, anchor, Direction.CALLERS, related.callers(), loaded);
-            sourceTruncated |= related.callersTruncated();
+            CodeGraphClient.RelationLocations callers = client.callers(taskId, symbol, fetchLimit);
+            addCandidates(taskId, anchor, Direction.CALLERS, callers.locations(), loaded);
+            sourceTruncated |= callers.truncated();
         }
         if (direction != Direction.CALLERS) {
-            addCandidates(taskId, anchor, Direction.CALLEES, related.callees(), loaded);
-            sourceTruncated |= related.calleesTruncated();
+            CodeGraphClient.RelationLocations callees = client.callees(taskId, symbol, fetchLimit);
+            addCandidates(taskId, anchor, Direction.CALLEES, callees.locations(), loaded);
+            sourceTruncated |= callees.truncated();
         }
-        return new QueryCache(List.copyOf(loaded), fetchLimit, sourceTruncated);
+        return new QueryCache(List.copyOf(loaded), sourceTruncated);
     }
 
     private void addCandidates(UUID taskId, CodeChunk anchor, Direction direction,
@@ -169,7 +179,18 @@ public class CodeGraphIntegrationService {
         return candidate == null ? null : resultMapper.mapLocation(chunks, candidate.location());
     }
 
-    /** CodeGraph 复验直接关系；调用点真实性还需由本地符号事实共同确认。 */
+    public Long materializedChunkId(UUID taskId, ImpactCandidate candidate) {
+        if (candidate == null) return null;
+        return materializedLocations.getOrDefault(taskId, Map.of()).get(locationKey(candidate.location()));
+    }
+
+    public void rememberMaterializedChunk(UUID taskId, ImpactCandidate candidate, Long chunkId) {
+        if (candidate == null || chunkId == null) return;
+        materializedLocations.computeIfAbsent(taskId, ignored -> new ConcurrentHashMap<>())
+                .putIfAbsent(locationKey(candidate.location()), chunkId);
+    }
+
+    /** 确认候选是否来自本任务当前锚点的直接关系查询；不以本地轻量解析结果否决 CodeGraph 候选。 */
     public RelationCheck verifyDirectRelation(UUID taskId, CodeChunk current, CodeChunk candidate,
                                               List<CodeChunk> chunks) {
         if (!preparedTasks.contains(taskId) || current == null || candidate == null
@@ -177,31 +198,30 @@ public class CodeGraphIntegrationService {
                 || candidate.getChunkType() == null || !candidate.getChunkType().startsWith("JAVA_METHOD")) {
             return RelationCheck.unverified("CodeGraph Target 索引未就绪或待验证对象不是 Java 方法");
         }
-        String symbol = codeGraphSymbol(current.getSymbolName());
-        if (symbol.isBlank()) return RelationCheck.unverified("当前代码块没有可查询的 CodeGraph 符号");
-        try {
-            CodeGraphClient.RelatedLocations related = client.related(
-                    taskId, symbol, 1000);
-            List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
-            locations.addAll(related.callers());
-            locations.addAll(related.callees());
-            boolean verified = candidate.getId() != null
-                    && resultMapper.map(chunks, locations).chunkIds().contains(candidate.getId());
-            return verified
-                    ? new RelationCheck(true, "CodeGraph Target 索引命中直接调用关系")
-                    : RelationCheck.unverified("CodeGraph 未确认两个方法存在直接调用关系");
-        } catch (RuntimeException exception) {
-            log.warn("任务 {} CodeGraph 直接关系复验失败：{} <-> {}，原因={}",
-                    taskId, current.getId(), candidate.getId(), exception.getMessage());
-            return RelationCheck.unverified("CodeGraph 关系验证失败");
+        Set<Direction> directions = discoveredDirections(taskId, current, candidate, chunks);
+        return directions.isEmpty()
+                ? RelationCheck.unverified("该代码块不属于当前锚点已发现的 CodeGraph 直接关系候选")
+                : new RelationCheck(true, "CodeGraph Target 索引命中直接调用关系候选，方向=" + directions);
+    }
+
+    private Set<Direction> discoveredDirections(UUID taskId, CodeChunk anchor,
+                                                CodeChunk related, List<CodeChunk> chunks) {
+        if (anchor.getId() == null || related.getId() == null) return Set.of();
+        Set<Direction> result = new java.util.LinkedHashSet<>();
+        for (ImpactCandidate impact : candidates.getOrDefault(taskId, Map.of()).values()) {
+            if (!anchor.getId().equals(impact.anchorChunkId())) continue;
+            CodeChunk mapped = resultMapper.mapLocation(chunks, impact.location());
+            if (mapped != null && related.getId().equals(mapped.getId())) result.add(impact.direction());
         }
+        return Set.copyOf(result);
     }
 
     public void release(UUID taskId) {
         boolean prepared = preparedTasks.remove(taskId);
         targetRoots.remove(taskId);
         candidates.remove(taskId);
-        candidatePages.remove(taskId);
+        candidateCaches.remove(taskId);
+        materializedLocations.remove(taskId);
         materializationLocks.remove(taskId);
         globalContextMaterialized.remove(taskId);
         projectSearches.remove(taskId);
@@ -233,13 +253,17 @@ public class CodeGraphIntegrationService {
         return value == null ? "" : value.replace('\\', '/').strip();
     }
 
+    private String locationKey(CodeGraphClient.CodeGraphLocation location) {
+        if (location == null) return "";
+        return normalize(location.filePath()) + "|" + location.startLine() + "|" + normalize(location.name());
+    }
+
     public enum Direction { CALLERS, CALLEES, BOTH }
 
     private record QueryKey(Long anchorChunkId, Direction direction) {
     }
 
-    private record QueryCache(List<ImpactCandidate> candidates, int fetchedLimit,
-                              boolean sourceTruncated) {
+    private record QueryCache(List<ImpactCandidate> candidates, boolean sourceTruncated) {
     }
 
     public record ImpactCandidate(String candidateId, Long anchorChunkId, Direction direction,
@@ -247,23 +271,18 @@ public class CodeGraphIntegrationService {
     }
 
     public record CandidatePage(List<ImpactCandidate> candidates, int total,
-                                boolean truncated, String nextCursor, String error) {
+                                boolean truncated, String error) {
         public CandidatePage {
             candidates = candidates == null ? List.of() : List.copyOf(candidates);
             error = error == null || error.isBlank() ? null : error;
         }
 
-        public CandidatePage(List<ImpactCandidate> candidates, int total,
-                             boolean truncated, String nextCursor) {
-            this(candidates, total, truncated, nextCursor, null);
-        }
-
         public static CandidatePage empty() {
-            return new CandidatePage(List.of(), 0, false, null, null);
+            return new CandidatePage(List.of(), 0, false, null);
         }
 
         public static CandidatePage failed(String error) {
-            return new CandidatePage(List.of(), 0, false, null, error);
+            return new CandidatePage(List.of(), 0, false, error);
         }
     }
 

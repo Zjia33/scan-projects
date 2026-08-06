@@ -8,6 +8,7 @@ import com.deepaudit.orchestrator.AuditCancelledException;
 import com.deepaudit.util.ExecutionTiming;
 import com.deepaudit.util.TimingDetailLog;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -24,15 +25,24 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Service
 public class ProfessionalAgentRunner {
     private final AgentRuntime agentRuntime;
+    private final CallGraphCandidatePrefetchService candidatePrefetchService;
     private final Executor executor;
     private final AuditCancellationService cancellationService;
 
+    @Autowired
     public ProfessionalAgentRunner(AgentRuntime agentRuntime,
+                                   CallGraphCandidatePrefetchService candidatePrefetchService,
                                    @Qualifier("professionalAgentExecutor") Executor executor,
                                    AuditCancellationService cancellationService) {
         this.agentRuntime = agentRuntime;
+        this.candidatePrefetchService = candidatePrefetchService;
         this.executor = executor;
         this.cancellationService = cancellationService;
+    }
+
+    ProfessionalAgentRunner(AgentRuntime agentRuntime, Executor executor,
+                            AuditCancellationService cancellationService) {
+        this(agentRuntime, null, executor, cancellationService);
     }
 
     // 在受控线程池中并行执行专业调查，并汇总候选与格式失败数。
@@ -81,8 +91,10 @@ public class ProfessionalAgentRunner {
         try (AuditCancellationService.WorkerRegistration ignored =
                      cancellationService.registerWorker(taskId)) {
             cancellationService.throwIfCancellationRequested(taskId);
+            AgentTask enrichedTask = candidatePrefetchService == null
+                    ? task : candidatePrefetchService.enrich(task, chunks);
             TaskResult result = new TaskResult(
-                    agentRuntime.investigate(taskId, task, recon, chunks), false, false);
+                    agentRuntime.investigate(taskId, enrichedTask, recon, chunks), false, false);
             cancellationService.throwIfCancellationRequested(taskId);
             TimingDetailLog.info("执行耗时：taskId={}，stage=PROFESSIONAL_AGENT_TASK，agentType={}，chunkId={}，vulnerabilityType={}，elapsedMs={}，candidate={}",
                     taskId, task.agentType(), task.chunkId(), task.vulnerabilityType(),

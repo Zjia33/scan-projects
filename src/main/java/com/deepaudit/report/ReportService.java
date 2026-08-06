@@ -25,6 +25,8 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ReportService {
+    private static final Pattern INTERNAL_CHUNK_REFERENCE = Pattern.compile(
+            "(?i)\\[?\\s*chunk(?:\\s*id)?\\s*[:=#]?\\s*\\d+\\s*\\]?|代码块\\s*(?:id\\s*)?\\d+");
 
     private final AuditTaskMapper taskMapper;
     private final ProjectMapper projectMapper;
@@ -58,19 +60,6 @@ public class ReportService {
     public String html(UUID taskId) {
         AuditReport report = report(taskId);
         StringBuilder rows = new StringBuilder();
-        List<AuditHypothesis> unlocated = report.hypotheses().stream()
-                .filter(hypothesis -> hypothesis.getStatus()
-                        == com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED)
-                .toList();
-        StringBuilder unlocatedRows = new StringBuilder();
-        for (AuditHypothesis hypothesis : unlocated) {
-            unlocatedRows.append("<article class='unlocated-card'><h3>")
-                    .append(escape(hypothesis.getClaim())).append("</h3><p class='badges'><span>")
-                    .append(escape(hypothesis.getType().getDisplayName()))
-                    .append("</span><span>可信度 ").append(confidenceLabel(hypothesis.getConfidence()))
-                    .append("</span></p><p>").append(escape(hypothesis.getCriticReason()))
-                    .append("</p><small>该漏洞结论已保留；由于精确源码位置尚未通过定位门禁，报告不标红任意代码行。</small></article>");
-        }
         int findingNumber = 0;
         for (Finding finding : report.findings()) {
             findingNumber++;
@@ -100,8 +89,7 @@ public class ReportService {
                 + "<div class='report-meta'><article><small>项目</small><strong>" + escape(report.project().getName()) + "</strong></article>"
                 + "<article><small>扫描范围</small><strong>BASE → TARGET 增量审计</strong></article>"
                 + "<article><small>目标提交</small><strong>" + escape(shortSha(report.task().getTargetCommitSha())) + "</strong></article>"
-                + "<article><small>精确定位问题</small><strong>" + report.findings().size() + "</strong></article>"
-                + "<article><small>定位待复核</small><strong>" + unlocated.size() + "</strong></article></div></header>"
+                + "<article><small>确认问题</small><strong>" + report.findings().size() + "</strong></article></div></header>"
                 + "<section class='context-card'><div><small>版本范围</small><p>Target："
                 + escape(shortSha(report.task().getTargetCommitSha()))
                 + (report.task().getBaseCommitSha() == null ? "" : "　Base：" + escape(shortSha(report.task().getBaseCommitSha())))
@@ -117,19 +105,15 @@ public class ReportService {
                 + "</span></div></section><div class='findings-heading'><div><p class='section-label'>CONFIRMED FINDINGS</p>"
                 + "<h2>确认漏洞</h2></div><span>" + report.findings().size() + "</span></div>"
                 + (report.findings().isEmpty() ? "<div class='empty-report'>本轮审计没有产生已完成精确定位的问题。</div>" : rows)
-                + (unlocated.isEmpty() ? "" : "<div class='findings-heading'><div><p class='section-label'>CONFIRMED · LOCATION PENDING</p>"
-                + "<h2>已确认但定位待复核</h2></div><span>" + unlocated.size() + "</span></div>" + unlocatedRows)
                 + "<footer>本报告基于静态代码事实生成，所有结果仍建议结合业务场景进行人工复核。</footer>"
                 + "</main></body></html>";
     }
 
-    // 隐藏 SEMANTIC_FLOW 和 CRITIC 内部段，防止实现细节泄露到报告证据。
+    // 隐藏语义流内部段，防止实现细节泄露到报告证据。
     private String evidenceForDisplay(String value) {
         if (value == null) return "";
         int semanticFlow = sectionStart(value, "[SEMANTIC_FLOW]");
-        int critic = sectionStart(value, "[CRITIC]");
-        int hiddenSection = semanticFlow < 0 ? critic : critic < 0 ? semanticFlow : Math.min(semanticFlow, critic);
-        return (hiddenSection < 0 ? value : value.substring(0, hiddenSection)).stripTrailing();
+        return (semanticFlow < 0 ? value : value.substring(0, semanticFlow)).stripTrailing();
     }
 
     private int sectionStart(String value, String marker) {
@@ -138,22 +122,20 @@ public class ReportService {
         return value.startsWith(marker) ? 0 : -1;
     }
 
-    // 面向报告读者只保留一份漏洞说明；Critic 仍参与确认，但不重复展示相近内容。
     private String descriptionHtml(String value) {
-        String description = value == null ? "" : value.strip();
-        String marker = "Critic Agent 复核：";
-        int critic = description.indexOf(marker);
-        if (critic < 0) return contentBlock("漏洞说明", description, "finding-description");
-        String findingDescription = description.substring(0, critic).strip();
-        String review = description.substring(critic + marker.length()).strip();
-        return contentBlock("漏洞说明", findingDescription.isBlank() ? review : findingDescription,
-                "finding-description");
+        String description = stripInternalChunkReferences(value);
+        return contentBlock("漏洞说明", description, "finding-description");
+    }
+
+    private String stripInternalChunkReferences(String value) {
+        if (value == null) return "";
+        return INTERNAL_CHUNK_REFERENCE.matcher(value.strip()).replaceAll("")
+                .replaceAll("[ \\t]{2,}", " ").replaceAll("\\n{3,}", "\\n\\n").strip();
     }
 
     // 按内部代码块边界拆分证据，报告只展示位置和源码，不暴露块号或证据序号。
     private String evidenceHtml(String value) {
-        StringBuilder html = new StringBuilder("<section class='content-block'><h3>代码证据</h3>"
-                + "<div class='evidence-list'>");
+        StringBuilder html = new StringBuilder("<section class='content-block'><div class='evidence-list'>");
         List<EvidenceChunk> chunks = evidenceChunks(value);
         for (int index = 0; index < chunks.size(); index++) {
             EvidenceChunk chunk = chunks.get(index);
@@ -214,7 +196,8 @@ public class ReportService {
 
     private void addEvidenceChunk(List<EvidenceChunk> chunks, String id, String location, StringBuilder code) {
         String content = code.toString().strip();
-        if (!id.isBlank() || !location.isBlank() || !content.isBlank()) {
+        // 只有块头而没有源码正文的历史证据不可审查，不能渲染成空白证据卡片。
+        if (!content.isBlank()) {
             chunks.add(new EvidenceChunk(id, location, content));
         }
     }
@@ -232,7 +215,7 @@ public class ReportService {
                 .report-shell{width:min(1080px,calc(100% - 32px));margin:32px auto 56px}.report-hero{padding:34px 38px;color:white;background:linear-gradient(135deg,#111a2b 0%,#182846 70%,#204e75 100%);border-radius:18px;box-shadow:0 18px 42px rgba(18,33,59,.16)}
                 .eyebrow,.section-label{margin:0;color:#7de2d1;font-size:10px;font-weight:800;letter-spacing:.14em}.report-hero h1{margin:8px 0 4px;font-size:34px;line-height:1.2}.hero-copy{margin:0;color:#b8c4d7}
                 .report-meta{margin-top:28px;display:grid;grid-template-columns:1.6fr repeat(3,1fr);gap:10px}.report-meta article{min-width:0;padding:13px 15px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:10px}.report-meta small,.report-meta strong{display:block}.report-meta small{color:#91a0b7;font-size:9px}.report-meta strong{margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
-                .context-card,.summary-card,.finding-card,.unlocated-card,.empty-report{margin-top:18px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 7px 24px rgba(22,35,57,.05)}.context-card{padding:19px 22px;display:grid;grid-template-columns:2fr 1fr;gap:14px 28px}.context-card .wide{grid-column:1/-1}.context-card small{color:var(--muted);font-size:9px;font-weight:700}.context-card p{margin:3px 0 0;overflow-wrap:anywhere}.unlocated-card{padding:19px 22px;border-color:#e5b96b;background:#fffaf0}.unlocated-card h3{margin:0;font-size:16px}.unlocated-card>p{white-space:pre-wrap}.unlocated-card>small{color:#805b1f}
+                .context-card,.summary-card,.finding-card,.empty-report{margin-top:18px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 7px 24px rgba(22,35,57,.05)}.context-card{padding:19px 22px;display:grid;grid-template-columns:2fr 1fr;gap:14px 28px}.context-card .wide{grid-column:1/-1}.context-card small{color:var(--muted);font-size:9px;font-weight:700}.context-card p{margin:3px 0 0;overflow-wrap:anywhere}
                 .summary-card{padding:26px 28px}.summary-card h2,.findings-heading h2{margin:5px 0 8px;font-size:23px}.summary-card>p:not(.section-label){margin:0;white-space:pre-wrap}.coverage{margin-top:18px;padding:13px 15px;display:grid;grid-template-columns:100px 1fr;gap:12px;background:var(--soft);border-radius:9px}.coverage span{color:#536075}
                 .findings-heading{margin:32px 2px 10px;display:flex;justify-content:space-between;align-items:end}.findings-heading>span{min-width:34px;height:34px;padding:0 10px;display:grid;place-items:center;color:var(--blue);background:#eaf0ff;border-radius:9px;font-weight:800}.finding-card{overflow:hidden}.finding-head{padding:18px 22px;display:grid;grid-template-columns:38px 1fr;gap:14px;align-items:start}.finding-number{width:36px;height:36px;display:grid;place-items:center;color:white;background:var(--nav);border-radius:9px;font:800 10px monospace}.finding-head h2{margin:0;font-size:17px;line-height:1.4}.badges{margin:7px 0 0;display:flex;flex-wrap:wrap;gap:6px}.badges span{padding:3px 7px;color:#536075;background:var(--soft);border:1px solid var(--line);border-radius:5px;font-size:9px;font-weight:700}
                 .finding-body{padding:20px 24px 24px 74px;border-top:1px solid var(--line)}.vulnerability-location{margin:0;padding:10px 12px;display:flex;gap:14px;align-items:baseline;color:#2557be;background:#edf3ff;border:1px solid #cbd9fb;border-radius:8px;font:700 12px/1.6 monospace}.vulnerability-location b{flex:0 0 auto;color:#234b9e;font:700 10px/1.6 Inter,"Segoe UI",sans-serif}.vulnerability-location span{overflow-wrap:anywhere}

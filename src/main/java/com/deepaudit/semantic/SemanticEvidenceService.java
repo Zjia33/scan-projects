@@ -3,6 +3,7 @@ package com.deepaudit.semantic;
 import com.deepaudit.domain.SecurityFlow;
 import com.deepaudit.domain.SemanticCallEdge;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.mapper.SecurityFlowMapper;
 import com.deepaudit.mapper.SemanticCallEdgeMapper;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,12 +25,14 @@ import java.util.stream.Collectors;
 public class SemanticEvidenceService {
     private final SecurityFlowMapper flowMapper;
     private final SemanticCallEdgeMapper edgeMapper;
+    private final Map<UUID, List<SecurityFlow>> flowCache = new ConcurrentHashMap<>();
+    private final Map<UUID, List<SemanticCallEdge>> edgeCache = new ConcurrentHashMap<>();
 
     // 将语义安全流转换为只供 Orchestrator 调查的线索索引。
     public SemanticHints hints(UUID taskId) {
         Map<Long, Set<VulnerabilityType>> types = new LinkedHashMap<>();
         Map<Long, String> descriptions = new LinkedHashMap<>();
-        for (SecurityFlow flow : flowMapper.findByTaskId(taskId)) {
+        for (SecurityFlow flow : flows(taskId)) {
             if (flow.getType() == null) continue;
             types.computeIfAbsent(flow.getPrimaryChunkId(), ignored -> new LinkedHashSet<>()).add(flow.getType());
             String hint = "语义分析调查线索（不是最终漏洞结论）：\n" + flow.getPathText();
@@ -53,59 +57,6 @@ public class SemanticEvidenceService {
         return new EvidenceResult("语义分析未找到与当前代码块关联的可验证路径；应继续读取相关代码块和调用上下文。", Set.of());
     }
 
-    // 为 Critic 提供独立于专业 Agent 工具观察的原始语义证据。
-    public String independentCriticEvidence(UUID taskId, Long chunkId, VulnerabilityType type) {
-        return independentCriticEvidenceResult(taskId, chunkId, type).text();
-    }
-
-    // 同时返回独立语义证据涉及的真实代码块 ID，供 Critic 扩展合法定位候选范围。
-    public EvidenceResult independentCriticEvidenceResult(UUID taskId, Long chunkId, VulnerabilityType type) {
-        List<SecurityFlow> flows = flowMapper.findByTaskAndChunk(taskId, chunkId).stream()
-                .filter(flow -> flow.getType() == type).toList();
-        Set<Long> evidence = flows.stream().flatMap(flow -> parseIds(flow.getEvidenceChunkIds()).stream())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        String text = flows.stream()
-                .map(flow -> "[独立语义证据 " + flow.getId() + "]\n" + flow.getPathText())
-                .collect(Collectors.joining("\n\n"));
-        return new EvidenceResult(text.isBlank() ? "没有独立语义证据" : text, evidence);
-    }
-
-    // 为 Critic 补充已验证调用图邻域。它只用于寻找 Guard 和反证，不会自动成为最终报告证据。
-    public Set<Long> criticReviewContextIds(UUID taskId, Set<Long> seedChunkIds, int requestedDepth) {
-        if (seedChunkIds == null || seedChunkIds.isEmpty()) return Set.of();
-        int maxDepth = Math.max(1, Math.min(requestedDepth <= 0 ? 3 : requestedDepth, 5));
-        Map<Long, Set<Long>> graph = new LinkedHashMap<>();
-        for (SemanticCallEdge edge : edgeMapper.findByTaskId(taskId)) {
-            Long caller = edge.getCallerChunkId();
-            Long callee = edge.getCalleeChunkId();
-            if (caller == null || callee == null
-                    || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW) continue;
-            graph.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
-            graph.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
-        }
-        Set<Long> visited = new LinkedHashSet<>(seedChunkIds);
-        ArrayDeque<Long> queue = new ArrayDeque<>();
-        Map<Long, Integer> depth = new LinkedHashMap<>();
-        seedChunkIds.forEach(id -> {
-            if (id != null) {
-                queue.add(id);
-                depth.put(id, 0);
-            }
-        });
-        while (!queue.isEmpty()) {
-            Long current = queue.removeFirst();
-            int currentDepth = depth.getOrDefault(current, 0);
-            if (currentDepth >= maxDepth) continue;
-            for (Long next : graph.getOrDefault(current, Set.of())) {
-                if (!visited.add(next)) continue;
-                depth.put(next, currentDepth + 1);
-                queue.addLast(next);
-            }
-        }
-        visited.removeAll(seedChunkIds);
-        return Set.copyOf(visited);
-    }
-
     // 在安全流或高/中可信调用图中验证两个代码块是否确有关系。
     public RelationVerification verifyRelation(UUID taskId, Long sourceChunkId, Long candidateChunkId) {
         if (sourceChunkId == null || candidateChunkId == null) {
@@ -114,7 +65,7 @@ public class SemanticEvidenceService {
         if (sourceChunkId.equals(candidateChunkId)) {
             return new RelationVerification(true, "候选就是当前审计目标");
         }
-        for (SecurityFlow flow : flowMapper.findByTaskId(taskId)) {
+        for (SecurityFlow flow : flows(taskId)) {
             Set<Long> ids = parseIds(flow.getEvidenceChunkIds());
             if (ids.contains(sourceChunkId) && ids.contains(candidateChunkId)) {
                 return new RelationVerification(true, "两个代码块位于同一条已验证语义安全路径 " + flow.getId());
@@ -123,10 +74,11 @@ public class SemanticEvidenceService {
 
         // 将可靠调用边视作无向关系图，并以十层上限执行广度优先搜索。
         Map<Long, Set<Long>> graph = new LinkedHashMap<>();
-        for (SemanticCallEdge edge : edgeMapper.findByTaskId(taskId)) {
+        for (SemanticCallEdge edge : edges(taskId)) {
             Long caller = edge.getCallerChunkId();
             Long callee = edge.getCalleeChunkId();
             if (caller == null || callee == null
+                    || !FrameworkSemanticEdgePolicy.supports(edge)
                     || edge.getConfidence() == com.deepaudit.domain.Confidence.LOW) continue;
             graph.computeIfAbsent(caller, ignored -> new LinkedHashSet<>()).add(callee);
             graph.computeIfAbsent(callee, ignored -> new LinkedHashSet<>()).add(caller);
@@ -154,12 +106,25 @@ public class SemanticEvidenceService {
 
     // 从最终漏洞代码块沿可靠调用边反向追踪，返回每个证据调用方的真实调用表达式行号。
     public Map<Long, Integer> callSiteLines(UUID taskId, Long primaryChunkId, Set<Long> evidenceChunkIds) {
+        return callSiteLines(taskId, primaryChunkId, evidenceChunkIds, Map.of());
+    }
+
+    /**
+     * 与源码索引一起校验调用点。旧的三参数入口保留给只需要图关系的调用方；
+     * 报告生成必须传入代码块，以免把删除方法或越界行号渲染成调用入口。
+     */
+    public Map<Long, Integer> callSiteLines(UUID taskId, Long primaryChunkId, Set<Long> evidenceChunkIds,
+                                            Map<Long, CodeChunk> chunks) {
         if (primaryChunkId == null || evidenceChunkIds == null || evidenceChunkIds.isEmpty()) return Map.of();
-        Map<Long, List<SemanticCallEdge>> incoming = edgeMapper.findByTaskId(taskId).stream()
+        Map<Long, CodeChunk> source = chunks == null ? Map.of() : chunks;
+        Map<Long, List<SemanticCallEdge>> incoming = edges(taskId).stream()
                 .filter(edge -> edge.getCallerChunkId() != null && edge.getCalleeChunkId() != null)
                 .filter(edge -> evidenceChunkIds.contains(edge.getCallerChunkId())
                         && evidenceChunkIds.contains(edge.getCalleeChunkId()))
+                .filter(FrameworkSemanticEdgePolicy::supports)
                 .filter(edge -> edge.getConfidence() != com.deepaudit.domain.Confidence.LOW)
+                .filter(edge -> source.isEmpty() || hasSourceAtLine(source.get(edge.getCallerChunkId()),
+                        edge.getCallSiteLine()))
                 .collect(Collectors.groupingBy(SemanticCallEdge::getCalleeChunkId,
                         LinkedHashMap::new, Collectors.toList()));
         Map<Long, Integer> callSites = new LinkedHashMap<>();
@@ -176,6 +141,14 @@ public class SemanticEvidenceService {
             }
         }
         return Map.copyOf(callSites);
+    }
+
+    private boolean hasSourceAtLine(CodeChunk chunk, Integer lineNumber) {
+        if (chunk == null || lineNumber == null || chunk.getContent() == null) return false;
+        int start = Math.max(1, chunk.getStartLine());
+        int index = lineNumber - start;
+        String[] lines = chunk.getContent().split("\\R", -1);
+        return index >= 0 && index < lines.length && !lines[index].isBlank();
     }
 
     // 同时输出安全路径和 Guard 摘要，避免为同一条流调用多个重叠工具。
@@ -195,6 +168,25 @@ public class SemanticEvidenceService {
             try { result.add(Long.parseLong(item)); } catch (NumberFormatException ignored) { }
         });
         return result;
+    }
+
+    public void clearTaskCache(UUID taskId) {
+        flowCache.remove(taskId);
+        edgeCache.remove(taskId);
+    }
+
+    private List<SecurityFlow> flows(UUID taskId) {
+        return flowCache.computeIfAbsent(taskId, ignored -> {
+            List<SecurityFlow> loaded = flowMapper.findByTaskId(taskId);
+            return loaded == null ? List.of() : List.copyOf(loaded);
+        });
+    }
+
+    private List<SemanticCallEdge> edges(UUID taskId) {
+        return edgeCache.computeIfAbsent(taskId, ignored -> {
+            List<SemanticCallEdge> loaded = edgeMapper.findByTaskId(taskId);
+            return loaded == null ? List.of() : List.copyOf(loaded);
+        });
     }
 
     public record SemanticHints(Map<Long, Set<VulnerabilityType>> typesByChunk,

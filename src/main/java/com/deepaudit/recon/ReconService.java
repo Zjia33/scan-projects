@@ -46,9 +46,10 @@ public class ReconService {
     private static final long MAX_SOURCE_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_TEXT_CHUNK_CHARS = 12_000;
     private static final int MAX_TEXT_CHUNK_LINES = 160;
+    private static final int CONFIG_CHUNK_OVERLAP_LINES = 20;
     private static final int MAX_FRAMEWORK_FILE_CHARS = 24_000;
     private static final int MAX_FRAMEWORK_CONTEXT_CHARS = 120_000;
-    private static final int MAX_FRAMEWORK_FILES = 40;
+    private static final int MAX_FRAMEWORK_FILES = 20;
     private final CodeChunkMapper chunkMapper;
     private final IncrementalSemanticDiffService incrementalSemanticDiffService;
     private final ProjectTechnologyDetector technologyDetector = new ProjectTechnologyDetector();
@@ -330,8 +331,9 @@ public class ReconService {
             chunk.setBaseContent("");
             GitFileChange change = byPath.get(normalizePath(chunk.getFilePath()));
             if (change == null) continue;
+            int ownershipEnd = incrementalOwnershipEnd(chunk, chunks);
             boolean direct = "ADD".equals(change.getChangeType())
-                    || overlaps(chunk.getStartLine(), chunk.getEndLine(), change.getNewRanges());
+                    || overlaps(chunk.getStartLine(), ownershipEnd, change.getNewRanges());
             if (!direct) continue;
             chunk.setChangeType(switch (change.getChangeType()) {
                 case "ADD" -> ChunkChangeType.ADDED;
@@ -573,6 +575,24 @@ public class ReconService {
         return false;
     }
 
+    /**
+     * 配置块使用前向重叠，重叠区由后一个块负责增量审查；前一个块只把这些行作为尾部上下文。
+     * 这样边界语义可见，同时同一变更行不会让两个相邻配置块重复进入 Triage。
+     */
+    private int incrementalOwnershipEnd(CodeChunk chunk, List<CodeChunk> chunks) {
+        if (AuditSourceFilter.classify(chunk.getFilePath()) != AuditFileRole.SECURITY_CONFIGURATION) {
+            return chunk.getEndLine();
+        }
+        return chunks.stream()
+                .filter(candidate -> candidate != chunk)
+                .filter(candidate -> normalizePath(candidate.getFilePath())
+                        .equals(normalizePath(chunk.getFilePath())))
+                .mapToInt(CodeChunk::getStartLine)
+                .filter(start -> start > chunk.getStartLine() && start <= chunk.getEndLine())
+                .min().stream().map(start -> start - 1)
+                .findFirst().orElse(chunk.getEndLine());
+    }
+
     // 规范化 normalizePath 对应的输入。
     private String normalizePath(String value) {
         return value == null ? "" : value.replace('\\', '/');
@@ -599,7 +619,8 @@ public class ReconService {
                 indexJava(taskId, relativePath, content, chunks, counters);
             } else {
                 indexText(taskId, relativePath, file.getFileName().toString(), content, chunks,
-                        "TEXT_" + extension(relativePath).toUpperCase(Locale.ROOT));
+                        "TEXT_" + extension(relativePath).toUpperCase(Locale.ROOT),
+                        role == AuditFileRole.SECURITY_CONFIGURATION ? CONFIG_CHUNK_OVERLAP_LINES : 0);
             }
         } catch (Exception exception) {
             // 单个编码异常或无法解析的文件不能中断整个扫描任务，但必须留下可诊断记录。
@@ -615,7 +636,7 @@ public class ReconService {
             // JavaParser 失败时退化为文本分块，避免遗漏仍可审查的源码。
             unit = StaticJavaParser.parse(content);
         } catch (ParseProblemException exception) {
-            indexText(taskId, relativePath, relativePath, content, chunks, "JAVA_FILE");
+            indexText(taskId, relativePath, relativePath, content, chunks, "JAVA_FILE", 0);
             return;
         }
         String basePath = unit.findFirst(ClassOrInterfaceDeclaration.class)
@@ -623,7 +644,7 @@ public class ReconService {
                 .orElse("");
         List<MethodDeclaration> methods = unit.findAll(MethodDeclaration.class);
         if (methods.isEmpty()) {
-            indexText(taskId, relativePath, relativePath, content, chunks, "JAVA_FILE");
+            indexText(taskId, relativePath, relativePath, content, chunks, "JAVA_FILE", 0);
             return;
         }
         for (MethodDeclaration method : methods) {
@@ -696,7 +717,7 @@ public class ReconService {
 
     // 将 XML、模板和解析失败源码切成有字符与行数上限的文本窗口。
     private void indexText(UUID taskId, String relativePath, String baseSymbol, String content,
-                           List<CodeChunk> chunks, String chunkType) {
+                           List<CodeChunk> chunks, String chunkType, int overlapLines) {
         String[] lines = content.split("\\R", -1);
         int lineIndex = 0;
         int part = 1;
@@ -727,7 +748,26 @@ public class ReconService {
             if (lineIndex == start) continue;
             addChunk(chunks, taskId, relativePath, baseSymbol + "#part-" + part++, null,
                     start + 1, Math.max(start + 1, lineIndex), window.toString(), chunkType, "", "", "");
+            lineIndex = nextTextWindowStart(lines, start, lineIndex, overlapLines);
         }
+    }
+
+    private int nextTextWindowStart(String[] lines, int currentStart,
+                                    int currentEndExclusive, int overlapLines) {
+        if (overlapLines <= 0 || currentEndExclusive >= lines.length) return currentEndExclusive;
+        String nextLine = lines[currentEndExclusive];
+        if (nextLine.length() > MAX_TEXT_CHUNK_CHARS) return currentEndExclusive;
+
+        int earliest = Math.max(currentStart + 1, currentEndExclusive - overlapLines);
+        int nextWindowChars = nextLine.length();
+        int nextStart = currentEndExclusive;
+        for (int line = currentEndExclusive - 1; line >= earliest; line--) {
+            int candidateChars = lines[line].length() + 1 + nextWindowChars;
+            if (candidateChars > MAX_TEXT_CHUNK_CHARS) break;
+            nextWindowChars = candidateChars;
+            nextStart = line;
+        }
+        return nextStart;
     }
 
     // 规范化 normalizeEndpoint 对应的输入。

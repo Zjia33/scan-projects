@@ -19,7 +19,8 @@ public class AiProperties {
     private int maxIterationsPerAgent = 6;
     private int maxToolCallsPerAgent = 10;
     private int maxDetailedObservations = 2;
-    private int maxObservationChars = 4_000;
+    private int maxObservationChars = 3_500;
+    private int triageParallelism = 2;
     private int professionalAgentParallelism = 4;
     private int professionalAgentQueueCapacity = 1_000;
     private int triageBatchSize = 20;

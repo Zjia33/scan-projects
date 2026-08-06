@@ -8,10 +8,12 @@ import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import com.deepaudit.util.ExecutionTiming;
 import com.deepaudit.util.TimingDetailLog;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -21,12 +23,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class OrchestratorAgentService {
     private static final int MAX_INCREMENTAL_BATCH_CHARS = 60_000;
     private static final int MAX_INVESTIGATION_QUESTIONS = 6;
@@ -34,6 +38,28 @@ public class OrchestratorAgentService {
     private final AiProperties properties;
     private final AgentTraceService traceService;
     private final IncrementalReviewService incrementalReviewService;
+    private final Executor triageExecutor;
+    private final AuditCancellationService cancellationService;
+
+    @Autowired
+    public OrchestratorAgentService(LlmGateway llmGateway, AiProperties properties,
+                                    AgentTraceService traceService,
+                                    IncrementalReviewService incrementalReviewService,
+                                    @Qualifier("triageAgentExecutor") Executor triageExecutor,
+                                    AuditCancellationService cancellationService) {
+        this.llmGateway = llmGateway;
+        this.properties = properties;
+        this.traceService = traceService;
+        this.incrementalReviewService = incrementalReviewService;
+        this.triageExecutor = triageExecutor;
+        this.cancellationService = cancellationService;
+    }
+
+    OrchestratorAgentService(LlmGateway llmGateway, AiProperties properties,
+                             AgentTraceService traceService,
+                             IncrementalReviewService incrementalReviewService) {
+        this(llmGateway, properties, traceService, incrementalReviewService, Runnable::run, null);
+    }
 
     /** Triage 只对 CHANGED 做逐行风险路由；跨方法上下文由专业 Agent 自主获取。 */
     public List<AgentTask> plan(UUID taskId, LlmGateway.ReconInsight recon, List<CodeChunk> chunks,
@@ -63,10 +89,10 @@ public class OrchestratorAgentService {
             Map<Long, Set<VulnerabilityType>> hints, Map<Long, String> hintDescriptions) {
         List<IncrementalReviewUnit> units = incrementalReviewService.build(
                 taskId, chunks, hints, hintDescriptions);
-        TimingDetailLog.info("任务 {} 已构建 {} 个 CHANGED 审查单元；Triage不附加任何IMPACTED源码",
+        TimingDetailLog.info("任务 {} 已构建 {} 个 CHANGED 审查单元",
                 taskId, units.size());
         traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.REASONING,
-                "Triage 将逐行对比 CHANGED 的 Base/Target；上下文获取交由专业 Agent");
+                "正在对比代码修改内容");
 
         Map<String, AgentTask> tasks = new LinkedHashMap<>();
         List<IncrementalReviewUnit> modelUnits = new ArrayList<>();
@@ -127,8 +153,70 @@ public class OrchestratorAgentService {
             UUID taskId, AgentRun run, LlmGateway.ReconInsight recon,
             List<IncrementalReviewUnit> units, List<String> summaries) {
         Map<String, LlmGateway.TriageDecision> accepted = new LinkedHashMap<>();
-        int batchSize = Math.max(1, properties.getTriageBatchSize());
-        int batchNumber = 0;
+        List<TriageBatch> batches = buildTriageBatches(units);
+        executeTriageBatches(taskId, run, recon, batches, summaries, accepted, false);
+
+        List<IncrementalReviewUnit> missing = units.stream()
+                .filter(unit -> !accepted.containsKey(unit.unitId())).toList();
+        if (!missing.isEmpty()) {
+            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
+                    "部分变更位置缺少合法分流决定，正在进行一次受控补判");
+            int repairBatchSize = Math.min(5, Math.max(1, properties.getTriageBatchSize()));
+            executeTriageBatches(taskId, run, recon, buildTriageBatches(missing, repairBatchSize),
+                    summaries, accepted, true);
+        }
+
+        long investigate = accepted.values().stream()
+                .filter(value -> value.disposition() == TriageDisposition.INVESTIGATE).count();
+        long skip = accepted.values().stream()
+                .filter(value -> value.disposition() == TriageDisposition.SKIP).count();
+        TimingDetailLog.info("任务 {} CHANGED 二态分诊：总数={}，批次={}，并发上限={}，INVESTIGATE={}，SKIP={}，缺失或无效={}",
+                taskId, units.size(), batches.size(), properties.getTriageParallelism(),
+                investigate, skip, units.size() - accepted.size());
+        return accepted;
+    }
+
+    private void executeTriageBatches(
+            UUID taskId, AgentRun run, LlmGateway.ReconInsight recon,
+            List<TriageBatch> batches, List<String> summaries,
+            Map<String, LlmGateway.TriageDecision> accepted, boolean repair) {
+        int parallelism = Math.max(1, Math.min(properties.getTriageParallelism(), 16));
+        for (int windowStart = 0; windowStart < batches.size(); windowStart += parallelism) {
+            int windowEnd = Math.min(batches.size(), windowStart + parallelism);
+            List<CompletableFuture<TriageBatchResult>> futures = new ArrayList<>();
+            for (int index = windowStart; index < windowEnd; index++) {
+                TriageBatch batch = batches.get(index);
+                traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
+                        repair ? "正在补判缺少合法决定的变更位置" : "正在批量比较变更");
+                futures.add(CompletableFuture.supplyAsync(
+                        () -> executeTriageBatch(taskId, recon, batch, repair), triageExecutor));
+            }
+            try {
+                for (int index = windowStart; index < windowEnd; index++) {
+                    TriageBatch batch = batches.get(index);
+                    TriageBatchResult result = join(futures.get(index - windowStart));
+                    if (result.formatError()) {
+                        traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR,
+                                AgentEventType.FORMAT_ERROR,
+                                "Triage 批次响应格式异常，其中缺失的位置将进入受控补判");
+                    } else {
+                        acceptPlan(taskId, run, batch.units(), result.plan(), summaries, accepted);
+                    }
+                    run.setModelCallCount(run.getModelCallCount() + 1);
+                }
+            } catch (RuntimeException exception) {
+                futures.forEach(future -> future.cancel(true));
+                throw exception;
+            }
+        }
+    }
+
+    private List<TriageBatch> buildTriageBatches(List<IncrementalReviewUnit> units) {
+        return buildTriageBatches(units, Math.max(1, properties.getTriageBatchSize()));
+    }
+
+    private List<TriageBatch> buildTriageBatches(List<IncrementalReviewUnit> units, int batchSize) {
+        List<TriageBatch> batches = new ArrayList<>();
         for (int start = 0; start < units.size();) {
             int end = start;
             int estimatedChars = 0;
@@ -138,37 +226,50 @@ public class OrchestratorAgentService {
                 estimatedChars += nextSize;
                 end++;
             }
-            List<IncrementalReviewUnit> batch = units.subList(start, end);
-            batchNumber++;
-            traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR, AgentEventType.MODEL_CALL,
-                    "CHANGED 风险分诊第 " + batchNumber + " 批，共 " + batch.size()
-                            + " 个变更位置，输入约 " + estimatedChars + " 字符");
-            long requestStarted = ExecutionTiming.start();
-            TimingDetailLog.info("模型阶段开始：taskId={}，stage=TRIAGE_CHANGED，batch={}，units={}，estimatedChars={}",
-                    taskId, batchNumber, batch.size(), estimatedChars);
-            try {
-                LlmGateway.TriagePlan plan = llmGateway.triageIncremental(taskId, recon, batch);
-                acceptPlan(taskId, run, batch, plan, summaries, accepted);
-                TimingDetailLog.info("模型阶段结束：taskId={}，stage=TRIAGE_CHANGED，batch={}，elapsedMs={}，status=SUCCESS",
-                        taskId, batchNumber, ExecutionTiming.elapsedMillis(requestStarted));
-            } catch (AiResponseFormatException exception) {
-                long elapsedMs = ExecutionTiming.elapsedMillis(requestStarted);
-                TimingDetailLog.warn("模型阶段结束：taskId={}，stage=TRIAGE_CHANGED，batch={}，elapsedMs={}，status=FORMAT_ERROR",
-                        taskId, batchNumber, elapsedMs);
-                traceService.event(taskId, run.getId(), AgentType.ORCHESTRATOR,
-                        AgentEventType.FORMAT_ERROR, "第 " + batchNumber
-                                + " 批 Triage 响应格式异常，该批将保守调查");
-            }
-            run.setModelCallCount(run.getModelCallCount() + 1);
+            batches.add(new TriageBatch(batches.size() + 1,
+                    List.copyOf(units.subList(start, end)), estimatedChars));
             start = end;
         }
-        long investigate = accepted.values().stream()
-                .filter(value -> value.disposition() == TriageDisposition.INVESTIGATE).count();
-        long skip = accepted.values().stream()
-                .filter(value -> value.disposition() == TriageDisposition.SKIP).count();
-        TimingDetailLog.info("任务 {} CHANGED 二态分诊：总数={}，INVESTIGATE={}，SKIP={}，缺失或无效={}",
-                taskId, units.size(), investigate, skip, units.size() - accepted.size());
-        return accepted;
+        return List.copyOf(batches);
+    }
+
+    private TriageBatchResult executeTriageBatch(UUID taskId, LlmGateway.ReconInsight recon,
+                                                 TriageBatch batch, boolean repair) {
+        AuditCancellationService.WorkerRegistration registration = null;
+        long requestStarted = ExecutionTiming.start();
+        String stage = repair ? "TRIAGE_CHANGED_REPAIR" : "TRIAGE_CHANGED";
+        try {
+            if (cancellationService != null) registration = cancellationService.registerWorker(taskId);
+            TimingDetailLog.info("模型阶段开始：taskId={}，stage={}，batch={}，units={}，estimatedChars={}",
+                    taskId, stage, batch.number(), batch.units().size(), batch.estimatedChars());
+            LlmGateway.TriagePlan plan = llmGateway.triageIncremental(taskId, recon, batch.units());
+            if (cancellationService != null) cancellationService.throwIfCancellationRequested(taskId);
+            TimingDetailLog.info("模型阶段结束：taskId={}，stage={}，batch={}，elapsedMs={}，status=SUCCESS",
+                    taskId, stage, batch.number(), ExecutionTiming.elapsedMillis(requestStarted));
+            return new TriageBatchResult(plan, false);
+        } catch (AiResponseFormatException exception) {
+            TimingDetailLog.warn("模型阶段结束：taskId={}，stage={}，batch={}，elapsedMs={}，status=FORMAT_ERROR",
+                    taskId, stage, batch.number(), ExecutionTiming.elapsedMillis(requestStarted));
+            return new TriageBatchResult(null, true);
+        } finally {
+            if (registration != null) registration.close();
+        }
+    }
+
+    private TriageBatchResult join(CompletableFuture<TriageBatchResult> future) {
+        try {
+            return future.join();
+        } catch (CompletionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) throw runtimeException;
+            throw new IllegalStateException("Triage 并行批次执行失败", cause);
+        }
+    }
+
+    private record TriageBatch(int number, List<IncrementalReviewUnit> units, int estimatedChars) {
+    }
+
+    private record TriageBatchResult(LlmGateway.TriagePlan plan, boolean formatError) {
     }
 
     private void acceptPlan(UUID taskId, AgentRun run, List<IncrementalReviewUnit> batch,
@@ -242,11 +343,8 @@ public class OrchestratorAgentService {
                 : "待验证问题：\n- " + String.join("\n- ", questions);
         AgentTask task = new AgentTask(unit.primaryChunkId(), agentFor(type), type,
                 joinNonBlank(reason == null || reason.isBlank() ? "CHANGED 变更需要深入调查" : reason,
-                        evidence, unit.changeSummary(), focus, questionText,
-                        "Base 变更窗口：\n<UNTRUSTED_CODE_BASE>\n" + unit.baseCodeExcerpt()
-                                + "\n</UNTRUSTED_CODE_BASE>",
-                        "Target 变更窗口：\n<UNTRUSTED_CODE_TARGET>\n" + unit.targetCodeExcerpt()
-                                + "\n</UNTRUSTED_CODE_TARGET>"));
+                        evidence, unit.changeSummary(), focus, questionText),
+                unit.baseCodeExcerpt(), unit.targetCodeExcerpt());
         tasks.putIfAbsent(task.chunkId() + "|" + task.vulnerabilityType(), task);
     }
 

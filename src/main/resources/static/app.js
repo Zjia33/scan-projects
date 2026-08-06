@@ -657,7 +657,7 @@ function summaryStat(label, value, id) {
 function buildInvestigation(agents, events) {
     const section = el('section', 'detail-section');
     const heading = el('div', 'section-heading-row');
-    heading.append(el('h4', '', 'Agent 调查链路'), el('span', '', '实时事件 / 工具调用 / 证据观察'));
+    heading.append(el('h4', '', 'Agent 调查进展'), el('span', '', '仅展示安全现象与判断'));
     const grid = el('div', 'investigation-grid');
 
     const consolePanel = el('section', 'console-panel');
@@ -699,7 +699,7 @@ function renderFindingList(container, findings, status) {
     container.replaceChildren();
     if (!findings.length) {
         const message = status === 'COMPLETED'
-            ? '本轮审计没有产生通过 Critic 证据门槛的问题。'
+                ? '本轮审计没有产生通过确定性证据门禁的问题。'
             : status === 'CANCELLED'
                 ? '审计任务已中断，不生成正式漏洞列表。'
                 : status === 'FAILED'
@@ -732,20 +732,14 @@ function buildFindingCard(finding) {
 
 function appendFindingDescription(container, value) {
     const description = String(value || '').trim();
-    const marker = 'Critic Agent 复核：';
-    const index = description.indexOf(marker);
-    const main = (index < 0 ? description : description.slice(0, index)).trim();
-    const review = index < 0 ? '' : description.slice(index + marker.length).trim();
-    const content = main || review;
-    if (!content) return;
+    if (!description) return;
     const section = el('section', 'finding-copy-section');
-    section.append(el('h5', '', '漏洞说明'), el('p', 'finding-description', content));
+    section.append(el('h5', '', '漏洞说明'), el('p', 'finding-description', description));
     container.append(section);
 }
 
 function buildFindingEvidence(value) {
     const section = el('section', 'finding-copy-section');
-    section.append(el('h5', '', '代码证据'));
     const list = el('div', 'finding-evidence-list');
     splitFindingEvidence(value).forEach(chunk => {
         const card = el('article', 'finding-evidence-chunk');
@@ -967,17 +961,7 @@ function buildEventRow(event, animate) {
     meta.append(time);
     const toolCall = event.eventType === 'TOOL_CALL';
     const observation = event.eventType === 'OBSERVATION';
-    let message = withoutInternalChunkIds(toolCall ? summarizeToolCall(event.message)
-        : observation ? summarizeObservation(event.message)
-            : event.eventType === 'MODEL_CALL' ? summarizeModelCall(event.message)
-                : String(event.message || ''));
-    if (!message && event.eventType === 'REJECTED') {
-        message = 'Agent 未获得能够支持当前漏洞假设的已验证证据，已结束本次调查。';
-    } else if (!message && event.eventType === 'INSUFFICIENT_EVIDENCE') {
-        message = '当前调查因上下文、工具结果或证据不足而未形成最终结论。';
-    } else if (!message) {
-        message = '该事件未返回可展示的详细说明。';
-    }
+    const message = userFacingEventMessage(event);
     const copy = el('p', 'event-message', message.length > 1000 ? `${message.slice(0, 1000)}…` : message);
     row.append(meta, copy);
     if (!toolCall && !observation && message.length > 1000) {
@@ -994,8 +978,28 @@ function buildEventRow(event, animate) {
     return row;
 }
 
-function summarizeModelCall(value) {
-    return String(value || '');
+function userFacingEventMessage(event) {
+    switch (event.eventType) {
+        case 'STARTED': return '开始核查当前代码变化的安全影响。';
+        case 'MODEL_CALL': return '正在分析当前代码变化的安全影响。';
+        case 'TOOL_CALL': return summarizeToolCall(event.message);
+        case 'OBSERVATION': return summarizeObservation(event.message);
+        case 'REASONING': return summarizeReasoning(event.message);
+        case 'HYPOTHESIS': return '发现需要进一步确认的安全风险。';
+        case 'FINDING': return '已确认当前代码变化存在需要修复的安全问题。';
+        case 'REJECTED': return '已核对当前代码行为，未发现足以确认该风险的事实。';
+        case 'INSUFFICIENT_EVIDENCE': return '当前已发现的代码行为不足以确认该风险。';
+        default: return summarizeReasoning(event.message) || '已记录本次安全核查进展。';
+    }
+}
+
+function summarizeReasoning(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/(?:read_[a-z_]+|codegraph|chunk(?:_id)?|evidence|\btool\b|工具|观察|候选|源码|代码块|覆盖|预算|本轮|\b[a-z_$][\w$]*(?:\.[a-z_$][\w$]*)+\s*\()/i.test(raw)) {
+        return '正在根据当前代码行为判断安全影响。';
+    }
+    return withoutInternalChunkIds(raw);
 }
 
 function withoutInternalChunkIds(value) {
@@ -1004,7 +1008,7 @@ function withoutInternalChunkIds(value) {
         .replace(/\bCHUNK_ID\s*=\s*\d+\b/gi, '相关代码位置')
         .replace(/\b(?:PRIMARY_)?CHUNK(?:_ID)?\s*[:=#]?\s*\d+\b/gi, '相关代码位置')
         .replace(/\b(?:primaryChunkId|chunkId)\s*[:=]\s*\d+\b/gi, '相关代码位置')
-        .replace(/代码块\s*[#＃]?\s*\d+/g, '相关代码块')
+        .replace(/代码块\s*[#＃]?\s*\d+/g, '相关位置')
         .replace(/[ \t]{2,}/g, ' ')
         .trim();
 }
@@ -1352,14 +1356,14 @@ function agentText(agent) {
         RECON: 'Recon Agent', ORCHESTRATOR: 'Triage Orchestrator', SQL_INJECTION: 'SQL 注入 Agent',
         AUTHORIZATION: '权限审计 Agent', SENSITIVE_INFORMATION: '敏感信息审计 Agent',
         STORED_XSS: '存储 XSS Agent', VALIDATION_BYPASS: '验证绕过 Agent',
-        CRITIC: 'Critic Agent', REPORT: 'Report Agent'
+        REPORT: 'Report Agent'
     })[agent] || agent || 'SYSTEM';
 }
 
 function eventTypeText(type) {
     return ({
         STARTED: '启动', MODEL_CALL: '模型调用', REASONING: '推理摘要', PLAN: '审计计划',
-        TOOL_CALL: '工具调用', OBSERVATION: '工具观察', HYPOTHESIS: '漏洞假设',
+        TOOL_CALL: '补充分析', OBSERVATION: '核查结果', HYPOTHESIS: '风险假设',
         FINDING: '确认问题', LOCATION_UNRESOLVED: '定位待复核', INSUFFICIENT_EVIDENCE: '证据不足',
         FORMAT_ERROR: '响应异常', REJECTED: '否决', COMPLETED: '完成', CANCELLED: '已中断', ERROR: '错误'
     })[type] || type || '事件';
@@ -1424,86 +1428,60 @@ function eventKey(event) {
 }
 
 function summarizeToolCall(message) {
-    const raw = String(message || '').trim();
-    const separator = raw.search(/[：:]/);
-    const tool = (separator >= 0 ? raw.slice(0, separator) : raw).trim().toLowerCase();
-    const summaries = {
-        read_source: '读取目标或候选源码，核对实现细节',
-        verify_relation: '验证候选代码与当前审计目标的确定性关系',
-        search_symbols: '按符号、注解、路径或文本查找相关代码',
-        search_code: '按字面量搜索相关源码',
-        explore_call_graph: '按方向和深度探索调用路径',
-        get_change_context: '读取当前目标的 Base/Target 变更上下文',
-        resolve_data_access: '解析关联的数据访问、SQL 与参数绑定',
-        inspect_security_policy: '检查适用于当前入口的安全策略',
-        trace_value: '定向追踪变量、数据来源与危险终点'
-    };
-    if (summaries[tool]) return `${tool}：${summaries[tool]}`;
-    if (tool && /^[a-z0-9_-]{1,48}$/.test(tool)) return `${tool}：调用只读工具补充审计证据`;
-    return '调用只读工具补充当前审计目标的相关证据';
+    return '正在补充与当前安全问题有关的事实。';
 }
 
 function summarizeObservation(message) {
     const raw = String(message || '').trim();
-    const chunkCount = (raw.match(/\bCHUNK_ID=\d+/g) || []).length;
-    const pathCount = (raw.match(/^PATH\s+depth=/gm) || []).length;
-    const changeCount = (raw.match(/^\[(?:METHOD_CHANGE|FILE_CHANGE)\]/gm) || []).length;
-
-    if (!raw) return '工具观察已完成，本次未返回可展示的补充信息。';
-    if (raw.includes('[TOOL_UNAVAILABLE]')) return '当前运行环境未提供本次调查所需的高级只读工具。';
+    if (!raw) return '已完成与当前问题有关的事实核查。';
+    if (raw.includes('[TOOL_UNAVAILABLE]')) return '当前无法获得足以支持判断的补充事实。';
     if (raw.includes('[RELATION_REJECTED]')) {
-        return '候选代码与当前审计目标的关系未通过验证，不能作为漏洞证据。';
+        return '相关逻辑之间未确认直接关联，当前不能以此判定风险。';
     }
     if (raw.includes('[VERIFIED_EVIDENCE]') || raw.includes('[VERIFIED_POLICY_RELATION]')) {
-        return '已验证相关代码与当前审计目标存在确定性关系，可作为后续分析证据。';
+        return '已确认相关逻辑与当前安全问题存在直接关联。';
     }
     if (raw.includes('[SEARCH_RESULT]')) {
-        if (raw.includes('没有找到')) return '未检索到满足当前条件的相关代码符号。';
-        return chunkCount > 0
-            ? `已检索相关代码符号，获得 ${chunkCount} 个候选代码块供后续关系验证。`
-            : '已完成相关代码符号检索，并将候选结果用于后续关系验证。';
+        return raw.includes('没有找到') ? '未发现与当前问题直接相关的实现。'
+            : '已发现与当前问题可能相关的实现。';
     }
     if (raw.includes('[CALL_GRAPH]')) {
-        if (raw.includes('没有找到')) return '已检查当前目标的调用图，未发现满足条件的可信调用路径。';
-        return pathCount > 0
-            ? `已分析当前目标的调用图，获得 ${pathCount} 条可信调用路径。`
-            : '已分析当前目标的调用图并补充可信调用关系。';
+        return raw.includes('没有找到') ? '未发现当前问题所需的直接业务关联。'
+            : '已确认当前业务处理与相关逻辑之间存在关联。';
     }
     if (raw.includes('[CHANGE_CONTEXT]')) {
-        if (raw.includes('没有方法级或文件级')) return '已检查变更上下文，当前目标没有方法级或文件级增量记录。';
-        return changeCount > 0
-            ? `已读取 Base/Target 变更上下文，获得 ${changeCount} 项方法或文件变更。`
-            : '已读取当前目标的 Base/Target 变更上下文。';
+        return raw.includes('没有方法级或文件级') ? '当前业务逻辑未发现与该问题直接相关的变化。'
+            : '已确认当前业务逻辑存在与安全判断相关的变化。';
     }
     if (raw.includes('[DATA_ACCESS_ANALYSIS]') || raw.includes('[DATA_ACCESS]')) {
-        if (raw.includes('未找到')) return '已检查相关数据访问代码，未发现满足当前条件的实现。';
-        return '已定位相关数据访问实现，并提取参数绑定与动态 SQL 等语法指标。';
+        return raw.includes('未找到') ? '未发现当前问题直接涉及的数据处理。'
+            : '已确认相关数据存在读取、写入或处理行为。';
     }
     if (raw.includes('[SECURITY_POLICY]')) {
-        if (raw.includes('未发现')) return '已检查当前入口的安全策略，未发现明确适用的认证或授权配置。';
-        return '已检查当前入口适用的认证、授权与安全配置。';
+        return raw.includes('未发现') ? '当前入口未显示出明确的认证或授权要求。'
+            : '已确认当前入口存在认证或授权要求。';
     }
     if (raw.includes('[VALUE_TRACE]')) {
-        if (raw.includes('没有找到')) return '已追踪相关变量，未发现满足条件的已解析数据流或参数映射。';
-        return '已追踪相关变量从输入到敏感操作的数据流与参数映射。';
+        return raw.includes('没有找到') ? '未发现该值直接流向敏感操作的事实。'
+            : '已确认相关值会流向敏感业务操作。';
     }
     if (raw.includes('[SEMANTIC_EVIDENCE]')) {
-        return '已查询 CHANGED 局部语义关系，补充数据流或安全防护证据。';
+        return '已确认当前变化与相关数据处理或安全防护存在关联。';
     }
     if (raw.includes('[UNVERIFIED_SYMBOL_CANDIDATES]')) {
-        return '已查询相关调用符号候选，尚未读取候选源码。';
+        return '已发现与当前问题可能相关的业务逻辑。';
     }
     if (raw.includes('[IMPACT_SOURCE]')) {
-        return '已按需读取选中的关联源码，仍需验证其与当前审计目标的调用关系。';
+        return '已补充当前问题所需的相关业务事实。';
     }
     if (raw.includes('[UNVERIFIED_CANDIDATE]')) {
-        return '已读取相关候选代码，仍需验证其与当前审计目标的确定性关系。';
+        return '已发现与当前问题可能相关的事实。';
     }
-    if (/\bCHUNK_ID=\d+/.test(raw)) return '已读取目标代码块，供当前安全判断使用。';
+    if (/\bCHUNK_ID=\d+/.test(raw)) return '已补充当前安全判断所需的事实。';
     if (raw.includes('不能作为漏洞证据') || raw.includes('证据引用')) {
-        return '已校验证据引用，当前提交内容尚未满足漏洞证据要求。';
+        return '当前事实不足以确认该安全风险。';
     }
-    return '已完成本次工具观察，并将结果用于下一步安全判断。';
+    return '已完成与当前安全问题有关的事实核查。';
 }
 
 bootstrap();

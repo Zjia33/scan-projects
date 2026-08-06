@@ -5,6 +5,8 @@ import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.Confidence;
+import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.orchestrator.AuditCancellationService;
@@ -24,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -78,10 +81,73 @@ class AgentRuntimeTest {
         ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
         verify(gateway, times(4)).decide(turns.capture());
         LlmGateway.AgentTurn finalTurn = turns.getAllValues().get(3);
+        assertThat(turns.getAllValues().get(0).budget()).satisfies(budget -> {
+            assertThat(budget.currentRound()).isEqualTo(1);
+            assertThat(budget.totalDecisionRounds()).isEqualTo(6);
+            assertThat(budget.toolCallsRemaining()).isEqualTo(5);
+            assertThat(budget.finalDecisionOnly()).isFalse();
+        });
+        assertThat(finalTurn.budget().toolCallsRemaining()).isEqualTo(2);
         assertThat(finalTurn.observations()).hasSize(3);
-        assertThat(finalTurn.observations().get(0).result()).contains("COMPACT_OBSERVATION");
-        assertThat(finalTurn.observations().get(2).result()).contains("TOOL_BUDGET")
-                .doesNotContain("CACHE_HIT");
+        assertThat(finalTurn.observations().get(0).tool()).isEqualTo("earlier_observations");
+        assertThat(finalTurn.observations().get(0).result())
+                .contains("EARLIER_OBSERVATIONS", "count=1", "search_code", "evidenceChunkIds=[1]")
+                .doesNotContain("search result");
+        assertThat(finalTurn.observations().get(2).result())
+                .doesNotContain("TOOL_BUDGET", "CACHE_HIT");
+        ArgumentCaptor<String> eventMessages = ArgumentCaptor.forClass(String.class);
+        verify(traceService, atLeastOnce()).event(eq(taskId), any(), eq(AgentType.AUTHORIZATION),
+                any(com.deepaudit.domain.AgentEventType.class), eventMessages.capture());
+        assertThat(eventMessages.getAllValues()).allSatisfy(message -> assertThat(message)
+                .doesNotContain("剩余工具", "TOOL_BUDGET", "第 1/", "第 2/", "第 3/"));
+    }
+
+    @Test
+    void rejectsToolAfterBudgetExhaustionAndStillAllowsFinalFinding() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        properties.setMaxIterationsPerAgent(3);
+        properties.setMaxToolCallsPerAgent(1);
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = chunk(taskId, 1L, "Controller#entry", "return repository.query(input);");
+        AgentTask task = new AgentTask(1L, AgentType.SQL_INJECTION,
+                VulnerabilityType.SQL_INJECTION, "检查动态查询");
+        when(traceService.start(eq(taskId), eq(AgentType.SQL_INJECTION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.SQL_INJECTION, 1L, "entry"));
+        when(semanticEvidenceService.query(taskId, 1L, 10, VulnerabilityType.SQL_INJECTION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(semanticEvidenceService.callSiteLines(eq(taskId), eq(1L), any()))
+                .thenReturn(Map.of());
+        LlmGateway.FindingProposal finding = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "动态 SQL 注入", "外部输入直接进入动态查询", "使用参数化查询",
+                1L, List.of(1L), 1, 1);
+        when(gateway.decide(any())).thenReturn(
+                tool("search_code", Map.of("query", "query"), "查找查询实现"),
+                tool("explore_call_graph", Map.of("direction", "CALLEES"), "继续扩展调用链"),
+                new LlmGateway.AgentDecision("FINDING", null, Map.of(),
+                        "现有证据足以确认动态 SQL 注入", finding));
+        when(toolService.execute(anyString(), anyMap(), eq(target), any(),
+                eq(VulnerabilityType.SQL_INJECTION), any(ToolSessionContext.class)))
+                .thenReturn(new ToolResult("已读取动态查询实现", Set.of(1L), Set.of()));
+
+        assertThat(runtime.investigate(taskId, task, null, List.of(target))).isPresent();
+
+        verify(toolService, times(1)).execute(anyString(), anyMap(), eq(target), any(),
+                eq(VulnerabilityType.SQL_INJECTION), any(ToolSessionContext.class));
+        ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
+        verify(gateway, times(3)).decide(turns.capture());
+        assertThat(turns.getAllValues().get(1).budget().finalDecisionOnly()).isTrue();
+        assertThat(turns.getAllValues().get(1).budget().toolCallsRemaining()).isZero();
+        assertThat(turns.getAllValues().get(2).observations()).anySatisfy(observation ->
+                assertThat(observation.result()).contains("FINAL_DECISION_REQUIRED"));
     }
 
     @Test
@@ -141,7 +207,7 @@ class AgentRuntimeTest {
         when(toolService.execute(anyString(), anyMap(), eq(target), any(),
                 eq(VulnerabilityType.AUTHORIZATION), any(ToolSessionContext.class)))
                 .thenReturn(new ToolResult(ToolResult.Status.ERROR, "CODEGRAPH_QUERY_FAILED",
-                        "查询失败", Set.of(), Set.of(), false, null));
+                        "查询失败", Set.of(), Set.of(), false));
 
         assertThatThrownBy(() -> runtime.investigate(taskId, task, null, List.of(target)))
                 .isInstanceOf(IncompleteInvestigationException.class)
@@ -156,6 +222,7 @@ class AgentRuntimeTest {
         CodeChunk chunk = new CodeChunk(taskId, "demo/Source.java", symbol, "/orders",
                 1, 5, content, "JAVA_METHOD", "String input", "", "load,find");
         chunk.setId(id);
+        chunk.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
         return chunk;
     }
 }

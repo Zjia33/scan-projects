@@ -40,7 +40,7 @@ public class ReconAgentService {
                     + (frameworks.isBlank() ? "未确定" : frameworks) + "；安全框架："
                     + (security.isBlank() ? "未确定" : security);
             traceService.event(taskId, run.getId(), AgentType.RECON, AgentEventType.OBSERVATION,
-                    "模型调用完成，耗时 " + elapsedMs + " ms；" + event);
+                    "模型调用完成；" + event);
             TimingDetailLog.info("阶段明细：taskId={}，阶段=项目架构理解，耗时={}ms，说明=模型归纳构建配置、技术栈与框架事实，源码文件数={}，框架文件数={}",
                     taskId, elapsedMs, summary.sourceFileCount(), summary.frameworkFiles().size());
             run.complete("Recon Agent 已完成项目框架与技术架构解析");

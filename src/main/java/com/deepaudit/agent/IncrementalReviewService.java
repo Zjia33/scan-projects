@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class IncrementalReviewService {
     private static final int MAX_CODE_CHARS = 4_000;
+    private static final int CHANGE_CONTEXT_LINES = 10;
     private static final Set<String> SECURITY_ANNOTATIONS = Set.of(
             "preauthorize", "postauthorize", "secured", "rolesallowed", "permitall", "denyall");
     private static final Set<String> SECURITY_CONFIGURATION = Set.of(
@@ -220,7 +221,8 @@ public class IncrementalReviewService {
 
     private String changedWindow(String content, int contentStartLine, String ranges, int limit) {
         String[] lines = safe(content).split("\\R", -1);
-        List<int[]> selected = new ArrayList<>();
+        List<ChangeWindow> selected = new ArrayList<>();
+        int contentEndLine = contentStartLine + lines.length - 1;
         if (ranges != null && !ranges.isBlank()) {
             for (String value : ranges.split(",")) {
                 String[] bounds = value.split(":", 2);
@@ -228,31 +230,112 @@ public class IncrementalReviewService {
                 try {
                     int changedStart = Integer.parseInt(bounds[0]);
                     int changedEnd = Integer.parseInt(bounds[1]);
-                    int from = Math.max(contentStartLine, changedStart - 10);
-                    int to = Math.min(contentStartLine + lines.length - 1, changedEnd + 10);
-                    if (from <= to) selected.add(new int[]{from, to});
+                    int coreStart = Math.max(contentStartLine, Math.min(changedStart, changedEnd));
+                    int coreEnd = Math.min(contentEndLine, Math.max(changedStart, changedEnd));
+                    if (coreStart > coreEnd) continue;
+                    selected.add(new ChangeWindow(
+                            Math.max(contentStartLine, coreStart - CHANGE_CONTEXT_LINES),
+                            Math.min(contentEndLine, coreEnd + CHANGE_CONTEXT_LINES),
+                            coreStart, coreEnd));
                 } catch (NumberFormatException ignored) {
                 }
             }
         }
         if (selected.isEmpty()) {
-            selected.add(new int[]{contentStartLine,
-                    Math.min(contentStartLine + lines.length - 1, contentStartLine + 40)});
+            return renderContiguousWindow(lines, contentStartLine, contentStartLine,
+                    Math.min(contentEndLine, contentStartLine + 40), limit);
         }
+
+        // 每个 Git 变更区间独立分配剩余预算，避免前面的长区间吞掉全部源码窗口。
         StringBuilder result = new StringBuilder();
-        int previousEnd = Integer.MIN_VALUE;
-        for (int[] window : selected) {
-            int from = Math.max(window[0], previousEnd + 1);
-            if (from > window[1]) continue;
-            if (!result.isEmpty()) result.append("\n...");
-            for (int line = from; line <= window[1]; line++) {
-                String numbered = "\n" + line + " | " + lines[line - contentStartLine];
-                if (result.length() + numbered.length() > limit) return result.toString().strip();
-                result.append(numbered);
-            }
-            previousEnd = window[1];
+        for (int index = 0; index < selected.size(); index++) {
+            String separator = result.isEmpty() ? "" : "\n...\n";
+            int available = limit - result.length() - separator.length();
+            int remainingWindows = selected.size() - index;
+            if (available <= 0) break;
+            int windowBudget = Math.max(1, available / remainingWindows);
+            String windowText = renderChangeWindow(lines, contentStartLine,
+                    selected.get(index), windowBudget);
+            if (windowText.isBlank()) continue;
+            result.append(separator).append(windowText);
         }
         return result.toString().strip();
+    }
+
+    private String renderChangeWindow(String[] lines, int contentStartLine,
+                                      ChangeWindow window, int limit) {
+        String header = "[CHANGE_RANGE " + window.coreStart() + ":" + window.coreEnd() + "]\n";
+        if (header.length() >= limit) return header.substring(0, limit).stripTrailing();
+
+        java.util.SortedSet<Integer> selectedLines = new java.util.TreeSet<>();
+        selectedLines.add(window.coreStart());
+        String rendered = renderSelectedLines(lines, contentStartLine, window, selectedLines, header);
+        if (rendered.length() > limit) {
+            return truncateSourceLine(header, window.coreStart(),
+                    lines[window.coreStart() - contentStartLine], limit);
+        }
+
+        for (int line : prioritizedLines(window)) {
+            if (selectedLines.contains(line)) continue;
+            selectedLines.add(line);
+            String candidate = renderSelectedLines(lines, contentStartLine, window, selectedLines, header);
+            if (candidate.length() <= limit) {
+                rendered = candidate;
+            } else {
+                selectedLines.remove(line);
+            }
+        }
+        return rendered.stripTrailing();
+    }
+
+    private List<Integer> prioritizedLines(ChangeWindow window) {
+        List<Integer> result = new ArrayList<>();
+        if (window.coreEnd() != window.coreStart()) result.add(window.coreEnd());
+        for (int line = window.coreStart() + 1; line < window.coreEnd(); line++) result.add(line);
+        for (int distance = 1; distance <= CHANGE_CONTEXT_LINES; distance++) {
+            int before = window.coreStart() - distance;
+            int after = window.coreEnd() + distance;
+            if (before >= window.from()) result.add(before);
+            if (after <= window.to()) result.add(after);
+        }
+        return result;
+    }
+
+    private String renderSelectedLines(String[] lines, int contentStartLine, ChangeWindow window,
+                                       java.util.SortedSet<Integer> selectedLines, String header) {
+        StringBuilder result = new StringBuilder(header);
+        int previous = Integer.MIN_VALUE;
+        for (int line : selectedLines) {
+            if (previous != Integer.MIN_VALUE && line > previous + 1) result.append("...\n");
+            result.append(line).append(" | ").append(lines[line - contentStartLine]).append('\n');
+            previous = line;
+        }
+        if (selectedLines.first() > window.from() || selectedLines.last() < window.to()) {
+            result.append("[WINDOW_TRUNCATED]\n");
+        }
+        return result.toString();
+    }
+
+    private String truncateSourceLine(String header, int line, String source, int limit) {
+        String prefix = header + line + " | ";
+        if (prefix.length() >= limit) return prefix.substring(0, limit).stripTrailing();
+        int sourceLimit = Math.max(0, limit - prefix.length());
+        return prefix + source.substring(0, Math.min(source.length(), sourceLimit));
+    }
+
+    private String renderContiguousWindow(String[] lines, int contentStartLine,
+                                          int from, int to, int limit) {
+        StringBuilder result = new StringBuilder();
+        for (int line = from; line <= to; line++) {
+            String numbered = (result.isEmpty() ? "" : "\n")
+                    + line + " | " + lines[line - contentStartLine];
+            if (result.length() + numbered.length() > limit) break;
+            result.append(numbered);
+        }
+        return result.toString().strip();
+    }
+
+    private record ChangeWindow(int from, int to, int coreStart, int coreEnd) {
     }
 
     private String fileChangeSummary(GitFileChange change) {

@@ -20,7 +20,7 @@ public class SemanticCallEdge {
     private int callSiteLine; // 调用表达式在调用方文件中的行号
     private String calledName; // 源码中出现的被调用名称
     private String expression; // 原始调用表达式或关系描述
-    private String edgeType; // 调用关系类型，如 Java 调用或 MyBatis 映射
+    private String edgeType; // 框架语义关系类型，如 Spring Event、Guard 或 MyBatis 映射
     private Confidence confidence; // 调用关系解析的置信度
     private String resolutionReason; // 建立或保留该调用边的解析依据
     private String argumentMapping; // 调用方实参与被调用方形参的映射关系
