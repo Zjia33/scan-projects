@@ -73,7 +73,7 @@
                         <ol class="pipeline-list">
                             <li><b>01</b><span><strong>Recon</strong><small>框架与技术架构解析</small></span></li>
                             <li><b>02</b><span><strong>Triage</strong><small>构建审计单元并完成轻量分诊</small></span></li>
-                            <li><b>03</b><span><strong>Investigate</strong><small>专业 Agent 跨文件验证</small></span></li>
+                            <li><b>03</b><span><strong>Investigate</strong><small>Agent 跨文件验证</small></span></li>
                             <li><b>04</b><span><strong>Critic</strong><small>寻找反证并确认可信度</small></span></li>
                             <li><b>05</b><span><strong>Report</strong><small>输出可复核的中文报告</small></span></li>
                         </ol>
@@ -111,14 +111,14 @@
                             <label class="field"><span>目标分支 Target <b>必填</b></span><select id="target-branch" required></select></label>
                             <label class="field"><span>目标提交 <b>必填</b><small id="target-commit-hint">按时间从新到旧</small></span><select id="target-commit" required></select></label>
                         </div>
-                        <div class="form-footer split"><p id="audit-message" class="form-message" role="status"></p><div><button id="refresh-commits-button" class="button secondary" type="button">刷新提交</button><button id="submit-button" class="button primary" type="submit">启动 Agent 审计 <span>→</span></button></div></div>
+                        <div class="form-footer split"><p id="audit-message" class="form-message" role="status"></p><div><button id="refresh-commits-button" class="button secondary" type="button">刷新提交</button><button id="submit-button" class="button primary" type="submit">启动审计 <span>→</span></button></div></div>
                     </form>
                 </div>
             </section>
 
             <section class="page-view" data-page="tasks" hidden aria-labelledby="tasks-title">
                 <div class="page-heading compact-heading">
-                    <div><span class="section-label">INVESTIGATION CENTER</span><h2 id="tasks-title">审计任务</h2><p>查看任务进度、Agent 调查链路、语义变化与确认漏洞。</p></div>
+                    <div><span class="section-label">INVESTIGATION CENTER</span><h2 id="tasks-title">审计任务</h2><p>查看任务进度、调查链路、语义变化与确认漏洞。</p></div>
                     <button id="refresh-button" class="button secondary" type="button">刷新任务</button>
                 </div>
                 <div class="workspace-layout">
