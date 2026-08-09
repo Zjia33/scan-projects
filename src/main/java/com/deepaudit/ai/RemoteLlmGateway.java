@@ -89,13 +89,37 @@ public class RemoteLlmGateway implements LlmGateway {
     @Override
     public AgentDecision decide(AgentTurn turn) {
         String systemPrompt = AgentPrompts.professionalAgent(turn.vulnerabilityType());
-        String userPrompt = json(Map.of("turn", turn, "outputSchema", Map.of(
-                "action", "TOOL|FINDING|REJECT", "tool", "string|null",
-                "arguments", "object，按工具定义提供结构化参数，limit放在此对象内",
-                "summary", "string", "finding",
-                "null|{type:输入中的漏洞枚举,severity:CRITICAL|HIGH|MEDIUM|LOW,"
-                        + "confidence:HIGH|MEDIUM|LOW,title,description,remediation,"
-                        + "primaryChunkId,evidenceChunkIds,vulnerabilityStartLine,vulnerabilityEndLine}")));
+        String userPrompt = json(Map.of(
+                "turn", turn,
+                "outputSchema", Map.<String, Object>of(
+                        "action", Map.of(
+                                "type", "string",
+                                "enum", List.of("TOOL", "FINDING", "REJECT")),
+                        "tool", Map.of(
+                                "type", "string|null",
+                                "requiredWhen", "action=TOOL"),
+                        "arguments", Map.of(
+                                "type", "object",
+                                "description", "TOOL 时按工具定义填写；其他 action 必须为空对象"),
+                        "summary", Map.of(
+                                "type", "string",
+                                "required", true),
+                        "finding", Map.<String, Object>of(
+                                "type", "object|null",
+                                "requiredWhen", "action=FINDING",
+                                "schema", Map.<String, Object>ofEntries(
+                                        Map.entry("type", turn.vulnerabilityType().name()),
+                                        Map.entry("severity",
+                                                List.of("CRITICAL", "HIGH", "MEDIUM", "LOW")),
+                                        Map.entry("confidence",
+                                                List.of("HIGH", "MEDIUM", "LOW")),
+                                        Map.entry("title", "非空简体中文 string"),
+                                        Map.entry("description", "非空简体中文 string"),
+                                        Map.entry("remediation", "非空简体中文 string"),
+                                        Map.entry("primaryChunkId", "真实 long"),
+                                        Map.entry("evidenceChunkIds", "真实 long 数组"),
+                                        Map.entry("vulnerabilityStartLine", "真实 int"),
+                                        Map.entry("vulnerabilityEndLine", "真实 int"))))));
         return call(turn.taskId(), "PROFESSIONAL:" + turn.agentType() + ":" + turn.iteration(),
                 systemPrompt, userPrompt, AgentDecision.class);
     }
