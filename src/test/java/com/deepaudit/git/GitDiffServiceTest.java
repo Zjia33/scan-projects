@@ -41,7 +41,7 @@ class GitDiffServiceTest {
                 if ("src/main/java/demo/App.java".equals(change.getNewPath())) {
                     assertThat(change.getChangeType()).isEqualTo("MODIFY");
                     assertThat(change.getNewRanges()).isNotBlank();
-                    assertThat(change.getContextText()).contains("+   void unsafe");
+                    assertThat(change.getContextText()).contains("  class App {", "+   void unsafe", "  }");
                 }
             });
             assertThat(result.changes()).filteredOn(change -> "pom.xml".equals(change.getNewPath()))

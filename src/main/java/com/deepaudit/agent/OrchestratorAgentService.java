@@ -217,7 +217,7 @@ public class OrchestratorAgentService {
         return List.copyOf(tasks.values());
     }
 
-    // 按批次读取真实 Base/Target 差异，并严格校验单元 ID、主代码块、决定和漏洞类型。
+    // 按批次读取真实统一变更上下文，并严格校验单元 ID、主代码块、决定和漏洞类型。
     private Map<String, LlmGateway.TriageDecision> triageIncrementalBatches(
             UUID taskId, AgentRun run, LlmGateway.ReconInsight recon,
             List<IncrementalReviewUnit> units, List<String> summaries,

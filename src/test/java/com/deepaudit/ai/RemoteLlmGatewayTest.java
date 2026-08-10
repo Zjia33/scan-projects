@@ -61,7 +61,7 @@ class RemoteLlmGatewayTest {
     }
 
     @Test
-    void sendsRealBaseTargetAndObjectiveFactsToIncrementalTriageWithoutReconOpinion() {
+    void sendsUnifiedChangeContextAndObjectiveFactsToIncrementalTriageWithoutReconOpinion() {
         AiProperties properties = properties(1);
         StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties, """
                 {"summary":"已检查真实差异","decisions":[{"unitId":"change-7","primaryChunkId":7,
@@ -71,16 +71,18 @@ class RemoteLlmGatewayTest {
                 "change-7", 7L, "Formatter.java", "Formatter#format", null, "JAVA_METHOD",
                 "MODIFIED", List.of(VulnerabilityType.values()), List.of(),
                 List.of("DIRECT_CHANGE"), "String value", "", "strip",
-                "return value.trim();", "return value.strip();", "METHOD_MODIFIED", "", "");
+                "", "[CHANGE_CONTEXT]\n- return value.trim();\n+ return value.strip();",
+                "METHOD_MODIFIED", "", "");
 
         gateway.triageIncremental(UUID.randomUUID(), recon(), List.of(unit));
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("真实 targetCodeExcerpt", "逐个比较 Base/Target", "不得仅凭文件名");
+                .contains("targetCodeExcerpt 只承载 [CHANGE_CONTEXT]", "不得要求额外的固定 Base/Target 方法截取",
+                        "不得仅凭文件名");
         assertThat(gateway.requests.get(0).get(1).get("content"))
-                .contains("\"reviewUnits\"", "\"baseCodeExcerpt\":\"return value.trim();\"",
-                        "\"targetCodeExcerpt\":\"return value.strip();\"", "\"DIRECT_CHANGE\"",
+                .contains("\"reviewUnits\"", "\"baseCodeExcerpt\":\"\"",
+                        "\"targetCodeExcerpt\":\"[CHANGE_CONTEXT]", "\"DIRECT_CHANGE\"",
                         "\"projectTechnology\"")
                 .doesNotContain("\"architectureSummary\"", "\"candidateTypes\"");
     }
@@ -149,7 +151,7 @@ class RemoteLlmGatewayTest {
                 1497L, List.of(1497L, 1549L), 82, 83);
         LlmGateway.CriticRequest request = new LlmGateway.CriticRequest(UUID.randomUUID(),
                 AgentType.VALIDATION_BYPASS, proposal, "跨方法证据", "调用链证据", recon(),
-                "MODIFIED", "CHANGED", "", List.of());
+                "MODIFIED", "CHANGED", "[CHANGE_CONTEXT]\n- old\n+ new", List.of());
 
         LlmGateway.CriticDecision decision = gateway.critique(request);
 
@@ -165,7 +167,9 @@ class RemoteLlmGatewayTest {
                         "INEFFECTIVE_SECURITY_CONTROL", "安全边界");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
-                        "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"");
+                        "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"",
+                        "\"changeContext\":\"[CHANGE_CONTEXT]")
+                .doesNotContain("\"baseCodeExcerpt\"");
     }
 
     @Test

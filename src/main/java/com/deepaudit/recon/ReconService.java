@@ -256,7 +256,7 @@ public class ReconService {
                 default -> ChunkChangeType.MODIFIED;
             });
             chunk.setAnalysisScope(AnalysisScope.CHANGED);
-            chunk.setBaseContent(truncateBase(change.getContextText()));
+            chunk.setBaseContent(change.getContextText());
         }
     }
 
@@ -308,7 +308,7 @@ public class ReconService {
                         ? ChunkChangeType.ADDED : "RENAME".equals(change.getChangeType())
                         || "COPY".equals(change.getChangeType())
                         ? ChunkChangeType.RENAMED : ChunkChangeType.MODIFIED);
-                fallback.setBaseContent(truncateBase(change.getContextText()));
+                fallback.setBaseContent(change.getContextText());
                 chunks.add(fallback);
             }
         }
@@ -364,11 +364,6 @@ public class ReconService {
     // 规范化 normalizePath 对应的输入。
     private String normalizePath(String value) {
         return value == null ? "" : value.replace('\\', '/');
-    }
-
-    private String truncateBase(String value) {
-        if (value == null) return "";
-        return value.substring(0, Math.min(value.length(), 4_000));
     }
 
     // 根据文件类型选择 Java 方法级解析或通用文本窗口切分。

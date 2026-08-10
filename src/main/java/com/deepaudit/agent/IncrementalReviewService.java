@@ -34,7 +34,6 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class IncrementalReviewService {
-    private static final int MAX_CODE_CHARS = 4_000;
     private static final int MAX_CONTEXT_CHARS = 8_000;
     private static final Set<String> SECURITY_ANNOTATIONS = Set.of(
             "preauthorize", "postauthorize", "secured", "rolesallowed", "permitall", "denyall");
@@ -79,12 +78,13 @@ public class IncrementalReviewService {
                     hints.getOrDefault(chunk.getId(), Set.of()), relatedChanges, relatedFlows);
             String deterministicEvidence = joinNonBlank(hintDescriptions.get(chunk.getId()),
                     flowSummary(relatedFlows));
+            String changeContext = AgentPromptSupport.changeContext(chunk);
             result.add(new IncrementalReviewUnit("change-" + chunk.getId(), chunk.getId(),
                     chunk.getFilePath(), chunk.getSymbolName(), chunk.getEndpoint(), chunk.getChunkType(),
                     chunk.getChangeType().name(), allowedTypes,
                     mandatoryTypes.stream().sorted().toList(), List.copyOf(facts), chunk.getParameters(),
-                    chunk.getAnnotations(), chunk.getCalledSymbols(), excerpt(chunk.getBaseContent()),
-                    excerpt(chunk.getContent()), changeSummary(relatedChanges), edgeSummary(relatedEdges),
+                    chunk.getAnnotations(), chunk.getCalledSymbols(), "", changeContext,
+                    changeSummary(relatedChanges), edgeSummary(relatedEdges),
                     truncate(deterministicEvidence, 4_000)));
         }
         return List.copyOf(result);
@@ -272,10 +272,6 @@ public class IncrementalReviewService {
 
     private boolean containsAny(String value, Set<String> markers) {
         return markers.stream().anyMatch(value::contains);
-    }
-
-    private String excerpt(String value) {
-        return excerpt(value, MAX_CODE_CHARS);
     }
 
     private String excerpt(String value, int limit) {

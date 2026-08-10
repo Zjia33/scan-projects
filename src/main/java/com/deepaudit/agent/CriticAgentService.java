@@ -61,6 +61,14 @@ public class CriticAgentService {
             }
             CodeChunk originalPrimary = Optional.ofNullable(chunksById.get(candidate.proposal().primaryChunkId()))
                     .orElseThrow(() -> new IllegalStateException("Critic 引用的主证据不存在"));
+            CodeChunk changeAnchor = candidate.proposal().evidenceChunkIds().stream()
+                    .map(chunksById::get).filter(java.util.Objects::nonNull)
+                    .filter(chunk -> chunk.getAnalysisScope()
+                            == com.deepaudit.domain.AnalysisScope.CHANGED)
+                    .findFirst().orElse(originalPrimary.getAnalysisScope()
+                            == com.deepaudit.domain.AnalysisScope.CHANGED ? originalPrimary : null);
+            String changeContext = changeAnchor == null
+                    ? "" : AgentPromptSupport.changeContext(changeAnchor);
             Set<Long> allowedLocationChunks = allowedLocationChunks(
                     candidate.proposal(), independentEvidence.evidenceChunkIds(), chunksById);
             Set<Long> relatedReviewIds = Optional.ofNullable(semanticEvidenceService.criticReviewContextIds(
@@ -89,7 +97,7 @@ public class CriticAgentService {
                     taskId, candidate.sourceAgent(), candidate.proposal(), criticEvidence,
                     independentEvidence.text() + reviewContext.text(), criticRecon,
                     originalPrimary.getChangeType().name(),
-                    originalPrimary.getAnalysisScope().name(), originalPrimary.getBaseContent(),
+                    originalPrimary.getAnalysisScope().name(), changeContext,
                     locationCandidates));
             long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
             TimingDetailLog.info("模型阶段结束：taskId={}，stage=CRITIC_MODEL，type={}，primaryChunk={}，elapsedMs={}，reviewElapsedMs={}",

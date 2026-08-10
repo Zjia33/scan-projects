@@ -19,7 +19,7 @@ public interface LlmGateway {
 
     ReconInsight inspectProject(UUID taskId, ReconSummary summary);
 
-    // 首次只基于真实 Base/Target 和轻量关系事实分流全部 CHANGED 审查位置。
+    // 首次只基于真实统一变更上下文和轻量关系事实分流全部 CHANGED 审查位置。
     TriagePlan triageIncremental(UUID taskId, ReconInsight recon,
                                  List<IncrementalReviewUnit> reviewUnits);
 
@@ -115,7 +115,7 @@ public interface LlmGateway {
 
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
                          String evidence, String independentSemanticEvidence, ReconInsight recon,
-                         String changeType, String analysisScope, String baseCodeExcerpt,
+                         String changeType, String analysisScope, String changeContext,
                          List<LocationCandidate> locationCandidates) {
         public CriticRequest {
             locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);

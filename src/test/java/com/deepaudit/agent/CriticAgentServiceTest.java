@@ -69,6 +69,7 @@ class CriticAgentServiceTest {
         ArgumentCaptor<LlmGateway.CriticRequest> request = ArgumentCaptor.forClass(
                 LlmGateway.CriticRequest.class);
         verify(gateway).critique(request.capture());
+        assertThat(request.getValue().changeContext()).contains("[CHANGE_CONTEXT]");
         assertThat(request.getValue().evidence())
                 .contains("[CRITIC_PRIMARY_CONTEXT]")
                 .contains("    110 | line110();")

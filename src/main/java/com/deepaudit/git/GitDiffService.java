@@ -29,6 +29,7 @@ import java.util.UUID;
 @Service
 public class GitDiffService {
     private static final int MAX_CONTEXT_CHARS = 12_000;
+    private static final int DIFF_CONTEXT_LINES = 5;
     private static final long MAX_DIFF_BLOB_BYTES = 2L * 1024L * 1024L;
 
     public ChangeSet compare(Repository repository, UUID taskId,
@@ -64,18 +65,19 @@ public class GitDiffService {
                 List<String> newRanges = new ArrayList<>();
                 String oldText = readText(repository, entry.getOldId());
                 String newText = readText(repository, entry.getNewId());
-                StringBuilder context = new StringBuilder();
-                for (Edit edit : header.toEditList()) {
+                List<Edit> edits = header.toEditList();
+                for (Edit edit : edits) {
                     additions += edit.getLengthB();
                     deletions += edit.getLengthA();
                     if (edit.getLengthA() > 0) oldRanges.add(range(edit.getBeginA(), edit.getEndA()));
                     if (edit.getLengthB() > 0) newRanges.add(range(edit.getBeginB(), edit.getEndB()));
-                    appendEditContext(context, edit, oldText, newText);
                 }
+                String context = UnifiedChangeContext.render(oldText, newText, edits, 1, 1,
+                        DIFF_CONTEXT_LINES, MAX_CONTEXT_CHARS, false);
                 AuditFileRole effectiveRole = newRole == AuditFileRole.IGNORE ? oldRole : newRole;
                 changes.add(new GitFileChange(taskId, oldPath, newPath, entry.getChangeType().name(),
                         additions, deletions, String.join(",", oldRanges), String.join(",", newRanges),
-                        truncate(context.toString()), effectiveRole.configurationOrDependency()));
+                        context, effectiveRole.configurationOrDependency()));
             }
         }
         int additions = changes.stream().mapToInt(GitFileChange::getAdditions).sum();
@@ -108,34 +110,12 @@ public class GitDiffService {
         }
     }
 
-    // 向当前结果添加 appendEditContext 对应的数据。
-    private void appendEditContext(StringBuilder target, Edit edit, String oldText, String newText) {
-        if (target.length() >= MAX_CONTEXT_CHARS) return;
-        String[] oldLines = oldText.split("\\R", -1);
-        String[] newLines = newText.split("\\R", -1);
-        target.append("@@ base ").append(edit.getBeginA() + 1).append("-").append(edit.getEndA())
-                .append(" target ").append(edit.getBeginB() + 1).append("-").append(edit.getEndB())
-                .append(" @@\n");
-        for (int index = edit.getBeginA(); index < edit.getEndA() && index < oldLines.length; index++) {
-            target.append("- ").append(oldLines[index]).append('\n');
-            if (target.length() >= MAX_CONTEXT_CHARS) return;
-        }
-        for (int index = edit.getBeginB(); index < edit.getEndB() && index < newLines.length; index++) {
-            target.append("+ ").append(newLines[index]).append('\n');
-            if (target.length() >= MAX_CONTEXT_CHARS) return;
-        }
-    }
-
     private String range(int zeroBasedBegin, int zeroBasedEndExclusive) {
         return (zeroBasedBegin + 1) + ":" + Math.max(zeroBasedBegin + 1, zeroBasedEndExclusive);
     }
 
     private String path(String value) {
         return value == null || DiffEntry.DEV_NULL.equals(value) ? null : value.replace('\\', '/');
-    }
-
-    private String truncate(String value) {
-        return value.substring(0, Math.min(value.length(), MAX_CONTEXT_CHARS));
     }
 
     private String shortSha(String sha) {

@@ -3,33 +3,35 @@ package com.deepaudit.agent;
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.git.UnifiedChangeContext;
 
 import java.util.List;
 import java.util.Set;
 
 final class AgentPromptSupport {
+    private static final int CHANGE_CONTEXT_LINES = 5;
+    private static final int MAX_CHANGE_CONTEXT_CHARS = 12_000;
+
     private AgentPromptSupport() {
     }
 
     static LlmGateway.Target target(CodeChunk chunk, Set<VulnerabilityType> hints) {
-        String content = chunk.getContent() == null ? "" : chunk.getContent();
-        String baseContent = chunk.getBaseContent() == null ? "" : chunk.getBaseContent();
         return new LlmGateway.Target(chunk.getId(), chunk.getFilePath(), chunk.getSymbolName(),
                 chunk.getEndpoint(), chunk.getChunkType(), chunk.getParameters(), chunk.getAnnotations(),
-                chunk.getCalledSymbols(), numberedExcerpt(content, chunk.getStartLine(), 4_000),
+                chunk.getCalledSymbols(), changeContext(chunk),
                 chunk.getChangeType().name(), chunk.getAnalysisScope().name(),
-                baseContent.substring(0, Math.min(2_000, baseContent.length())),
+                "",
                 hints == null ? List.of() : List.copyOf(hints), chunk.getStartLine(), chunk.getEndLine());
     }
 
-    private static String numberedExcerpt(String content, int startLine, int maxChars) {
-        String[] lines = content.split("\\R", -1);
-        StringBuilder excerpt = new StringBuilder();
-        for (int index = 0; index < lines.length; index++) {
-            String numbered = (startLine + index) + " | " + lines[index] + "\n";
-            if (excerpt.length() + numbered.length() > maxChars) break;
-            excerpt.append(numbered);
-        }
-        return excerpt.toString().stripTrailing();
+    static String changeContext(CodeChunk chunk) {
+        String base = chunk.getBaseContent() == null ? "" : chunk.getBaseContent();
+        String target = chunk.getContent() == null ? "" : chunk.getContent();
+        String diff = base.stripLeading().startsWith("@@ base ")
+                ? base.strip()
+                : UnifiedChangeContext.render(base, target, null, chunk.getStartLine(),
+                CHANGE_CONTEXT_LINES, MAX_CHANGE_CONTEXT_CHARS, true);
+        if (diff.isBlank()) return "[CHANGE_CONTEXT]\nNo textual change in this code chunk.";
+        return "[CHANGE_CONTEXT]\n<UNTRUSTED_DIFF>\n" + diff + "\n</UNTRUSTED_DIFF>";
     }
 }

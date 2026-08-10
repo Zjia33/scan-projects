@@ -1,5 +1,6 @@
 package com.deepaudit.agent;
 
+import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
@@ -15,12 +16,47 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class IncrementalReviewServiceTest {
+
+    @Test
+    void sendsOnlyUnifiedChangeContextCenteredOnChangedLines() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
+        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
+        String base = IntStream.rangeClosed(1, 60).mapToObj(line -> "line-" + line)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        String target = base.replace("line-45", "checkAuthorization();");
+        CodeChunk changed = chunk(taskId, 4L, "OrderService#load", target);
+        changed.setStartLine(100);
+        changed.setEndLine(159);
+        changed.setBaseContent(base);
+        changed.setAnalysisScope(AnalysisScope.CHANGED);
+
+        IncrementalReviewUnit unit = service.build(
+                taskId, List.of(changed), Map.of(), Map.of()).get(0);
+
+        assertThat(unit.baseCodeExcerpt()).isEmpty();
+        assertThat(unit.targetCodeExcerpt())
+                .contains("[CHANGE_CONTEXT]", "- B45 | line-45",
+                        "+ T144 | checkAuthorization();", "T139 | line-40", "T149 | line-50")
+                .doesNotContain("line-1\n", "line-20\n");
+        LlmGateway.Target professionalTarget = AgentPromptSupport.target(changed, java.util.Set.of());
+        assertThat(professionalTarget.baseCodeExcerpt()).isEmpty();
+        assertThat(professionalTarget.codeExcerpt())
+                .contains("[CHANGE_CONTEXT]", "+ T144 | checkAuthorization();")
+                .doesNotContain("line-1\n");
+    }
 
     @Test
     void buildsOnlyChangedUnitsAndAddsImpactedCodeOnDemand() {
@@ -54,8 +90,10 @@ class IncrementalReviewServiceTest {
                 java.util.Set.of(VulnerabilityType.values()));
             assertThat(unit.mandatoryTypes()).isEmpty();
         });
-        assertThat(units.get(0).baseCodeExcerpt()).contains("cache.get");
-        assertThat(units.get(0).targetCodeExcerpt()).contains("repository.findById");
+        assertThat(units.get(0).baseCodeExcerpt()).isEmpty();
+        assertThat(units.get(0).targetCodeExcerpt())
+                .contains("[CHANGE_CONTEXT]", "- B1 | return cache.get(id);",
+                        "+ T1 | return repository.findById(id);");
         assertThat(units.get(0).relatedContext()).doesNotContain("return service.detail(id)");
 
         IncrementalReviewUnit enriched = service.enrichImpact(

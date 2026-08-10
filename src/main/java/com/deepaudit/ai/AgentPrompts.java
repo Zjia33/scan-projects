@@ -28,9 +28,11 @@ final class AgentPrompts {
             + "也不得推测未出现的组件。只返回 architectureSummary。";
 
     private static final String INCREMENTAL_TRIAGE = "你是增量代码安全审查分流 Agent。reviewUnits 只包含全部 "
-            + "CHANGED 代码位置，每个单元都包含真实 targetCodeExcerpt，并在存在基线时包含 "
-            + "baseCodeExcerpt。首次分流不提供 IMPACTED 代码正文；facts、changeSummary 和 relatedContext 是轻量的客观变更与调用事实，"
-            + "不是漏洞结论。必须逐个比较 Base/Target，判断该变更是否需要针对某种具体漏洞深入调查，并为每个 reviewUnit "
+            + "CHANGED 代码位置。每个单元的 targetCodeExcerpt 只承载 [CHANGE_CONTEXT] 统一差异："
+            + "- 表示 Base 中被删除或替换的代码，+ 表示 Target 中新增或替换后的代码，无标记行是变更前后上下文；"
+            + "baseCodeExcerpt 为空，不得要求额外的固定 Base/Target 方法截取。首次分流不提供 IMPACTED 代码正文；"
+            + "facts、changeSummary 和 relatedContext 是轻量的客观变更与调用事实，不是漏洞结论。"
+            + "必须逐个分析真实 [CHANGE_CONTEXT]，判断该变更是否需要针对某种具体漏洞深入调查，并为每个 reviewUnit "
             + "恰好返回一个决定。disposition 只能是 INVESTIGATE、NEED_CONTEXT、SKIP。只有实际代码差异或影响路径支持"
             + "具体安全假设时才选择 INVESTIGATE；vulnerabilityTypes 可以从 allowedTypes 中选择，不得仅凭文件名、方法名、"
             + "框架、存在 Repository 调用或普通 return 推断漏洞。关键 IMPACTED 调用方、被调用方、配置或 Guard 代码"
@@ -42,7 +44,7 @@ final class AgentPrompts {
             + "明确分类的位置进行唯一一次补充上下文复判。输入只包含一个 reviewUnit，并已完成受控上下文补充。"
             + "必须原样返回该 reviewUnit 的 unitId 和 primaryChunkId，且恰好返回一个决定。"
             + "disposition 只能是 INVESTIGATE 或 SKIP，不得再次返回 NEED_CONTEXT。"
-            + "relatedContext 已补入对应 IMPACTED 代码和受控上下文。只有真实 Base/Target 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
+            + "relatedContext 已补入对应 IMPACTED 代码和受控上下文。只有真实 [CHANGE_CONTEXT] 差异、relatedContext 或客观影响事实支持具体安全假设时才选择 INVESTIGATE，"
             + "并从 allowedTypes 中返回至少一个具体漏洞类型；否则必须选择 SKIP 且 vulnerabilityTypes 返回空数组。"
             + "不得为了避免 SKIP 而猜测漏洞，不得创造代码、位置、事实、类型或调用关系。";
 
@@ -90,7 +92,9 @@ final class AgentPrompts {
                     + "不能因为它是当前调查目标就固定作为 primaryChunkId。"
                     + "FINDING 必须根据带行号源码填写 vulnerabilityStartLine 和 vulnerabilityEndLine，"
                     + "只标记实际发生危险操作或缺少关键校验的位置，不能填写整个方法范围。"
-                    + "target.changeType、analysisScope 和 baseCodeExcerpt 描述提交差异；"
+                    + "target.changeType、analysisScope 和 target.codeExcerpt 中的 [CHANGE_CONTEXT] 描述提交差异；"
+                    + "[CHANGE_CONTEXT] 中 - 是 Base 旧代码，+ 是 Target 新代码，无标记行是变更点上下文；"
+                    + "带 B/T 标签时，B 表示旧代码行，T 表示可用于漏洞定位的 Target 实际行号；"
                     + "增量任务必须说明风险与直接变更或语义影响面的关系，"
                     + "禁止把无关的历史漏洞报告为本次新增问题。"
                     + "严格使用规定的 JSON 输出契约，所有字段名必须使用双引号。";
@@ -124,7 +128,8 @@ final class AgentPrompts {
 
     private static final String CRITIC_AGENT =
             "你是独立 Critic Agent，只依据输入中的已验证证据、独立语义证据、确定性技术事实、"
-                    + "审查上下文和 locationCandidates 复核专业 Agent 的漏洞假设。"
+                    + "审查上下文、changeContext 和 locationCandidates 复核专业 Agent 的漏洞假设。"
+                    + "changeContext 是 CHANGED 因果锚点的统一差异，其中 - 是 Base 旧代码，+ 是 Target 新代码。"
                     + "需要核对上游校验、安全配置、对象归属、租户约束、参数化查询、编码净化、"
                     + "服务端重新计算和提前返回等可能的反证，不得因为专业 Agent 已返回 FINDING 或高置信度就直接确认。"
 
