@@ -189,30 +189,9 @@ mvn spring-boot:run
 http://localhost:8080/
 ```
 
-应用第一次连接空数据库时，Flyway 会依次执行：
+应用第一次连接空数据库时，Flyway 会执行单个 `V1__initial_schema.sql`，一次性创建当前版本需要的项目、任务、代码块、漏洞、Agent 轨迹、Git 差异和语义分析表，以及对应索引、外键和检查约束。该初始化脚本只面向全新数据库，不兼容旧版数据库的原地升级。
 
-- `V1__initial_schema.sql`：核心项目、任务、代码块和漏洞表
-- `V2__add_query_indexes.sql`：查询索引
-- `V3__add_agent_audit_schema.sql`：Agent 运行、事件、假设、AI 摘要及代码语义元数据
-- `V4__add_semantic_analysis_schema.sql`：全局符号、跨文件调用边和安全数据流路径
-- `V5__merge_authorization_vulnerability_types.sql`：统一越权漏洞类型
-- `V6__add_git_incremental_audit.sql`：Git 来源、提交范围、结构化 Diff 和增量 Chunk 元数据
-- `V7__add_embedding_cache.sql`：按模型与输入哈希复用 Embedding
-- `V8__add_finding_fingerprint.sql`：稳定漏洞指纹
-- `V9__add_pgvector_recall.sql`：启用 pgvector、增加定维向量列并创建 HNSW 余弦索引
-- `V10__add_project_management.sql`：增加项目描述、更新时间和归档状态
-- `V11__add_semantic_method_changes.sql`：持久化 Base/Target 方法新增、修改、删除、签名及 Guard 变化
-- `V12__remove_rag_storage.sql`：删除历史 Embedding 缓存和代码块向量文本
-- `V13__remove_pgvector_recall.sql`：删除历史 pgvector 列和 HNSW 索引
-- `V14__enforce_unique_finding_fingerprint.sql`：强制任务内漏洞指纹唯一
-- `V15__enforce_incremental_only_defaults.sql`：统一增量扫描范围和结果默认值
-- `V16__drop_legacy_scan_mode.sql`：删除已停用的扫描模式字段
-- `V17__remove_retired_audit_values.sql`：删除退役漏洞数据并约束当前枚举值
-- `V18__separate_sensitive_information_audit.sql`：拆分敏感信息泄露类型和独立专业 Agent
-- `V19__rename_semantic_flow_coverage.sql`：把语义流覆盖状态统一为当前局部语义命名
-- `V20__remove_legacy_project_source.sql`：删除已停用的上传文件名和项目来源类型字段
-
-`V7` 和 `V9` 是不可改写的历史迁移，新版本会继续保留文件用于已有数据库校验；当前运行时代码不再使用 RAG、Embedding 或向量召回。
+当前数据库结构不使用 RAG、Embedding、向量召回或 pgvector。部署时无需安装 PostgreSQL `vector` 扩展。
 
 ## Agent 只读工具
 

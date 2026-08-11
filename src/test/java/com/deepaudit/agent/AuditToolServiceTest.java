@@ -28,6 +28,23 @@ class AuditToolServiceTest {
     }
 
     @Test
+    void catalogPromptExplainsToolArgumentsDefaultsAndEvidenceSemantics() {
+        String prompt = AgentToolCatalog.prompt();
+
+        assertThat(prompt)
+                .contains("chunkId(long，必填)")
+                .contains("candidateChunkId(long，必填")
+                .contains("CURRENT_FILE|RELATED|PROJECT")
+                .contains("CALLERS|CALLEES|BOTH")
+                .contains("depth(int，1..5，默认3)")
+                .contains("contextLines(int，0..10，默认2)")
+                .contains("truncated=true", "nextCursor")
+                .contains("UNVERIFIED_CANDIDATE 不能直接作为锚点或 FINDING 证据")
+                .contains("VERIFIED_EVIDENCE", "SEMANTIC_EVIDENCE", "CODEGRAPH_RELATIONS")
+                .contains("没有结果只表示当前分析未解析到满足条件的数据流");
+    }
+
+    @Test
     void verifyRelationPromotesDiscoveredCandidateToEvidence() {
         SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
         AuditToolService tools = tools(semantic);

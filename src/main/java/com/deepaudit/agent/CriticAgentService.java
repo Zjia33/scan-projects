@@ -248,7 +248,8 @@ public class CriticAgentService {
                             original.description(), decision.reason(), decision.rootCauseKind(), previous,
                             failureReason, candidates));
             Optional<FindingLocationResolver.ResolvedPrimary> resolved = FindingLocationResolver.resolveCandidate(
-                    repaired == null ? null : repaired.locationCandidateId(), candidates);
+                    repaired == null ? null : repaired.locationCandidateId(), candidates,
+                    original, decision, chunks, allowed);
             if (resolved.isEmpty()) return Correction.unresolved(
                     failureReason + "；定位修复未选择合法候选 ID");
             if (!hasIncrementalAnchor(allowed, chunks)) {

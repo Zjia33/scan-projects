@@ -210,6 +210,92 @@ class FindingLocationResolverTest {
                 });
     }
 
+    @Test
+    void excludesImportsAndCommentsFromFileLevelLocationCandidates() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "SensitiveDisclosureService.java",
+                "SensitiveDisclosureService.java#changed-lines-1-14", null, 1, 14, """
+                package com.example.bank.service;
+
+                import java.io.PrintWriter;
+
+                public class SensitiveDisclosureService {
+                    /*
+                    LOGGER.info("Withdrawal OTP issued: otp={}", otp);
+                    */
+                    // LOGGER.info("Withdrawal OTP issued: otp={}", otp);
+                    public void issueWithdrawalOtp() {
+                        String otp = generateOtp();
+                        LOGGER.info("Withdrawal OTP issued: otp={}", otp);
+                    }
+                }
+                """, "JAVA_CHANGE", "", "", "");
+        chunk.setId(41L);
+
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                Map.of(41L, chunk), Set.of(41L));
+
+        assertThat(candidates)
+                .noneMatch(candidate -> candidate.source().startsWith("package "))
+                .noneMatch(candidate -> candidate.source().startsWith("import "))
+                .noneMatch(candidate -> candidate.source().startsWith("//"))
+                .anySatisfy(candidate -> {
+                    assertThat(candidate.startLine()).isEqualTo(12);
+                    assertThat(candidate.source()).contains("LOGGER.info");
+                    assertThat(candidate.roles()).contains("DATA_OUTPUT");
+                });
+        assertThat(FindingLocationResolver.infer(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE,
+                "LOGGER.info 明文记录 Withdrawal OTP", chunk))
+                .isEqualTo(new FindingLocationResolver.Location(12, 12));
+
+        LlmGateway.FindingProposal staleProposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                "OTP 明文写入日志", "LOGGER.info 记录完整 OTP", "日志中移除 OTP",
+                41L, List.of(41L), 3, 3);
+        assertThat(FindingLocationResolver.formatEvidence(staleProposal, Map.of(41L, chunk)))
+                .contains("[漏洞位置] SensitiveDisclosureService.java:12")
+                .contains(">>>    12 |         LOGGER.info")
+                .doesNotContain(">>>     3 | import java.io.PrintWriter;");
+    }
+
+    @Test
+    void rejectsStaleImportCandidateAndRelocatesToVerifiedLoggingSink() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "SensitiveDisclosureService.java",
+                "SensitiveDisclosureService.java#changed-lines-1-6", null, 1, 6, """
+                package com.example.bank.service;
+
+                import java.io.PrintWriter;
+
+                String otp = generateOtp();
+                LOGGER.info("Withdrawal OTP issued: otp={}", otp);
+                """, "JAVA_CHANGE", "", "", "");
+        chunk.setId(42L);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Severity.HIGH, Confidence.HIGH,
+                "OTP 明文写入日志", "LOGGER.info 记录完整 OTP", "日志中移除 OTP",
+                42L, List.of(42L), 3, 3);
+        List<LlmGateway.LocationCandidate> candidates = List.of(
+                new LlmGateway.LocationCandidate("42:3-3", 42L, chunk.getFilePath(), chunk.getSymbolName(),
+                        3, 3, "import java.io.PrintWriter;", List.of("DATA_OUTPUT"), "CHANGED"),
+                new LlmGateway.LocationCandidate("42:6-6", 42L, chunk.getFilePath(), chunk.getSymbolName(),
+                        6, 6, "LOGGER.info(\"Withdrawal OTP issued: otp={}\", otp);",
+                        List.of("DATA_OUTPUT"), "CHANGED"));
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "日志输出泄露 OTP", com.deepaudit.domain.FindingDeltaStatus.NEW,
+                42L, 3, 3, "UNSAFE_DATA_EXPOSURE", "DATA_OUTPUT", "42:3-3");
+
+        FindingLocationResolver.LocationResolution resolution =
+                FindingLocationResolver.resolveCriticLocation(
+                        proposal, decision, Map.of(42L, chunk), Set.of(42L), candidates);
+
+        assertThat(resolution.status()).isEqualTo(FindingLocationResolver.LocationStatus.NORMALIZED);
+        assertThat(resolution.resolved()).get().satisfies(location -> {
+            assertThat(location.chunkId()).isEqualTo(42L);
+            assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(6, 6));
+            assertThat(location.locationRole()).isEqualTo("DATA_OUTPUT");
+        });
+    }
+
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {
         return new LlmGateway.FindingProposal(type, Severity.HIGH, Confidence.HIGH,
                 "动态 SQL 注入", "外部参数进入 executeQuery", "使用参数化查询",

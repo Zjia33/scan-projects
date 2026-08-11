@@ -21,10 +21,6 @@ spring:
     enabled: true
     locations:
       - classpath:db/migration/common
-      - classpath:db/migration/postgresql
-    placeholders:
-      # 仅供不可改写的历史 V9 迁移校验；V13 会删除对应向量列。
-      embeddingDimensions: 1024
 
 deepaudit:
   storage-root: ${DEEPAUDIT_STORAGE_ROOT:}

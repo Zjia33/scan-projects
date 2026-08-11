@@ -43,7 +43,8 @@ class DeepAuditApplicationTests {
         assertThat(sqlSessionFactory).isNotNull();
         assertThat(applicationContext.containsBean("entityManagerFactory")).isFalse();
         assertThat(applicationContext.containsBean("projectMapper")).isTrue();
-        assertThat(flyway.info().applied()).hasSizeGreaterThanOrEqualTo(3);
+        assertThat(flyway.info().applied()).hasSize(1);
+        assertThat(flyway.info().applied()[0].getVersion().getVersion()).isEqualTo("1");
     }
 
     @Test

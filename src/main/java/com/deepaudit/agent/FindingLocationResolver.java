@@ -37,6 +37,7 @@ public final class FindingLocationResolver {
 
     public static Location resolve(LlmGateway.FindingProposal proposal, CodeChunk chunk) {
         return validateExplicit(proposal.vulnerabilityStartLine(), proposal.vulnerabilityEndLine(), chunk)
+                .filter(location -> hasLocationCode(chunk, location))
                 .orElseGet(() -> infer(proposal.type(), proposal.title() + " " + proposal.description(), chunk));
     }
 
@@ -71,16 +72,16 @@ public final class FindingLocationResolver {
             LlmGateway.FindingProposal proposal, LlmGateway.CriticDecision decision,
             Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds,
             List<LlmGateway.LocationCandidate> candidates) {
+        RootCause rootCause = rootCause(proposal, decision);
         if (hasText(decision.locationCandidateId())) {
             Optional<ResolvedPrimary> selected = resolveCandidate(
-                    decision.locationCandidateId(), candidates);
+                    decision.locationCandidateId(), candidates, proposal, decision, chunks, allowedChunkIds);
             if (selected.isPresent()) {
                 return new LocationResolution(LocationStatus.EXACT, selected,
-                        "Critic 选择了服务器生成的真实源码位置候选");
+                        "Critic 选择的位置候选已通过源码类型、证据范围和根因角色校验");
             }
         }
 
-        RootCause rootCause = rootCause(proposal, decision);
         if (rootCause == RootCause.INEFFECTIVE_SECURITY_CONTROL) {
             Optional<ResolvedPrimary> boundary = ineffectiveSecurityBoundary(chunks, allowedChunkIds);
             return boundary.isPresent()
@@ -106,7 +107,7 @@ public final class FindingLocationResolver {
         }
 
         Optional<ResolvedPrimary> normalized = bestDeterministicCandidate(
-                proposal, decision, rootCause, candidates);
+                proposal, decision, rootCause, candidates, chunks, allowedChunkIds);
         if (normalized.isPresent()) {
             return new LocationResolution(LocationStatus.NORMALIZED, normalized,
                     "Critic 原始位置不精确，已根据根因和真实源码候选确定性重定位");
@@ -122,6 +123,7 @@ public final class FindingLocationResolver {
             CodeChunk chunk = chunks.get(chunkId);
             if (chunk == null) continue;
             String[] lines = contentLines(chunk);
+            String[] codeLines = codeLines(lines);
             Map<String, SourceRange> ranges = new LinkedHashMap<>();
             if (isJavaChunk(chunk)) {
                 for (SourceRange range : javaSourceRanges(chunk.getContent(), lines.length)) {
@@ -129,14 +131,14 @@ public final class FindingLocationResolver {
                 }
             }
             for (int index = 0; index < lines.length; index++) {
-                if (!roles(lines[index]).isEmpty()) {
+                if (!roles(codeLines[index]).isEmpty()) {
                     int relative = index + 1;
                     ranges.putIfAbsent(relative + ":" + relative, new SourceRange(relative, relative));
                 }
             }
             if (ranges.isEmpty()) {
                 for (int index = 0; index < lines.length; index++) {
-                    if (isExecutableCandidate(lines[index])) {
+                    if (isExecutableCandidate(codeLines[index])) {
                         int relative = index + 1;
                         ranges.put(relative + ":" + relative, new SourceRange(relative, relative));
                     }
@@ -148,7 +150,8 @@ public final class FindingLocationResolver {
                 int start = chunkStart + relative.start() - 1;
                 int end = chunkStart + relative.end() - 1;
                 String source = source(lines, relative.start(), relative.end());
-                List<String> detectedRoles = roles(source).stream().map(Enum::name).sorted().toList();
+                String code = source(codeLines, relative.start(), relative.end());
+                List<String> detectedRoles = roles(code).stream().map(Enum::name).sorted().toList();
                 String candidateId = chunk.getId() + ":" + start + "-" + end;
                 result.add(new LlmGateway.LocationCandidate(candidateId, chunk.getId(), chunk.getFilePath(),
                         chunk.getSymbolName(), start, end, source, detectedRoles,
@@ -158,14 +161,18 @@ public final class FindingLocationResolver {
         return List.copyOf(result);
     }
 
-    // 将位置修复模型返回的候选 ID 映射回服务器掌握的真实文件和行号。
+    // 候选 ID 只是索引，仍需根据当前源码、证据范围和漏洞根因重新校验，不能直接信任候选携带的角色。
     public static Optional<ResolvedPrimary> resolveCandidate(
-            String candidateId, List<LlmGateway.LocationCandidate> candidates) {
+            String candidateId, List<LlmGateway.LocationCandidate> candidates,
+            LlmGateway.FindingProposal proposal, LlmGateway.CriticDecision decision,
+            Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         if (!hasText(candidateId)) return Optional.empty();
+        LocationRole declaredRole = parseRole(decision.locationRole()).orElse(null);
         return candidates.stream().filter(candidate -> candidate.candidateId().equals(candidateId))
-                .findFirst().map(candidate -> new ResolvedPrimary(candidate.chunkId(),
-                        new Location(candidate.startLine(), candidate.endLine()),
-                        candidate.roles().isEmpty() ? "UNCLASSIFIED" : candidate.roles().get(0)));
+                .findFirst().flatMap(candidate -> validateCandidate(
+                        candidate, rootCause(proposal, decision), declaredRole, true,
+                        chunks, allowedChunkIds))
+                .map(ValidatedLocation::resolved);
     }
 
     // 对“安全控制未启用/不生效”选择真正失效的注解或安全配置行，拒绝把下游数据读取当作根因。
@@ -176,9 +183,10 @@ public final class FindingLocationResolver {
             CodeChunk chunk = chunks.get(chunkId);
             if (chunk == null) continue;
             String[] lines = contentLines(chunk);
+            String[] codeLines = codeLines(lines);
             int chunkStart = Math.max(1, chunk.getStartLine());
             for (int index = 0; index < lines.length; index++) {
-                Set<LocationRole> lineRoles = roles(lines[index]);
+                Set<LocationRole> lineRoles = roles(codeLines[index]);
                 LocationRole role = lineRoles.contains(LocationRole.SECURITY_BOUNDARY)
                         ? LocationRole.SECURITY_BOUNDARY
                         : lineRoles.contains(LocationRole.SECURITY_CONFIGURATION)
@@ -207,29 +215,60 @@ public final class FindingLocationResolver {
 
     private static Optional<ResolvedPrimary> bestDeterministicCandidate(
             LlmGateway.FindingProposal proposal, LlmGateway.CriticDecision decision,
-            RootCause rootCause, List<LlmGateway.LocationCandidate> candidates) {
+            RootCause rootCause, List<LlmGateway.LocationCandidate> candidates,
+            Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         LocationRole declared = parseRole(decision.locationRole()).orElse(null);
         String claim = String.join(" ", safe(proposal.title()), safe(proposal.description()),
                 safe(decision.reason())).toLowerCase(Locale.ROOT);
-        List<RankedLocation> ranked = candidates.stream().map(candidate -> {
-            Set<LocationRole> candidateRoles = new LinkedHashSet<>();
-            for (String role : candidate.roles()) parseRole(role).ifPresent(candidateRoles::add);
-            int score = candidateRoles.stream().anyMatch(allowedRoles(rootCause)::contains) ? 100 : 0;
-            if (declared != null && candidateRoles.contains(declared)) score += 25;
-            if (decision.primaryChunkId() != null && decision.primaryChunkId() == candidate.chunkId()) score += 8;
-            for (String token : claim.split("[^\\p{L}\\p{N}_$]+")) {
-                if (token.length() >= 4 && candidate.source().toLowerCase(Locale.ROOT).contains(token)) score++;
-            }
-            return new RankedLocation(candidate, score);
-        }).sorted(Comparator.comparingInt(RankedLocation::score).reversed()).toList();
+        List<RankedLocation> ranked = candidates.stream()
+                .map(candidate -> validateCandidate(
+                        candidate, rootCause, declared, false, chunks, allowedChunkIds))
+                .flatMap(Optional::stream)
+                .map(validated -> {
+                    int score = 100;
+                    if (declared != null && validated.roles().contains(declared)) score += 25;
+                    if (decision.primaryChunkId() != null
+                            && decision.primaryChunkId() == validated.candidate().chunkId()) score += 8;
+                    for (String token : claim.split("[^\\p{L}\\p{N}_$]+")) {
+                        if (token.length() >= 4 && validated.candidate().source()
+                                .toLowerCase(Locale.ROOT).contains(token)) score++;
+                    }
+                    return new RankedLocation(validated, score);
+                }).sorted(Comparator.comparingInt(RankedLocation::score).reversed()).toList();
         if (ranked.isEmpty() || ranked.get(0).score() < 100) return Optional.empty();
         if (ranked.size() > 1 && ranked.get(0).score() == ranked.get(1).score()) return Optional.empty();
-        LlmGateway.LocationCandidate best = ranked.get(0).candidate();
-        String role = best.roles().stream().filter(value -> parseRole(value)
-                        .map(allowedRoles(rootCause)::contains).orElse(false))
-                .findFirst().orElse(best.roles().isEmpty() ? "UNCLASSIFIED" : best.roles().get(0));
-        return Optional.of(new ResolvedPrimary(best.chunkId(),
-                new Location(best.startLine(), best.endLine()), role));
+        return Optional.of(ranked.get(0).validated().resolved());
+    }
+
+    private static Optional<ValidatedLocation> validateCandidate(
+            LlmGateway.LocationCandidate candidate, RootCause rootCause, LocationRole declaredRole,
+            boolean allowDeclaredRoleFallback,
+            Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
+        if (candidate == null || !allowedChunkIds.contains(candidate.chunkId())) return Optional.empty();
+        CodeChunk chunk = chunks.get(candidate.chunkId());
+        if (chunk == null) return Optional.empty();
+        Optional<Location> location = validateExplicit(candidate.startLine(), candidate.endLine(), chunk);
+        if (location.isEmpty()) return Optional.empty();
+        if (!hasLocationCode(chunk, location.get()) || !matchesCurrentSource(candidate, chunk)) {
+            return Optional.empty();
+        }
+        Set<LocationRole> actualRoles = roles(chunk, location.get());
+        LocationRole acceptedRole = actualRoles.stream()
+                .filter(allowedRoles(rootCause)::contains).findFirst().orElse(null);
+        if (acceptedRole == null && allowDeclaredRoleFallback && declaredRole != null
+                && allowedRoles(rootCause).contains(declaredRole)) {
+            acceptedRole = declaredRole;
+        }
+        if (acceptedRole == null) return Optional.empty();
+        return Optional.of(new ValidatedLocation(candidate,
+                new ResolvedPrimary(chunk.getId(), location.get(), acceptedRole.name()), actualRoles));
+    }
+
+    private static boolean matchesCurrentSource(LlmGateway.LocationCandidate candidate, CodeChunk chunk) {
+        String[] lines = contentLines(chunk);
+        int relativeStart = candidate.startLine() - Math.max(1, chunk.getStartLine()) + 1;
+        int relativeEnd = candidate.endLine() - Math.max(1, chunk.getStartLine()) + 1;
+        return source(lines, relativeStart, relativeEnd).equals(safe(candidate.source()).strip());
     }
 
     private static String locationFailureReason(LlmGateway.CriticDecision decision, CodeChunk selected,
@@ -251,28 +290,38 @@ public final class FindingLocationResolver {
 
     private static List<SourceRange> javaSourceRanges(String content, int lineCount) {
         if (!hasText(content)) return List.of();
+        Node parsed;
         try {
-            Node body = StaticJavaParser.parseBodyDeclaration(content);
-            List<SourceRange> result = new ArrayList<>();
-            for (Node node : body.findAll(Node.class)) {
-                if (!(node instanceof AnnotationExpr || node instanceof MethodCallExpr
-                        || node instanceof AssignExpr || node instanceof VariableDeclarationExpr
-                        || node instanceof ExpressionStmt || node instanceof ReturnStmt
-                        || node instanceof ThrowStmt)) continue;
-                node.getRange().ifPresent(range -> {
-                    int start = Math.max(1, Math.min(range.begin.line, lineCount));
-                    int end = Math.max(start, Math.min(range.end.line, lineCount));
-                    if (end - start + 1 > MAX_VULNERABLE_LINES) end = start;
-                    result.add(new SourceRange(start, end));
-                });
+            parsed = StaticJavaParser.parseBodyDeclaration(content);
+        } catch (RuntimeException bodyDeclarationFailure) {
+            try {
+                parsed = StaticJavaParser.parse(content);
+            } catch (RuntimeException compilationUnitFailure) {
+                return List.of();
             }
-            return result;
-        } catch (RuntimeException ignored) {
-            return List.of();
         }
+        List<SourceRange> result = new ArrayList<>();
+        for (Node node : parsed.findAll(Node.class)) {
+            if (!(node instanceof AnnotationExpr || node instanceof MethodCallExpr
+                    || node instanceof AssignExpr || node instanceof VariableDeclarationExpr
+                    || node instanceof ExpressionStmt || node instanceof ReturnStmt
+                    || node instanceof ThrowStmt)) continue;
+            node.getRange().ifPresent(range -> {
+                int start = Math.max(1, Math.min(range.begin.line, lineCount));
+                int end = Math.max(start, Math.min(range.end.line, lineCount));
+                if (end - start + 1 > MAX_VULNERABLE_LINES) end = start;
+                result.add(new SourceRange(start, end));
+            });
+        }
+        return result;
     }
 
     private static boolean isExecutableCandidate(String sourceLine) {
+        String line = safe(sourceLine).strip();
+        return isLocationCandidateLine(line) && !line.startsWith("@");
+    }
+
+    private static boolean isLocationCandidateLine(String sourceLine) {
         String line = safe(sourceLine).strip();
         return !line.isEmpty() && !line.equals("{") && !line.equals("}") && !line.endsWith("{")
                 && !line.startsWith("//") && !line.startsWith("/*") && !line.startsWith("*")
@@ -369,7 +418,7 @@ public final class FindingLocationResolver {
     }
 
     private static Set<LocationRole> roles(CodeChunk chunk, Location location) {
-        String[] lines = contentLines(chunk);
+        String[] lines = codeLines(contentLines(chunk));
         int chunkStart = Math.max(1, chunk.getStartLine());
         Set<LocationRole> result = new LinkedHashSet<>();
         for (int line = location.startLine(); line <= location.endLine(); line++) {
@@ -382,6 +431,7 @@ public final class FindingLocationResolver {
     // 只识别能够解释安全影响的明确代码角色，不把任意第一条可执行语句当作最终漏洞位置。
     private static Set<LocationRole> roles(String sourceLine) {
         String line = safe(sourceLine).strip().toLowerCase(Locale.ROOT);
+        if (!isLocationCandidateLine(line)) return Set.of();
         Set<LocationRole> result = new LinkedHashSet<>();
         if (containsAny(line, "@preauthorize", "@postauthorize", "@secured", "@rolesallowed",
                 "hasauthority", "hasrole", "checkpermission", "checkauthorization",
@@ -411,8 +461,9 @@ public final class FindingLocationResolver {
                 "selectlist(", "queryfor", "entitymanager")) {
             result.add(LocationRole.DATA_ACCESS);
         }
-        if (containsAny(line, "return ", "response.", ".body(", "getwriter(", "printwriter",
-                "innerhtml", "outerhtml", "document.write", "th:utext", "v-html", "render(")) {
+        if (containsAny(line, "return ", "response.", ".body(", "getwriter(", ".print(", ".println(",
+                ".write(", "system.out.print", "system.err.print", "innerhtml", "outerhtml",
+                "document.write", "th:utext", "v-html", "render(") || looksLikeLogWrite(line)) {
             result.add(LocationRole.DATA_OUTPUT);
         }
         if (containsAny(line, ".delete(", ".deleteby", ".save(", ".update(", ".debit(", ".credit(",
@@ -440,6 +491,11 @@ public final class FindingLocationResolver {
                 "client_secret", "access-token", "access_token", "refresh-token", "refresh_token");
     }
 
+    private static boolean looksLikeLogWrite(String line) {
+        return line.matches(".*\\b(?:log|logger|[a-z_$][a-z0-9_$]*logger)\\s*\\.\\s*"
+                + "(?:trace|debug|info|warn|error)\\s*\\(.*");
+    }
+
     private static String safe(String value) {
         return value == null ? "" : value;
     }
@@ -449,12 +505,13 @@ public final class FindingLocationResolver {
     }
 
     public static Location infer(VulnerabilityType type, String description, CodeChunk chunk) {
-        String[] lines = contentLines(chunk);
+        String[] lines = codeLines(contentLines(chunk));
         List<String> patterns = patterns(type);
         int bestIndex = -1;
         int bestScore = 0;
         String normalizedDescription = description == null ? "" : description.toLowerCase(Locale.ROOT);
         for (int index = 0; index < lines.length; index++) {
+            if (!isLocationCandidateLine(lines[index])) continue;
             String line = lines[index].toLowerCase(Locale.ROOT);
             int score = 0;
             for (String pattern : patterns) {
@@ -499,11 +556,70 @@ public final class FindingLocationResolver {
         return content.split("\\R", -1);
     }
 
+    private static boolean hasLocationCode(CodeChunk chunk, Location location) {
+        String[] lines = codeLines(contentLines(chunk));
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        for (int line = location.startLine(); line <= location.endLine(); line++) {
+            int index = line - chunkStart;
+            if (index >= 0 && index < lines.length && isLocationCandidateLine(lines[index])) return true;
+        }
+        return false;
+    }
+
+    // 在词法识别前剔除行注释和跨行块注释，避免注释中的 API 名称污染安全角色。
+    private static String[] codeLines(String[] sourceLines) {
+        String[] result = new String[sourceLines.length];
+        boolean inBlockComment = false;
+        boolean inTextBlock = false;
+        for (int lineIndex = 0; lineIndex < sourceLines.length; lineIndex++) {
+            String sourceLine = sourceLines[lineIndex];
+            StringBuilder code = new StringBuilder();
+            boolean inString = false;
+            boolean inCharacter = false;
+            boolean escaped = false;
+            for (int index = 0; index < sourceLine.length(); index++) {
+                char current = sourceLine.charAt(index);
+                char next = index + 1 < sourceLine.length() ? sourceLine.charAt(index + 1) : '\0';
+                if (inBlockComment) {
+                    if (current == '*' && next == '/') {
+                        inBlockComment = false;
+                        index++;
+                    }
+                    continue;
+                }
+                if (!inString && !inCharacter && current == '"' && next == '"'
+                        && index + 2 < sourceLine.length() && sourceLine.charAt(index + 2) == '"') {
+                    inTextBlock = !inTextBlock;
+                    code.append("\"\"\"");
+                    index += 2;
+                    continue;
+                }
+                if (!inTextBlock && !inString && !inCharacter && current == '/' && next == '/') break;
+                if (!inTextBlock && !inString && !inCharacter && current == '/' && next == '*') {
+                    inBlockComment = true;
+                    index++;
+                    continue;
+                }
+                code.append(current);
+                if (inTextBlock) continue;
+                if (escaped) {
+                    escaped = false;
+                } else if ((inString || inCharacter) && current == '\\') {
+                    escaped = true;
+                } else if (!inCharacter && current == '"') {
+                    inString = !inString;
+                } else if (!inString && current == '\'') {
+                    inCharacter = !inCharacter;
+                }
+            }
+            result[lineIndex] = code.toString();
+        }
+        return result;
+    }
+
     private static int firstExecutableLine(String[] lines) {
         for (int index = 0; index < lines.length; index++) {
-            String line = lines[index].strip();
-            if (!line.isEmpty() && !line.startsWith("@") && !line.endsWith("{")
-                    && !line.equals("}")) return index;
+            if (isExecutableCandidate(lines[index])) return index;
         }
         return 0;
     }
@@ -658,7 +774,11 @@ public final class FindingLocationResolver {
     private record SourceRange(int start, int end) {
     }
 
-    private record RankedLocation(LlmGateway.LocationCandidate candidate, int score) {
+    private record ValidatedLocation(LlmGateway.LocationCandidate candidate,
+                                     ResolvedPrimary resolved, Set<LocationRole> roles) {
+    }
+
+    private record RankedLocation(ValidatedLocation validated, int score) {
     }
 
     private enum RootCause {
