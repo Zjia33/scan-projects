@@ -131,15 +131,30 @@ class CodeGraphCommandRunner {
             throw new CodeGraphException("CodeGraph 发行包根目录配置无效");
         }
         Path bundleRoot = Path.of(configuredRoot.strip()).toAbsolutePath().normalize();
-        Path node = bundleRoot.resolve("node.exe").normalize();
+        return bundleCommandPrefix(bundleRoot, isWindows());
+    }
+
+    List<String> bundleCommandPrefix(Path configuredRoot, boolean windows) {
+        Path bundleRoot = configuredRoot.toAbsolutePath().normalize();
+        String nodeFileName = windows ? "node.exe" : "node";
+        Path node = bundleRoot.resolve(nodeFileName).normalize();
         Path script = bundleRoot.resolve("lib/dist/bin/codegraph.js").normalize();
         if (!node.startsWith(bundleRoot) || !script.startsWith(bundleRoot)
                 || !Files.isRegularFile(node) || !Files.isRegularFile(script)) {
-            throw new CodeGraphException("CodeGraph 发行包目录缺少 node.exe 或 lib/dist/bin/codegraph.js: "
+            throw new CodeGraphException("CodeGraph 发行包目录缺少 " + nodeFileName
+                    + " 或 lib/dist/bin/codegraph.js: "
                     + bundleRoot);
+        }
+        if (!windows && !Files.isExecutable(node)) {
+            throw new CodeGraphException("CodeGraph Linux 发行包中的 node 没有执行权限，请执行 chmod +x: "
+                    + node);
         }
         return List.of(node.toString(), "--liftoff-only", "--disable-warning=ExperimentalWarning",
                 script.toString());
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
     // 规范化 sanitizeEnvironment 对应的输入。

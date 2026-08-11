@@ -66,7 +66,8 @@ deepaudit:
     # CodeGraph 是生产环境唯一的全局调用拓扑与影响范围来源。
     enabled: ${DEEPAUDIT_CODEGRAPH_ENABLED:}
     executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
-    # Windows 官方发行包可直接填写解压根目录；设置后优先于 executable，且不经过 cmd.exe。
+    # Windows/Linux 绿色发行包可直接填写解压根目录；设置后优先于 executable，且不经过 Shell。
+    # 根目录需保持 node.exe（Windows）或 node（Linux）与 lib/dist/bin/codegraph.js 的原始布局。
     bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
     expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
     timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:}

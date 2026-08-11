@@ -56,14 +56,40 @@ class CodeGraphCommandRunnerTest {
         Files.createFile(temporaryDirectory.resolve("node.exe"));
         Files.createFile(script);
         CodeGraphProperties properties = new CodeGraphProperties();
-        properties.setBundleRoot(temporaryDirectory.toString());
-
-        List<String> prefix = new CodeGraphCommandRunner(properties).commandPrefix();
+        List<String> prefix = new CodeGraphCommandRunner(properties)
+                .bundleCommandPrefix(temporaryDirectory, true);
 
         assertThat(prefix).containsExactly(
                 temporaryDirectory.resolve("node.exe").toAbsolutePath().normalize().toString(),
                 "--liftoff-only", "--disable-warning=ExperimentalWarning",
                 script.toAbsolutePath().normalize().toString());
+    }
+
+    @Test
+    void buildsAShellFreeLauncherForTheOfficialLinuxArchive() throws Exception {
+        Path script = temporaryDirectory.resolve("lib/dist/bin/codegraph.js");
+        Files.createDirectories(script.getParent());
+        Path node = Files.createFile(temporaryDirectory.resolve("node"));
+        assertThat(node.toFile().setExecutable(true, false) || Files.isExecutable(node)).isTrue();
+        Files.createFile(script);
+
+        List<String> prefix = new CodeGraphCommandRunner(new CodeGraphProperties())
+                .bundleCommandPrefix(temporaryDirectory, false);
+
+        assertThat(prefix).containsExactly(
+                node.toAbsolutePath().normalize().toString(),
+                "--liftoff-only", "--disable-warning=ExperimentalWarning",
+                script.toAbsolutePath().normalize().toString());
+    }
+
+    @Test
+    void explainsTheExpectedLinuxBundleLayout() throws Exception {
+        Files.createFile(temporaryDirectory.resolve("node"));
+
+        assertThatThrownBy(() -> new CodeGraphCommandRunner(new CodeGraphProperties())
+                .bundleCommandPrefix(temporaryDirectory, false))
+                .isInstanceOf(CodeGraphException.class)
+                .hasMessageContaining("lib/dist/bin/codegraph.js");
     }
 
     private CodeGraphProperties properties() {

@@ -117,13 +117,18 @@ AI 是完整审计流程的必要条件。Chat 模型不可用或返回无法解
 DeepAudit 通过 [CodeGraph](https://github.com/colbymchenry/codegraph) 的本地 CLI 提供跨文件全局调用拓扑，
 JavaParser 不再构建第二套全项目调用图。CodeGraph 只决定影响范围和关系候选，不直接判定漏洞。
 CodeGraph 必须安装在运行 DeepAudit 的机器或容器内；
-可以从 `PATH` 调用，也可以配置 Windows 官方发行包的解压根目录。无需为被审计项目单独执行
+可以从 `PATH` 调用，也可以配置 Windows 或 Linux 绿色发行包的解压根目录。无需为被审计项目单独执行
 `codegraph init`。增量任务会在不可变 Comparison Base 和 Target 快照中分别建立临时索引：Target
 用于当前影响范围和作用域关系，Base 用于删除方法、签名变化和历史调用者。
 
-Windows 官方发行包无需执行安装程序。保持压缩包内的 `node.exe`、`bin` 和 `lib` 相对布局不变，
-然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。DeepAudit 会直接调用内置 Node 和 CLI
-脚本，不经过 `codegraph.cmd` 或 `cmd.exe`。
+Windows 和 Linux 绿色发行包均无需执行安装程序。保持压缩包内的 Node、`bin` 和 `lib` 相对布局不变，
+然后将解压根目录写入 `DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT`。Windows 根目录需要包含 `node.exe`，Linux
+根目录需要包含具有执行权限的 `node`，两种发行包都需要包含 `lib/dist/bin/codegraph.js`。DeepAudit
+会直接调用内置 Node 和 CLI 脚本，不经过 `cmd.exe` 或 Shell。Linux 解压后如果权限丢失，执行：
+
+```bash
+chmod +x /opt/deepaudit/tools/codegraph/node
+```
 
 已有 Node.js 时可按上游说明安装：
 
