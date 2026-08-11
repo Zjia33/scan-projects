@@ -24,10 +24,8 @@ public interface LlmGateway {
                                  List<IncrementalReviewUnit> reviewUnits);
 
     // 对补充上下文后的单个增量位置执行唯一一次明确复判；必须返回 INVESTIGATE 或 SKIP。
-    default TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
-                                              IncrementalReviewUnit reviewUnit) {
-        return triageIncremental(taskId, recon, List.of(reviewUnit));
-    }
+    TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                      IncrementalReviewUnit reviewUnit);
 
     AgentDecision decide(AgentTurn turn);
 
@@ -43,13 +41,6 @@ public interface LlmGateway {
                   String calledSymbols, String codeExcerpt, String changeType,
                   String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints,
                   int startLine, int endLine) {
-        public Target(long chunkId, String filePath, String symbolName, String endpoint,
-                      String chunkType, String parameters, String annotations,
-                      String calledSymbols, String codeExcerpt, String changeType,
-                      String analysisScope, String baseCodeExcerpt, List<VulnerabilityType> hints) {
-            this(chunkId, filePath, symbolName, endpoint, chunkType, parameters, annotations,
-                    calledSymbols, codeExcerpt, changeType, analysisScope, baseCodeExcerpt, hints, 0, 0);
-        }
     }
 
     record ReconInsight(String architectureSummary, TechnologyProfile technologyProfile) {
@@ -97,12 +88,6 @@ public interface LlmGateway {
             evidenceChunkIds = evidenceChunkIds == null ? List.of() : List.copyOf(evidenceChunkIds);
         }
 
-        public FindingProposal(VulnerabilityType type, Severity severity, Confidence confidence,
-                               String title, String description, String remediation,
-                               Long primaryChunkId, List<Long> evidenceChunkIds) {
-            this(type, severity, confidence, title, description, remediation,
-                    primaryChunkId, evidenceChunkIds, null, null);
-        }
     }
 
     record AgentDecision(String action, String tool, Map<String, Object> arguments,
@@ -132,25 +117,6 @@ public interface LlmGateway {
                     ? List.of() : List.copyOf(counterEvidenceChunkIds);
         }
 
-        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
-                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
-                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
-                              String rootCauseKind, String locationRole, String locationCandidateId) {
-            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
-                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
-                    locationCandidateId, Boolean.TRUE.equals(confirmed)
-                    ? CriticVerdict.CONFIRMED : CriticVerdict.REJECTED, List.of());
-        }
-
-        public CriticDecision(Boolean confirmed, Confidence confidence, String reason,
-                              FindingDeltaStatus deltaStatus, Long primaryChunkId,
-                              Integer vulnerabilityStartLine, Integer vulnerabilityEndLine,
-                              String rootCauseKind, String locationRole, String locationCandidateId,
-                              CriticVerdict verdict) {
-            this(confirmed, confidence, reason, deltaStatus, primaryChunkId,
-                    vulnerabilityStartLine, vulnerabilityEndLine, rootCauseKind, locationRole,
-                    locationCandidateId, verdict, List.of());
-        }
     }
 
     enum CriticVerdict {

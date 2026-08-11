@@ -44,11 +44,11 @@ deepaudit:
     api-key: ${DEEPAUDIT_AI_API_KEY:}
     model: ${DEEPAUDIT_AI_MODEL:}
     connect-timeout-seconds: 10
-    read-timeout-seconds: 120
+    read-timeout-seconds: 180
     # 模型偶尔会返回语法不合法的 JSON；最多追加两次格式纠正请求。
     json-repair-attempts: 2
-    max-iterations-per-agent: 8
-    max-tool-calls-per-agent: 6
+    max-iterations-per-agent: 10
+    max-tool-calls-per-agent: 8
     # 仅保留最近工具观察的详细正文，较早观察压缩为状态和证据 ID。
     max-detailed-observations: 2
     max-observation-chars: 4000
@@ -56,7 +56,7 @@ deepaudit:
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
     # 控制增量真实差异的单批最大数量，不限制项目总覆盖范围；请求另有字符预算。
-    triage-batch-size: 20
+    triage-batch-size: 10
   semantic:
     enabled: true
     max-call-depth: 10

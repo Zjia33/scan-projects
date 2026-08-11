@@ -57,6 +57,12 @@ public class TestLlmConfiguration {
             }
 
             @Override
+            public TriagePlan triageIncrementalFinal(UUID taskId, ReconInsight recon,
+                                                     IncrementalReviewUnit reviewUnit) {
+                return triageIncremental(taskId, recon, List.of(reviewUnit));
+            }
+
+            @Override
             public AgentDecision decide(AgentTurn turn) {
                 if (turn.observations().isEmpty()) {
                     return new AgentDecision("TOOL", tool(turn.vulnerabilityType()), toolArguments(turn),
@@ -66,7 +72,7 @@ public class TestLlmConfiguration {
                 FindingProposal finding = new FindingProposal(type, severity(type), Confidence.HIGH,
                         title(type), "测试 Agent 根据目标代码和工具返回的实际代码形成证据链。",
                         "根据漏洞类型补充服务端校验并避免信任客户端输入。", turn.target().chunkId(),
-                        evidenceIds(turn));
+                        evidenceIds(turn), turn.target().startLine(), turn.target().endLine());
                 return new AgentDecision("FINDING", null, Map.of(), "证据足以提交 Critic", finding);
             }
 
@@ -78,7 +84,8 @@ public class TestLlmConfiguration {
                         "未找到能够推翻候选的权限或参数化反证", delta,
                         request.proposal().primaryChunkId(), request.proposal().vulnerabilityStartLine(),
                         request.proposal().vulnerabilityEndLine(), rootCause(request.proposal().type()),
-                        locationRole(request.proposal().type()), null);
+                        locationRole(request.proposal().type()), null,
+                        CriticVerdict.CONFIRMED, List.of());
             }
 
             @Override
@@ -98,7 +105,7 @@ public class TestLlmConfiguration {
                 return switch (type) {
                     case SQL_INJECTION -> "resolve_data_access";
                     case AUTHORIZATION -> "inspect_security_policy";
-                    case SENSITIVE_INFORMATION_DISCLOSURE -> "read_chunk";
+                    case SENSITIVE_INFORMATION_DISCLOSURE -> "read_source";
                     default -> "explore_call_graph";
                 };
             }
@@ -109,7 +116,7 @@ public class TestLlmConfiguration {
                     case AUTHORIZATION -> Map.of(
                             "endpoint", turn.target().endpoint() == null ? "" : turn.target().endpoint(), "limit", 5);
                     case SENSITIVE_INFORMATION_DISCLOSURE -> Map.of(
-                            "chunkId", turn.target().chunkId(), "limit", 5);
+                            "chunkId", turn.target().chunkId());
                     default -> Map.of("limit", 5);
                 };
             }

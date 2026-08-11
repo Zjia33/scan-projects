@@ -61,7 +61,7 @@ class CriticAgentServiceTest {
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.NEW,
                 null, null, null, null, null, null,
-                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE, List.of()));
 
         chunk.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
         service.review(taskId, candidate, recon(), List.of(chunk));
@@ -109,7 +109,8 @@ class CriticAgentServiceTest {
                 .thenReturn(Map.of(controller.getId(), 84));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "实际风险发生在服务层扣款逻辑", FindingDeltaStatus.NEW,
-                vulnerableService.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
+                vulnerableService.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of()));
         controller.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
@@ -170,7 +171,8 @@ class CriticAgentServiceTest {
                 true, Confidence.HIGH,
                 "全局未启用 @EnableGlobalMethodSecurity，导致 @PreAuthorize 注解不生效",
                 FindingDeltaStatus.PERSISTING, dataRead.getId(), 60, 60,
-                "INEFFECTIVE_SECURITY_CONTROL", "DATA_ACCESS", null));
+                "INEFFECTIVE_SECURITY_CONTROL", "DATA_ACCESS", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of()));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
                 List.of(controller, dataRead));
@@ -212,7 +214,8 @@ class CriticAgentServiceTest {
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.NEW,
-                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
+                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of()));
         when(gateway.repairLocation(any())).thenAnswer(invocation -> {
             LlmGateway.LocationRepairRequest request = invocation.getArgument(0);
             LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
@@ -254,7 +257,8 @@ class CriticAgentServiceTest {
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, operation.getId(), "apply"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.NEW,
-                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
+                operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of()));
         when(gateway.repairLocation(any())).thenReturn(
                 new LlmGateway.LocationDecision("invented:1-1", "错误候选"));
 
@@ -293,7 +297,8 @@ class CriticAgentServiceTest {
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, changedEntry.getId(), "purchase"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "变更入口能够到达原有危险扣款逻辑", FindingDeltaStatus.NEW,
-                contextOperation.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null));
+                contextOperation.getId(), 86, 88, "MISSING_VALIDATION", "BUSINESS_OPERATION", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of()));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(),
                 List.of(changedEntry, contextOperation));
@@ -331,7 +336,7 @@ class CriticAgentServiceTest {
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 false, Confidence.LOW, "缺少入口到危险操作的完整关系", FindingDeltaStatus.NEW,
                 null, null, null, null, null, null,
-                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE, List.of()));
 
         Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
 
@@ -443,7 +448,7 @@ class CriticAgentServiceTest {
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
                 false, Confidence.LOW, "认证配置不能证明对象级授权", FindingDeltaStatus.NEW,
                 null, null, null, null, null, null,
-                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE));
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE, List.of()));
 
         service.review(taskId, candidate, recon(), List.of(endpoint, security));
 

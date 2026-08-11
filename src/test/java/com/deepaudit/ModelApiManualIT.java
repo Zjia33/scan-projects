@@ -64,7 +64,7 @@ class ModelApiManualIT {
                 "src/main/java/demo/UserController.java", "UserController#search", "/users/search",
                 "JAVA_METHOD", "String name", "@GetMapping(\"/search\")", "queryForList",
                 VULNERABLE_CODE, "MODIFIED", "CHANGED", "",
-                List.of(VulnerabilityType.SQL_INJECTION));
+                List.of(VulnerabilityType.SQL_INJECTION), 1, 7);
         LlmGateway.ReconInsight recon = new LlmGateway.ReconInsight(
                 "Spring MVC 接口直接使用 JdbcTemplate 访问数据库",
                 com.deepaudit.recon.TechnologyProfile.empty());

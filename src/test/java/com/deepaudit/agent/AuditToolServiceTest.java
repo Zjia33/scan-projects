@@ -164,12 +164,12 @@ class AuditToolServiceTest {
     }
 
     @Test
-    void rejectsRemovedToolsUnknownArgumentsAndCandidateAnchors() {
+    void rejectsUnknownToolsArgumentsAndCandidateAnchors() {
         AuditToolService tools = tools(mock(SemanticEvidenceService.class));
         CodeChunk current = chunk(1L, "Controller#entry", "/orders", "return ok();", "");
         CodeChunk candidate = chunk(2L, "Service#load", null, "return row;", "");
 
-        ToolResult removed = tools.execute("get_chunk", Map.of("chunkId", 1L), current,
+        ToolResult unsupported = tools.execute("unknown_tool", Map.of(), current,
                 List.of(current), VulnerabilityType.AUTHORIZATION, session(Set.of(1L), Set.of()));
         ToolResult unknown = tools.execute("search_code", Map.of("query", "load", "mode", "REGEX"),
                 current, List.of(current), VulnerabilityType.AUTHORIZATION, session(Set.of(1L), Set.of()));
@@ -177,7 +177,7 @@ class AuditToolServiceTest {
                 current, List.of(current, candidate), VulnerabilityType.AUTHORIZATION,
                 session(Set.of(1L), Set.of(2L)));
 
-        assertThat(removed.status()).isEqualTo(ToolResult.Status.INVALID);
+        assertThat(unsupported.status()).isEqualTo(ToolResult.Status.INVALID);
         assertThat(unknown.text()).contains("未知参数", "mode");
         assertThat(anchor.status()).isEqualTo(ToolResult.Status.DENIED);
         assertThat(anchor.text()).contains("先调用 verify_relation");

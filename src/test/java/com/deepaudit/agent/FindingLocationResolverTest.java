@@ -172,7 +172,8 @@ class FindingLocationResolverTest {
         LlmGateway.FindingProposal proposal = proposal(VulnerabilityType.SQL_INJECTION, 71, 71);
         LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "外部参数进入动态查询", com.deepaudit.domain.FindingDeltaStatus.NEW,
-                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY", null);
+                chunk.getId(), 71, 71, "UNSAFE_QUERY", "QUERY", null,
+                LlmGateway.CriticVerdict.CONFIRMED, List.of());
 
         assertThat(FindingLocationResolver.resolveCriticPrimary(
                 proposal, decision, Map.of(chunk.getId(), chunk), Set.of(chunk.getId())))
@@ -200,7 +201,8 @@ class FindingLocationResolverTest {
                 88L, List.of(88L), 20, 20);
         LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "配置行直接定义了凭据", com.deepaudit.domain.FindingDeltaStatus.NEW,
-                88L, 20, 20, "HARDCODED_SECRET", "SECRET_DEFINITION", secret.candidateId());
+                88L, 20, 20, "HARDCODED_SECRET", "SECRET_DEFINITION", secret.candidateId(),
+                LlmGateway.CriticVerdict.CONFIRMED, List.of());
 
         assertThat(FindingLocationResolver.resolveCriticPrimary(
                 proposal, decision, Map.of(88L, chunk), Set.of(88L)))
@@ -282,7 +284,8 @@ class FindingLocationResolverTest {
                         List.of("DATA_OUTPUT"), "CHANGED"));
         LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "日志输出泄露 OTP", com.deepaudit.domain.FindingDeltaStatus.NEW,
-                42L, 3, 3, "UNSAFE_DATA_EXPOSURE", "DATA_OUTPUT", "42:3-3");
+                42L, 3, 3, "UNSAFE_DATA_EXPOSURE", "DATA_OUTPUT", "42:3-3",
+                LlmGateway.CriticVerdict.CONFIRMED, List.of());
 
         FindingLocationResolver.LocationResolution resolution =
                 FindingLocationResolver.resolveCriticLocation(
