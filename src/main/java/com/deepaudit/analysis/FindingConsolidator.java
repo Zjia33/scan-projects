@@ -4,6 +4,7 @@ import com.deepaudit.agent.FindingFingerprint;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
+import com.deepaudit.domain.FindingLocationKind;
 import com.deepaudit.domain.FindingDeltaStatus;
 import com.deepaudit.domain.Severity;
 
@@ -89,6 +90,7 @@ public final class FindingConsolidator {
         target.setTitle(specific(target.getTitle(), duplicate.getTitle()));
         target.setStartLine(Math.min(target.getStartLine(), duplicate.getStartLine()));
         target.setEndLine(Math.max(target.getEndLine(), duplicate.getEndLine()));
+        target.setLocationKind(strongerLocationKind(target.getLocationKind(), duplicate.getLocationKind()));
         target.setEndpoint(mergeEndpoints(target.getEndpoint(), duplicate.getEndpoint()));
         target.setDescription(specific(target.getDescription(), duplicate.getDescription()));
         target.setEvidence(mergeEvidence(target.getEvidence(), duplicate.getEvidence()));
@@ -240,11 +242,25 @@ public final class FindingConsolidator {
     }
 
     private static int evidenceRoleRank(String block) {
-        if (block.contains("[漏洞位置]")) return 4;
+        if (block.contains("[漏洞根因]") || block.contains("[责任锚点]")
+                || block.contains("[漏洞位置]")) return 4;
+        if (block.contains("[影响位置]")) return 3;
         if (block.contains("[调用入口]")) return 3;
         if (block.contains("[调用链]")) return 2;
         if (block.contains("[关联证据]")) return 1;
         return 0;
+    }
+
+    private static FindingLocationKind strongerLocationKind(
+            FindingLocationKind left, FindingLocationKind right) {
+        if (left == FindingLocationKind.ROOT_CAUSE || right == FindingLocationKind.ROOT_CAUSE) {
+            return FindingLocationKind.ROOT_CAUSE;
+        }
+        if (left == FindingLocationKind.RESPONSIBILITY_ANCHOR
+                || right == FindingLocationKind.RESPONSIBILITY_ANCHOR) {
+            return FindingLocationKind.RESPONSIBILITY_ANCHOR;
+        }
+        return FindingLocationKind.UNCLASSIFIED;
     }
 
     private record EvidenceHeader(long chunkId, int offset) {

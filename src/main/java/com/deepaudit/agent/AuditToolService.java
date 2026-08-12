@@ -4,6 +4,7 @@ import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.semantic.SemanticEvidenceService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -12,64 +13,107 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 public class AuditToolService {
+    static final int DEFAULT_RESULT_LIMIT = 10;
+    static final int MAX_RESULT_LIMIT = 20;
+    static final int MAX_READ_SOURCE_LINES = 160;
+    static final int MAX_READ_SOURCE_CONTEXT_LINES = 20;
+
     private final SemanticEvidenceService semanticEvidenceService;
     private final CodeGraphIntegrationService codeGraphIntegrationService;
     private final ProfessionalToolService professionalToolService;
+    private final CodeGraphSymbolSearchService codeGraphSymbolSearchService;
+    private final CallGraphExplorerService callGraphExplorerService;
 
+    @Autowired
     public AuditToolService(SemanticEvidenceService semanticEvidenceService,
                             CodeGraphIntegrationService codeGraphIntegrationService,
-                            ProfessionalToolService professionalToolService) {
+                            ProfessionalToolService professionalToolService,
+                            CodeGraphSymbolSearchService codeGraphSymbolSearchService,
+                            CallGraphExplorerService callGraphExplorerService) {
         this.semanticEvidenceService = semanticEvidenceService;
         this.codeGraphIntegrationService = codeGraphIntegrationService;
         this.professionalToolService = professionalToolService;
+        this.codeGraphSymbolSearchService = codeGraphSymbolSearchService;
+        this.callGraphExplorerService = callGraphExplorerService;
+    }
+
+    AuditToolService(SemanticEvidenceService semanticEvidenceService,
+                     CodeGraphIntegrationService codeGraphIntegrationService,
+                     ProfessionalToolService professionalToolService,
+                     CodeGraphSymbolSearchService codeGraphSymbolSearchService) {
+        this(semanticEvidenceService, codeGraphIntegrationService, professionalToolService,
+                codeGraphSymbolSearchService, null);
+    }
+
+    AuditToolService(SemanticEvidenceService semanticEvidenceService,
+                     CodeGraphIntegrationService codeGraphIntegrationService,
+                     ProfessionalToolService professionalToolService) {
+        this(semanticEvidenceService, codeGraphIntegrationService, professionalToolService, null, null);
     }
 
     // 使用当前 Agent 工具会话中的证据状态执行只读工具。
     public ToolResult execute(String tool, Map<String, Object> rawArguments,
                               CodeChunk current, List<CodeChunk> chunks,
                               VulnerabilityType vulnerabilityType, ToolSessionContext session) {
-        ToolArguments arguments = ToolArguments.of(rawArguments);
-        int limit = arguments.integer("limit", 6, 1, 10);
-        if (tool == null || tool.isBlank()) {
-            return ToolResult.invalid("TOOL 动作必须提供明确的工具名称。");
+        try {
+            ToolArguments arguments = ToolArguments.of(rawArguments);
+            int limit = arguments.integer("limit", DEFAULT_RESULT_LIMIT, 1, MAX_RESULT_LIMIT);
+            if (tool == null || tool.isBlank()) {
+                return ToolResult.invalid("TOOL 动作必须提供明确的工具名称。");
+            }
+            String normalizedTool = tool.toLowerCase(Locale.ROOT);
+            AgentToolCatalog.ToolSpec spec = AgentToolCatalog.find(normalizedTool);
+            if (spec == null) {
+                return ToolResult.invalid("不允许的 Agent 工具: " + tool);
+            }
+            Set<String> unknownArguments = arguments.unknownKeys(spec.allowedArguments());
+            if (!unknownArguments.isEmpty()) {
+                return ToolResult.invalid(normalizedTool + " 包含未知参数: " + unknownArguments);
+            }
+            AnchorResolution anchorResolution = resolveAnchor(arguments, current, chunks, session);
+            if (anchorResolution.error() != null) return anchorResolution.error();
+            CodeChunk anchor = anchorResolution.chunk();
+            return switch (normalizedTool) {
+                case AgentToolCatalog.READ_SOURCE -> readSource(arguments, chunks, session);
+                case AgentToolCatalog.VERIFY_RELATION -> verifyRelation(reference(arguments, "candidateChunkId"),
+                        anchor, chunks, session);
+                case AgentToolCatalog.SEARCH_SYMBOLS -> searchSymbols(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.SEARCH_CODE -> professionalToolService.searchCode(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.EXPLORE_CALL_GRAPH -> callGraphExplorerService == null
+                        ? addCodeGraphRelations(professionalToolService.exploreCallGraph(
+                                anchor.getTaskId(), anchor, chunks, arguments, limit), anchor, chunks, limit)
+                        : callGraphExplorerService.explore(
+                                anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.GET_CHANGE_CONTEXT -> professionalToolService.getChangeContext(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.RESOLVE_DATA_ACCESS -> professionalToolService.resolveDataAccess(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.INSPECT_SECURITY_POLICY -> professionalToolService.inspectSecurityPolicy(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit);
+                case AgentToolCatalog.TRACE_VALUE -> professionalToolService.traceValue(
+                        anchor.getTaskId(), anchor, chunks, arguments, limit, vulnerabilityType);
+                default -> ToolResult.invalid("不允许的 Agent 工具: " + tool);
+            };
+        } catch (ToolArguments.InvalidArgumentException exception) {
+            return ToolResult.invalid(exception.getMessage());
         }
-        String normalizedTool = tool.toLowerCase(Locale.ROOT);
-        AgentToolCatalog.ToolSpec spec = AgentToolCatalog.find(normalizedTool);
-        if (spec == null) {
-            return ToolResult.invalid("不允许的 Agent 工具: " + tool);
-        }
-        Set<String> unknownArguments = arguments.unknownKeys(spec.allowedArguments());
-        if (!unknownArguments.isEmpty()) {
-            return ToolResult.invalid(normalizedTool + " 包含未知参数: " + unknownArguments);
-        }
-        AnchorResolution anchorResolution = resolveAnchor(arguments, current, chunks, session);
-        if (anchorResolution.error() != null) return anchorResolution.error();
-        CodeChunk anchor = anchorResolution.chunk();
-        return switch (normalizedTool) {
-            case AgentToolCatalog.READ_SOURCE -> readSource(arguments, chunks, session);
-            case AgentToolCatalog.VERIFY_RELATION -> verifyRelation(reference(arguments, "candidateChunkId"),
-                    anchor, chunks, session);
-            case AgentToolCatalog.SEARCH_SYMBOLS -> professionalToolService.searchSymbols(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.SEARCH_CODE -> professionalToolService.searchCode(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> addCodeGraphRelations(
-                    professionalToolService.exploreCallGraph(anchor.getTaskId(), anchor, chunks,
-                            arguments, limit), anchor, chunks, limit);
-            case AgentToolCatalog.GET_CHANGE_CONTEXT -> professionalToolService.getChangeContext(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.RESOLVE_DATA_ACCESS -> professionalToolService.resolveDataAccess(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.INSPECT_SECURITY_POLICY -> professionalToolService.inspectSecurityPolicy(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit);
-            case AgentToolCatalog.TRACE_VALUE -> professionalToolService.traceValue(
-                    anchor.getTaskId(), anchor, chunks, arguments, limit, vulnerabilityType);
-            default -> ToolResult.invalid("不允许的 Agent 工具: " + tool);
-        };
+    }
+
+    private ToolResult searchSymbols(UUID taskId, CodeChunk current, List<CodeChunk> chunks,
+                                     ToolArguments arguments, int limit) {
+        CodeGraphSymbolSearchService.Expansion expansion = codeGraphSymbolSearchService == null
+                ? CodeGraphSymbolSearchService.Expansion.skipped()
+                : codeGraphSymbolSearchService.expand(taskId, arguments, chunks);
+        ToolResult local = professionalToolService.searchSymbols(
+                taskId, current, chunks, arguments, limit);
+        return expansion.merge(local);
     }
 
     private String reference(ToolArguments arguments, String name) {
@@ -95,7 +139,7 @@ public class AuditToolService {
         return new AnchorResolution(anchor, null);
     }
 
-    // CodeGraph 直接关系与持久化语义图具有相同证据级别，不再要求 JavaParser 或本地名称匹配重复证明。
+    // 兼容旧调用入口：未经本地调用点验证的 CodeGraph 邻居只能作为候选。
     private ToolResult addCodeGraphRelations(ToolResult base, CodeChunk current,
                                              List<CodeChunk> chunks, int limit) {
         if (codeGraphIntegrationService == null) return base;
@@ -103,8 +147,8 @@ public class AuditToolService {
                 current.getTaskId(), current, chunks, limit);
         if (context.relatedChunkIds().isEmpty()) return base;
         Set<Long> evidence = new LinkedHashSet<>(base.evidenceChunkIds());
-        evidence.addAll(context.relatedChunkIds());
         Set<Long> candidates = new LinkedHashSet<>(base.candidateChunkIds());
+        candidates.addAll(context.relatedChunkIds());
         candidates.removeAll(evidence);
         String text = base.text() + "\n\n" + context.text();
         return new ToolResult(base.status(), base.code(), text, evidence, candidates,
@@ -152,11 +196,11 @@ public class AuditToolService {
         if (requestedEnd < requestedStart) {
             return ToolResult.invalid("endLine 不能小于 startLine。");
         }
-        int contextLines = arguments.integer("contextLines", 2, 0, 10);
+        int contextLines = arguments.integer("contextLines", 2, 0, MAX_READ_SOURCE_CONTEXT_LINES);
         int first = Math.max(chunkStart, requestedStart - contextLines);
         int last = Math.min(chunkEnd, requestedEnd + contextLines);
-        boolean truncated = last - first + 1 > 80;
-        if (truncated) last = first + 79;
+        boolean truncated = last - first + 1 > MAX_READ_SOURCE_LINES;
+        if (truncated) last = first + MAX_READ_SOURCE_LINES - 1;
         StringBuilder body = new StringBuilder();
         for (int line = first; line <= last; line++) {
             boolean selected = line >= requestedStart && line <= requestedEnd;
@@ -195,11 +239,11 @@ public class AuditToolService {
         RelationAssessment structural = structuralRelation(current, candidate, chunks);
         if (semantic != null && semantic.verified()) {
             return new ToolResult("[VERIFIED_EVIDENCE][SEMANTIC_RELATION] " + semantic.reason() + "\n"
-                    + format(candidate, "语义关系验证通过"), Set.of(candidateId), Set.of());
+                    + formatMetadata(candidate, "语义关系验证通过"), Set.of(candidateId), Set.of());
         }
         if (codeGraph != null && codeGraph.verified()) {
             return new ToolResult("[VERIFIED_EVIDENCE][CODEGRAPH_RELATION] " + codeGraph.reason() + "\n"
-                    + format(candidate, "CodeGraph 直接关系复验通过"), Set.of(candidateId), Set.of());
+                    + formatMetadata(candidate, "CodeGraph 直接关系复验通过"), Set.of(candidateId), Set.of());
         }
         if (!structural.verified()) {
             String semanticReason = semantic == null || semantic.reason() == null ? "" : semantic.reason() + "；";
@@ -212,7 +256,7 @@ public class AuditToolService {
         }
         return new ToolResult("[VERIFIED_EVIDENCE][" + structural.code() + "] "
                 + structural.reason() + "\n"
-                + format(candidate, "确定性关系验证通过"), Set.of(candidateId), Set.of());
+                + formatMetadata(candidate, "确定性关系验证通过"), Set.of(candidateId), Set.of());
     }
 
     // 只有唯一方法调用或明确安全策略匹配可以提升证据；同路由、同名方法仅保留为候选。
@@ -287,16 +331,16 @@ public class AuditToolService {
         try { return Long.parseLong(matcher.group()); } catch (NumberFormatException exception) { return null; }
     }
 
-    // 将源码包裹为不可信代码片段，避免其文本被当作 Agent 指令执行。
-    private String format(CodeChunk chunk, String reason) {
-        String content = chunk.getContent() == null ? "" : chunk.getContent();
-        String code = content.substring(0, Math.min(content.length(), 4_000));
+    private String formatMetadata(CodeChunk chunk, String reason) {
         return "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":" + chunk.getStartLine()
                 + " | " + chunk.getSymbolName() + " | reason=" + reason
-                + "\n<UNTRUSTED_CODE>\n" + code
-                + "\n</UNTRUSTED_CODE>"
-                + (content.length() > 4_000
-                ? "\n[CONTENT_TRUNCATED] 请使用 read_source 精读目标行。" : "");
+                + " | kind=" + chunk.getChunkType() + " | endpoint=" + safe(chunk.getEndpoint())
+                + " | annotations=" + safe(chunk.getAnnotations())
+                + "\n[SOURCE_NOT_INCLUDED] 请使用 read_source 精读该代码块。";
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
     }
 
     private Set<String> splitSymbols(String value) {

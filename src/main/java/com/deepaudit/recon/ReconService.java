@@ -156,6 +156,11 @@ public class ReconService {
                 candidate.setBaseContent("");
                 additions.add(candidate);
             }
+            for (CodeGraphClient.CodeGraphLocation location : entry.getValue()) {
+                if (matchesAnyLocationInCandidates(candidates, location)) continue;
+                CodeChunk candidate = codeGraphLocationChunk(taskId, entry.getKey(), file, location);
+                if (candidate != null && keys.add(chunkKey(candidate))) additions.add(candidate);
+            }
         }
         insertChunks(additions);
         TimingDetailLog.info("任务 {} CodeGraph 位置按需物化完成：locations={}，files={}，newChunks={}",
@@ -210,6 +215,63 @@ public class ReconService {
             if (!expected.isBlank() && expected.equals(simpleName(chunk.getSymbolName()))) return true;
         }
         return false;
+    }
+
+    private boolean matchesAnyLocationInCandidates(List<CodeChunk> candidates,
+                                                   CodeGraphClient.CodeGraphLocation location) {
+        return candidates.stream().anyMatch(chunk -> matchesAnyLocation(chunk, List.of(location)));
+    }
+
+    private CodeChunk codeGraphLocationChunk(UUID taskId, String relativePath, Path file,
+                                             CodeGraphClient.CodeGraphLocation location) {
+        if (location.startLine() == null || location.startLine() <= 0) return null;
+        try {
+            if (Files.size(file) > MAX_SOURCE_FILE_BYTES) return null;
+            String[] lines = Files.readString(file, StandardCharsets.UTF_8).split("\\R", -1);
+            if (lines.length == 0) return null;
+            int selectedLine = Math.min(location.startLine(), lines.length);
+            int first = Math.max(1, selectedLine - 8);
+            int requestedLast = Math.min(lines.length, selectedLine + 24);
+            int last = first - 1;
+            StringBuilder content = new StringBuilder();
+            for (int line = first; line <= requestedLast; line++) {
+                String value = lines[line - 1];
+                int separator = content.isEmpty() ? 0 : 1;
+                if (content.length() + separator + value.length() > MAX_TEXT_CHUNK_CHARS) break;
+                if (!content.isEmpty()) content.append('\n');
+                content.append(value);
+                last = line;
+            }
+            if (last < first) return null;
+            String symbol = location.name() == null || location.name().isBlank()
+                    ? relativePath + ":" + selectedLine : location.name();
+            CodeChunk chunk = new CodeChunk(taskId, relativePath, symbol, null, first, last,
+                    content.toString(), codeGraphChunkType(relativePath, location.kind()), "", "", "");
+            chunk.setAnalysisScope(AnalysisScope.CONTEXT);
+            chunk.setChangeType(ChunkChangeType.UNCHANGED);
+            chunk.setBaseContent("");
+            return chunk;
+        } catch (IOException exception) {
+            log.debug("任务 {} 无法为 CodeGraph 符号位置物化源码窗口：path={}，line={}",
+                    taskId, relativePath, location.startLine(), exception);
+            return null;
+        }
+    }
+
+    private String codeGraphChunkType(String relativePath, String kind) {
+        String normalized = kind == null ? "SYMBOL"
+                : kind.strip().toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "_");
+        if (normalized.isBlank()) normalized = "SYMBOL";
+        if (relativePath.toLowerCase(Locale.ROOT).endsWith(".java")) {
+            return switch (normalized) {
+                case "METHOD", "FUNCTION" -> "JAVA_METHOD";
+                case "CLASS", "INTERFACE", "ENUM", "RECORD" -> "JAVA_CLASS";
+                case "FIELD", "PROPERTY", "VARIABLE" -> "JAVA_FIELD";
+                case "CONSTANT", "ENUM_MEMBER" -> "JAVA_CONSTANT";
+                default -> "JAVA_SYMBOL";
+            };
+        }
+        return "CODEGRAPH_" + normalized;
     }
 
     private String simpleName(String value) {

@@ -50,7 +50,7 @@ class FindingConsolidatorTest {
         CodeChunk chunk = noticeChunk(taskId);
         Finding first = finding(taskId, VulnerabilityType.STORED_XSS,
                 Severity.HIGH, Confidence.HIGH, 61, 62, "/notices/board", """
-                [CHUNK 2039] [漏洞位置] LabScenarioService.java:61-62
+                [CHUNK 2039] [漏洞根因] LabScenarioService.java:61-62
                 service evidence
 
                 [CHUNK 1986] [调用入口] LabScenarioController.java:61
@@ -71,7 +71,7 @@ class FindingConsolidatorTest {
         assertThat(occurrences(merged.getEvidence(), "[CHUNK 2039]")).isEqualTo(1);
         assertThat(occurrences(merged.getEvidence(), "[CHUNK 1986]")).isEqualTo(1);
         assertThat(merged.getEvidence())
-                .contains("[CHUNK 2039] [漏洞位置]")
+                .contains("[CHUNK 2039] [漏洞根因]")
                 .doesNotContain("\n\n---\n\n");
     }
 

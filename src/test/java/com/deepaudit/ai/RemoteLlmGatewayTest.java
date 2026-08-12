@@ -50,8 +50,8 @@ class RemoteLlmGatewayTest {
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("只负责客观概括项目技术框架", "application/bootstrap 配置文件", "不执行漏洞审计")
-                .contains("不得输出文件中的密码、Token、密钥");
+                .contains("只提炼项目架构", "application/bootstrap 配置", "不执行漏洞审计")
+                .contains("密码、Token、API Key、私钥和连接凭据只描述类型与位置");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"projectFramework\"", "\"entryPointTypes\":[\"HTTP_GET\"]", "\"Spring MVC\"",
                         "\"path\":\"pom.xml\"", "spring-boot-starter-web", "application.yml", "name: orders")
@@ -78,8 +78,8 @@ class RemoteLlmGatewayTest {
 
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("targetCodeExcerpt 只承载 [CHANGE_CONTEXT]", "不得要求额外的固定 Base/Target 方法截取",
-                        "不得仅凭文件名");
+                .contains("targetCodeExcerpt 只承载 [CHANGE_CONTEXT]",
+                        "不得要求额外的固定 Base/Target 方法截取", "不得仅凭文件名");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"reviewUnits\"", "\"baseCodeExcerpt\":\"\"",
                         "\"targetCodeExcerpt\":\"[CHANGE_CONTEXT]", "\"DIRECT_CHANGE\"",
@@ -164,7 +164,7 @@ class RemoteLlmGatewayTest {
         assertThat(decision.verdict()).isEqualTo(LlmGateway.CriticVerdict.CONFIRMED);
         assertThat(gateway.requests.get(0).get(0).get("content"))
                 .contains("locationCandidates", "locationCandidateId", "禁止自行计算行号",
-                        "Controller 入口", "安全边界");
+                        "ROOT_CAUSE", "RESPONSIBILITY_ANCHOR", "IMPACT", "ENTRY");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
                         "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"",
@@ -192,7 +192,7 @@ class RemoteLlmGatewayTest {
         assertThat(decision.confirmed()).isFalse();
         assertThat(gateway.requests).hasSize(2);
         assertThat(gateway.requests.get(1).get(gateway.requests.get(1).size() - 1).get("content"))
-                .contains("原始 outputSchema", "不得省略必填字段");
+                .contains("原始 outputSchema", "省略必填字段");
     }
 
     @Test
@@ -204,7 +204,8 @@ class RemoteLlmGatewayTest {
         LlmGateway.LocationCandidate candidate = new LlmGateway.LocationCandidate(
                 "1549:87-87", 1549L, "LabScenarioService.java", "LabScenarioService#purchase",
                 87, 87, "accountRepository.debit(accountNo, total);",
-                List.of("DATA_ACCESS", "DANGEROUS_OPERATION"), "CHANGED");
+                List.of("DATA_ACCESS", "DANGEROUS_OPERATION"),
+                List.of("RESPONSIBILITY_ANCHOR", "IMPACT"), "CHANGED");
 
         LlmGateway.LocationDecision decision = gateway.repairLocation(new LlmGateway.LocationRepairRequest(
                 UUID.randomUUID(), VulnerabilityType.VALIDATION_BYPASS, "客户端报价缺少验证",
@@ -213,7 +214,7 @@ class RemoteLlmGatewayTest {
 
         assertThat(decision.locationCandidateId()).isEqualTo("1549:87-87");
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("漏洞已经由 Critic 确认", "只能从 locationCandidates 中选择", "禁止重新判断");
+                .contains("漏洞已由 Critic 确认", "只能从 locationCandidates 中选择", "不得重新判断");
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"candidateId\":\"1549:87-87\"", "\"failureReason\"");
     }
@@ -235,7 +236,7 @@ class RemoteLlmGatewayTest {
         assertThat(decision.finding().type()).isEqualTo(VulnerabilityType.SQL_INJECTION);
         assertThat(gateway.requests).hasSize(1);
         assertThat(gateway.requests.get(0).get(0).get("content"))
-                .contains("所有供人阅读的摘要", "简体中文", "technologyProfile",
+                .contains("所有供人阅读的内容使用简体中文", "technologyProfile",
                         "UNVERIFIED_CANDIDATE", "verify_relation", "VERIFIED_EVIDENCE")
                 .contains("explore_call_graph", "search_code", "read_source", "verify_relation");
     }
@@ -253,7 +254,7 @@ class RemoteLlmGatewayTest {
         assertThat(decision.action()).isEqualTo("REJECT");
         assertThat(gateway.requests).hasSize(2);
         assertThat(gateway.requests.get(1).get(gateway.requests.get(1).size() - 1).get("content"))
-                .contains("从头生成", "禁止粘贴源码", "不超过 180 个汉字");
+                .contains("从头生成", "不粘贴源码", "不超过180个汉字");
     }
 
     @Test
@@ -285,6 +286,25 @@ class RemoteLlmGatewayTest {
                 .isInstanceOf(AiResponseFormatException.class)
                 .hasMessageContaining("2 次响应后仍未返回合法结构化结果");
         assertThat(gateway.requests).hasSize(2);
+    }
+
+    @Test
+    void reportRequestsOnlyExecutiveSummary() {
+        AiProperties properties = properties(1);
+        StubRemoteLlmGateway gateway = new StubRemoteLlmGateway(properties,
+                "{\"executiveSummary\":\"确认 1 个高危问题\"}");
+        LlmGateway.ReportRequest request = new LlmGateway.ReportRequest(
+                UUID.randomUUID(), "demo", recon(),
+                List.of(new LlmGateway.ReportFinding(
+                        VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                        "SQL 注入", "UserService.java:10", "动态拼接查询参数")));
+
+        LlmGateway.ReportNarrative narrative = gateway.writeReport(request);
+
+        assertThat(narrative.executiveSummary()).isEqualTo("确认 1 个高危问题");
+        assertThat(gateway.requests.get(0).get(1).get("content"))
+                .contains("\"executiveSummary\":\"不含内部代码块编号或工具标识的简体中文 string\"")
+                .doesNotContain("coverageSummary", "completedAgents", "rejectedHypotheses", "auditContext");
     }
 
     private AiProperties properties(int repairAttempts) {

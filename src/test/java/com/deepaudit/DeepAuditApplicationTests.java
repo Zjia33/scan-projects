@@ -43,8 +43,10 @@ class DeepAuditApplicationTests {
         assertThat(sqlSessionFactory).isNotNull();
         assertThat(applicationContext.containsBean("entityManagerFactory")).isFalse();
         assertThat(applicationContext.containsBean("projectMapper")).isTrue();
-        assertThat(flyway.info().applied()).hasSize(1);
+        assertThat(flyway.info().applied()).hasSize(3);
         assertThat(flyway.info().applied()[0].getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().applied()[1].getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().applied()[2].getVersion().getVersion()).isEqualTo("3");
     }
 
     @Test
@@ -75,6 +77,30 @@ class DeepAuditApplicationTests {
                 """, Integer.class);
 
         assertThat(legacyColumns).isZero();
+    }
+
+    @Test
+    void currentSchemaDoesNotContainRemovedReportCoverageSummary() {
+        Integer coverageColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'AI_REPORT_SUMMARY'
+                  AND UPPER(COLUMN_NAME) = 'COVERAGE_SUMMARY'
+                """, Integer.class);
+
+        assertThat(coverageColumns).isZero();
+    }
+
+    @Test
+    void findingSchemaStoresPrimaryLocationMeaning() {
+        Integer locationKindColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'FINDING'
+                  AND UPPER(COLUMN_NAME) = 'LOCATION_KIND'
+                """, Integer.class);
+
+        assertThat(locationKindColumns).isEqualTo(1);
     }
 
     @Test

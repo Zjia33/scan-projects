@@ -50,7 +50,7 @@ deepaudit:
     max-iterations-per-agent: 10
     max-tool-calls-per-agent: 8
     # 仅保留最近工具观察的详细正文，较早观察压缩为状态和证据 ID。
-    max-detailed-observations: 2
+    max-detailed-observations: 4
     max-observation-chars: 4000
     # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
     professional-agent-parallelism: 4

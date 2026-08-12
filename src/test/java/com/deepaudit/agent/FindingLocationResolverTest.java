@@ -81,10 +81,10 @@ class FindingLocationResolverTest {
                 Map.of(1497L, controller, 1549L, service), Map.of(1497L, 84));
 
         assertThat(evidence)
-                .contains("[漏洞位置] LabScenarioService.java:86-88")
+                .contains("[漏洞根因] LabScenarioService.java:86-88")
                 .contains("[调用入口] LabScenarioController.java:84")
                 .contains("return labScenarioService.purchase(request);")
-                .doesNotContain("[漏洞位置] LabScenarioController.java:82-83");
+                .doesNotContain("[漏洞根因] LabScenarioController.java:82-83");
     }
 
     @Test
@@ -161,7 +161,7 @@ class FindingLocationResolverTest {
     }
 
     @Test
-    void relocatesCriticLineThatDoesNotMatchStructuredRootCauseAndRole() {
+    void relocatesSqlInjectionFromExecutionSinkToUnsafeQueryConstruction() {
         CodeChunk chunk = chunk(70, 74, """
                 public List<User> search(String name) {
                     audit(name);
@@ -179,7 +179,8 @@ class FindingLocationResolverTest {
                 proposal, decision, Map.of(chunk.getId(), chunk), Set.of(chunk.getId())))
                 .get().satisfies(location -> {
                     assertThat(location.chunkId()).isEqualTo(chunk.getId());
-                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(73, 73));
+                    assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(72, 72));
+                    assertThat(location.locationKind()).isEqualTo("ROOT_CAUSE");
                 });
     }
 
@@ -191,7 +192,7 @@ class FindingLocationResolverTest {
                 "TEXT_YML", "", "", "");
         chunk.setId(88L);
         List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
-                Map.of(88L, chunk), Set.of(88L));
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Map.of(88L, chunk), Set.of(88L));
         LlmGateway.LocationCandidate secret = candidates.stream()
                 .filter(candidate -> candidate.roles().contains("SECRET_DEFINITION"))
                 .findFirst().orElseThrow();
@@ -234,7 +235,7 @@ class FindingLocationResolverTest {
         chunk.setId(41L);
 
         List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
-                Map.of(41L, chunk), Set.of(41L));
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Map.of(41L, chunk), Set.of(41L));
 
         assertThat(candidates)
                 .noneMatch(candidate -> candidate.source().startsWith("package "))
@@ -255,9 +256,62 @@ class FindingLocationResolverTest {
                 "OTP 明文写入日志", "LOGGER.info 记录完整 OTP", "日志中移除 OTP",
                 41L, List.of(41L), 3, 3);
         assertThat(FindingLocationResolver.formatEvidence(staleProposal, Map.of(41L, chunk)))
-                .contains("[漏洞位置] SensitiveDisclosureService.java:12")
+                .contains("[漏洞根因] SensitiveDisclosureService.java:12")
                 .contains(">>>    12 |         LOGGER.info")
                 .doesNotContain(">>>     3 | import java.io.PrintWriter;");
+    }
+
+    @Test
+    void excludesFieldsAndConstructorParametersFromFallbackLocationCandidates() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "SensitiveDisclosureController.java",
+                "SensitiveDisclosureController.java#changed-lines-17-21", null, 17, 21, """
+                private final SensitiveDisclosureService disclosureService;
+                private final OwnerContext ownerContext;
+                SensitiveDisclosureService disclosureService,
+                OwnerContext ownerContext)
+                return disclosureService.findCustomerSecurityRecord(userId);
+                """, "JAVA_CHANGE", "", "", "");
+        chunk.setId(43L);
+
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE, Map.of(43L, chunk), Set.of(43L));
+
+        assertThat(candidates)
+                .noneMatch(candidate -> candidate.source().contains("private final"))
+                .noneMatch(candidate -> candidate.source().equals("SensitiveDisclosureService disclosureService,"))
+                .noneMatch(candidate -> candidate.source().equals("OwnerContext ownerContext)"))
+                .anySatisfy(candidate -> {
+                    assertThat(candidate.startLine()).isEqualTo(21);
+                    assertThat(candidate.source()).contains("findCustomerSecurityRecord");
+                    assertThat(candidate.roles()).contains("DATA_OUTPUT");
+                });
+    }
+
+    @Test
+    void rejectsModelDeclaredRoleWhenSourceLineHasNoActualSecurityRole() {
+        CodeChunk chunk = new CodeChunk(UUID.randomUUID(), "SensitiveDisclosureController.java",
+                "SensitiveDisclosureController.java#changed-lines-21-21", null, 21, 21,
+                "private final SensitiveDisclosureService disclosureService;",
+                "JAVA_CHANGE", "", "", "");
+        chunk.setId(44L);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.AUTHORIZATION, Severity.HIGH, Confidence.HIGH,
+                "对象级授权缺失", "接口未校验目标资源归属", "增加对象归属校验",
+                44L, List.of(44L), 21, 21);
+        LlmGateway.LocationCandidate field = new LlmGateway.LocationCandidate(
+                "44:21-21", 44L, chunk.getFilePath(), chunk.getSymbolName(), 21, 21,
+                chunk.getContent(), List.of(), List.of("SUPPORTING"), "CHANGED");
+        LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
+                true, Confidence.HIGH, "模型错误地把依赖字段当作数据访问",
+                com.deepaudit.domain.FindingDeltaStatus.NEW,
+                44L, 21, 21, "MISSING_AUTHORIZATION_CHECK", "DATA_ACCESS", field.candidateId(),
+                LlmGateway.CriticVerdict.CONFIRMED, List.of());
+
+        FindingLocationResolver.LocationResolution resolution = FindingLocationResolver.resolveCriticLocation(
+                proposal, decision, Map.of(44L, chunk), Set.of(44L), List.of(field));
+
+        assertThat(resolution.status()).isEqualTo(FindingLocationResolver.LocationStatus.UNRESOLVED);
+        assertThat(resolution.resolved()).isEmpty();
     }
 
     @Test
@@ -278,10 +332,11 @@ class FindingLocationResolverTest {
                 42L, List.of(42L), 3, 3);
         List<LlmGateway.LocationCandidate> candidates = List.of(
                 new LlmGateway.LocationCandidate("42:3-3", 42L, chunk.getFilePath(), chunk.getSymbolName(),
-                        3, 3, "import java.io.PrintWriter;", List.of("DATA_OUTPUT"), "CHANGED"),
+                        3, 3, "import java.io.PrintWriter;", List.of("DATA_OUTPUT"),
+                        List.of("ROOT_CAUSE"), "CHANGED"),
                 new LlmGateway.LocationCandidate("42:6-6", 42L, chunk.getFilePath(), chunk.getSymbolName(),
                         6, 6, "LOGGER.info(\"Withdrawal OTP issued: otp={}\", otp);",
-                        List.of("DATA_OUTPUT"), "CHANGED"));
+                        List.of("DATA_OUTPUT"), List.of("ROOT_CAUSE"), "CHANGED"));
         LlmGateway.CriticDecision decision = new LlmGateway.CriticDecision(
                 true, Confidence.HIGH, "日志输出泄露 OTP", com.deepaudit.domain.FindingDeltaStatus.NEW,
                 42L, 3, 3, "UNSAFE_DATA_EXPOSURE", "DATA_OUTPUT", "42:3-3",
@@ -297,6 +352,156 @@ class FindingLocationResolverTest {
             assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(6, 6));
             assertThat(location.locationRole()).isEqualTo("DATA_OUTPUT");
         });
+    }
+
+    @Test
+    void relocatesCrossMethodSqlSinkToCompleteUnsafeLikeConstruction() {
+        CodeChunk search = chunk(39, 45, """
+                StringBuilder sql = new StringBuilder("SELECT * FROM staff WHERE 1 = 1");
+                MapSqlParameterSource parameters = new MapSqlParameterSource();
+                for (int index = 0; index < request.searchFields().size(); index++) {
+                    appendCondition(sql, parameters, request.searchFields().get(index), index);
+                }
+                return jdbcTemplate.queryForList(sql.toString(), parameters);
+                """);
+        search.setId(100L);
+        CodeChunk append = chunk(48, 71, """
+                private void appendCondition(
+                        StringBuilder sql,
+                        MapSqlParameterSource parameters,
+                        StaffSearchField searchField,
+                        int index) {
+                    if (searchField == null || !ALLOWED_FIELDS.contains(searchField.fieldName())) {
+                        throw new IllegalArgumentException("Unsupported search field");
+                    }
+
+                    String parameterName = searchField.fieldName() + "_" + index;
+                    if (EXACT_MATCH_FIELDS.contains(searchField.fieldName())) {
+                        sql.append(" AND ")
+                                .append(searchField.fieldName())
+                                .append(" = :")
+                                .append(parameterName);
+                        parameters.addValue(parameterName, searchField.fieldValue());
+                    } else {
+                        sql.append(" AND ")
+                                .append(searchField.fieldName())
+                                .append(" LIKE '%")
+                                .append(searchField.fieldValue())
+                                .append("%'");
+                    }
+                }
+                """);
+        append.setId(101L);
+        Map<Long, CodeChunk> chunks = Map.of(100L, search, 101L, append);
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                VulnerabilityType.SQL_INJECTION, chunks, chunks.keySet());
+        LlmGateway.LocationCandidate execution = candidates.stream()
+                .filter(candidate -> candidate.purposes().contains("IMPACT"))
+                .filter(candidate -> candidate.source().contains("queryForList"))
+                .findFirst().orElseThrow();
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.SQL_INJECTION, Severity.HIGH, Confidence.HIGH,
+                "员工搜索 LIKE 条件存在 SQL 注入", "fieldValue 被直接拼入 LIKE 条件", "参数化 LIKE 值",
+                100L, List.of(100L, 101L), 45, 45);
+        LlmGateway.CriticDecision decision = confirmedDecision(
+                execution, "UNSAFE_QUERY", "QUERY_EXECUTION");
+
+        FindingLocationResolver.LocationResolution resolution = FindingLocationResolver.resolveCriticLocation(
+                proposal, decision, chunks, chunks.keySet(), candidates);
+
+        assertThat(resolution.resolved()).get().satisfies(location -> {
+            assertThat(location.chunkId()).isEqualTo(101L);
+            assertThat(location.location()).isEqualTo(new FindingLocationResolver.Location(65, 69));
+            assertThat(location.locationKind()).isEqualTo("ROOT_CAUSE");
+        });
+    }
+
+    @Test
+    void usesProtectedDataOperationAsAuthorizationResponsibilityAnchorInsteadOfControllerEntry() {
+        CodeChunk entry = new CodeChunk(UUID.randomUUID(), "CustomerController.java", "CustomerController#find",
+                "/customers/{id}", 20, 20, "return customerService.find(id);",
+                "JAVA_METHOD", "Long id", "@GetMapping", "customerService.find");
+        entry.setId(201L);
+        CodeChunk access = chunk(40, 40, "return customerRepository.findById(id).orElseThrow();");
+        access.setId(202L);
+        assertMissingControlAnchorsAt(VulnerabilityType.AUTHORIZATION, "MISSING_AUTHORIZATION_CHECK",
+                entry, access, 202L);
+    }
+
+    @Test
+    void usesSensitiveOperationAsValidationResponsibilityAnchorInsteadOfControllerEntry() {
+        CodeChunk entry = new CodeChunk(UUID.randomUUID(), "PaymentController.java", "PaymentController#purchase",
+                "/payments", 20, 20, "return paymentService.purchase(request);",
+                "JAVA_METHOD", "PurchaseRequest request", "@PostMapping", "paymentService.purchase");
+        entry.setId(301L);
+        CodeChunk debit = chunk(55, 55,
+                "accountRepository.debit(request.accountNo(), request.amount());");
+        debit.setId(302L);
+        assertMissingControlAnchorsAt(VulnerabilityType.VALIDATION_BYPASS, "MISSING_VALIDATION",
+                entry, debit, 302L);
+    }
+
+    @Test
+    void selectsSensitiveLogOutputAsRootCauseInsteadOfDelegatingEntry() {
+        CodeChunk entry = new CodeChunk(UUID.randomUUID(), "OtpController.java", "OtpController#issue",
+                "/otp", 10, 10, "return otpService.issue(request);",
+                "JAVA_METHOD", "OtpRequest request", "@PostMapping", "otpService.issue");
+        entry.setId(401L);
+        CodeChunk output = chunk(60, 60, "LOGGER.info(\"issued otp={}\", otp);");
+        output.setId(402L);
+        assertRootCauseAt(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE,
+                "UNSAFE_DATA_EXPOSURE", entry, output, 402L);
+    }
+
+    @Test
+    void selectsUnsafeHtmlRenderAsStoredXssRootCauseInsteadOfPersistenceImpact() {
+        CodeChunk storage = chunk(70, 70, "commentRepository.save(comment);");
+        storage.setId(501L);
+        CodeChunk render = new CodeChunk(UUID.randomUUID(), "comment-view.js", "renderComment", null,
+                90, 90, "element.innerHTML = comment.body;", "TEXT_JS", "", "", "");
+        render.setId(502L);
+        assertRootCauseAt(VulnerabilityType.STORED_XSS, "UNSAFE_OUTPUT", storage, render, 502L);
+    }
+
+    private void assertMissingControlAnchorsAt(VulnerabilityType type, String rootCause,
+                                               CodeChunk selected, CodeChunk expected, long expectedChunkId) {
+        FindingLocationResolver.ResolvedPrimary location = resolveAcrossChunks(
+                type, rootCause, selected, expected);
+        assertThat(location.chunkId()).isEqualTo(expectedChunkId);
+        assertThat(location.locationKind()).isEqualTo("RESPONSIBILITY_ANCHOR");
+    }
+
+    private void assertRootCauseAt(VulnerabilityType type, String rootCause,
+                                   CodeChunk selected, CodeChunk expected, long expectedChunkId) {
+        FindingLocationResolver.ResolvedPrimary location = resolveAcrossChunks(
+                type, rootCause, selected, expected);
+        assertThat(location.chunkId()).isEqualTo(expectedChunkId);
+        assertThat(location.locationKind()).isEqualTo("ROOT_CAUSE");
+    }
+
+    private FindingLocationResolver.ResolvedPrimary resolveAcrossChunks(
+            VulnerabilityType type, String rootCause, CodeChunk selected, CodeChunk expected) {
+        Map<Long, CodeChunk> chunks = Map.of(selected.getId(), selected, expected.getId(), expected);
+        List<LlmGateway.LocationCandidate> candidates = FindingLocationResolver.locationCandidates(
+                type, chunks, chunks.keySet());
+        LlmGateway.LocationCandidate selectedCandidate = candidates.stream()
+                .filter(candidate -> candidate.chunkId() == selected.getId()).findFirst().orElseThrow();
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                type, Severity.HIGH, Confidence.HIGH, "安全问题", "已验证的跨方法证据链", "服务端修复",
+                selected.getId(), List.of(selected.getId(), expected.getId()),
+                selectedCandidate.startLine(), selectedCandidate.endLine());
+        LlmGateway.CriticDecision decision = confirmedDecision(
+                selectedCandidate, rootCause, selectedCandidate.roles().stream().findFirst().orElse("DATA_ACCESS"));
+        return FindingLocationResolver.resolveCriticLocation(
+                proposal, decision, chunks, chunks.keySet(), candidates).resolved().orElseThrow();
+    }
+
+    private LlmGateway.CriticDecision confirmedDecision(
+            LlmGateway.LocationCandidate candidate, String rootCause, String role) {
+        return new LlmGateway.CriticDecision(true, Confidence.HIGH, "证据链确认",
+                com.deepaudit.domain.FindingDeltaStatus.NEW, candidate.chunkId(),
+                candidate.startLine(), candidate.endLine(), rootCause, role, candidate.candidateId(),
+                LlmGateway.CriticVerdict.CONFIRMED, List.of());
     }
 
     private LlmGateway.FindingProposal proposal(VulnerabilityType type, Integer start, Integer end) {

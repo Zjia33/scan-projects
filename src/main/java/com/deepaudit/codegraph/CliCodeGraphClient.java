@@ -60,13 +60,34 @@ public class CliCodeGraphClient implements CodeGraphClient {
     }
 
     @Override
-    public RelatedLocations related(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit) {
+    public List<CodeGraphLocation> query(UUID taskId, CodeGraphSnapshot snapshot,
+                                         String search, String kind, int limit) {
+        Path root = requirePrepared(taskId, snapshot);
+        List<String> arguments = new ArrayList<>(List.of(
+                "query", requireSymbol(search), "--path", root.toString()));
+        if (kind != null && !kind.isBlank()) {
+            arguments.add("--kind");
+            arguments.add(kind.strip().toLowerCase(java.util.Locale.ROOT));
+        }
+        arguments.addAll(List.of("--limit", String.valueOf(Math.max(1, Math.min(limit, 100))),
+                "--json", "--no-color"));
+        CodeGraphCommandRunner.CommandOutput output = runner.run(root, arguments, environment());
+        requireSuccess("query", output);
+        return parseQueryLocations(output.stdout());
+    }
+
+    @Override
+    public List<CodeGraphLocation> callers(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit) {
         Path root = requirePrepared(taskId, snapshot);
         int safeLimit = Math.max(1, Math.min(limit, 100));
-        String query = requireSymbol(symbol);
-        List<CodeGraphLocation> callers = relation(root, "callers", query, safeLimit);
-        List<CodeGraphLocation> callees = relation(root, "callees", query, safeLimit);
-        return new RelatedLocations(callers, callees);
+        return relation(root, "callers", requireSymbol(symbol), safeLimit);
+    }
+
+    @Override
+    public List<CodeGraphLocation> callees(UUID taskId, CodeGraphSnapshot snapshot, String symbol, int limit) {
+        Path root = requirePrepared(taskId, snapshot);
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return relation(root, "callees", requireSymbol(symbol), safeLimit);
     }
 
     @Override
@@ -140,6 +161,57 @@ public class CliCodeGraphClient implements CodeGraphClient {
         } catch (Exception exception) {
             throw new CodeGraphException("无法解析 CodeGraph " + field + " JSON", exception);
         }
+    }
+
+    List<CodeGraphLocation> parseQueryLocations(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        String trimmed = json.strip();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+            throw new CodeGraphException("CodeGraph query 没有返回预期 JSON");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(trimmed);
+            if (root.isArray()) return parseLocationArray(root);
+            for (String field : List.of("results", "matches", "nodes", "query")) {
+                JsonNode values = root.path(field);
+                if (values.isArray()) return parseLocationArray(values);
+            }
+            throw new CodeGraphException("CodeGraph query JSON 缺少结果数组");
+        } catch (CodeGraphException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new CodeGraphException("无法解析 CodeGraph query JSON", exception);
+        }
+    }
+
+    private List<CodeGraphLocation> parseLocationArray(JsonNode values) {
+        List<CodeGraphLocation> result = new ArrayList<>();
+        for (JsonNode value : values) {
+            JsonNode node = value.has("node") ? value.path("node") : value;
+            String filePath = firstText(node, "filePath", "file_path", "path");
+            if (filePath.isBlank()) continue;
+            Integer startLine = firstInteger(node, "startLine", "start_line", "line");
+            result.add(new CodeGraphLocation(node.path("name").asText(""),
+                    node.path("kind").asText(""), normalizePath(filePath), startLine));
+        }
+        return List.copyOf(result);
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = node.path(field).asText("");
+            if (!value.isBlank()) return value;
+        }
+        return "";
+    }
+
+    private Integer firstInteger(JsonNode node, String... fields) {
+        for (String field : fields) {
+            if (node.hasNonNull(field) && node.path(field).canConvertToInt()) {
+                return node.path(field).asInt();
+            }
+        }
+        return null;
     }
 
     private String requireJson(String value) {

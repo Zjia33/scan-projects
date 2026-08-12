@@ -73,6 +73,33 @@ class ReconServiceTest {
     }
 
     @Test
+    void materializesAReadableWindowForCodeGraphFieldsOutsideMethods() throws Exception {
+        CodeChunkMapper mapper = mock(CodeChunkMapper.class);
+        when(mapper.findByTaskId(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        UUID taskId = UUID.randomUUID();
+        Path source = projectRoot.resolve("src/main/java/demo/Service.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class Service {\n  private String tenantId;\n  void load() { run(); }\n}");
+        CodeGraphClient.CodeGraphLocation location = new CodeGraphClient.CodeGraphLocation(
+                "demo.Service.tenantId", "field", "src/main/java/demo/Service.java", 2);
+
+        int materialized = new ReconService(mapper).materializeCodeGraphLocations(
+                taskId, projectRoot, List.of(location));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodeChunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(mapper).insertBatch(captor.capture());
+        assertThat(materialized).isEqualTo(1);
+        assertThat(captor.getValue()).singleElement().satisfies(chunk -> {
+            assertThat(chunk.getSymbolName()).isEqualTo("demo.Service.tenantId");
+            assertThat(chunk.getChunkType()).isEqualTo("JAVA_FIELD");
+            assertThat(chunk.getContent()).contains("private String tenantId;");
+            assertThat(chunk.getStartLine()).isEqualTo(1);
+            assertThat(chunk.getAnalysisScope()).isEqualTo(AnalysisScope.CONTEXT);
+        });
+    }
+
+    @Test
     void preservesChangedJavaLinesOutsideMethodsAsDirectEvidence() throws Exception {
         CodeChunkMapper mapper = mock(CodeChunkMapper.class);
         UUID taskId = UUID.randomUUID();

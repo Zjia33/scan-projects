@@ -3,6 +3,7 @@ package com.deepaudit.codegraph;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,6 +45,64 @@ class CliCodeGraphClientTest {
         });
         assertThat(query).singleElement().extracting(CodeGraphClient.CodeGraphLocation::name)
                 .isEqualTo("OrderService.load");
+    }
+
+    @Test
+    void queriesTargetSymbolsWithKindAndJsonOutput() throws Exception {
+        UUID taskId = UUID.randomUUID();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("workspace-" + taskId + "-target"));
+        CodeGraphProperties properties = new CodeGraphProperties();
+        CodeGraphCommandRunner runner = mock(CodeGraphCommandRunner.class);
+        when(runner.run(eq(root.toRealPath()), anyList(), anyMap())).thenReturn(
+                output(0, "", ""),
+                output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""),
+                output(0, "[{\"node\":{\"name\":\"OrderService.load\",\"kind\":\"method\","
+                        + "\"filePath\":\"src/OrderService.java\",\"startLine\":7}}]", ""));
+        CliCodeGraphClient target = new CliCodeGraphClient(properties, runner, new ObjectMapper());
+
+        target.prepare(taskId, CodeGraphSnapshot.TARGET, root);
+        List<CodeGraphClient.CodeGraphLocation> result = target.query(
+                taskId, CodeGraphSnapshot.TARGET, "OrderService#load", "method", 20);
+
+        assertThat(result).singleElement().satisfies(location -> {
+            assertThat(location.name()).isEqualTo("OrderService.load");
+            assertThat(location.filePath()).isEqualTo("src/OrderService.java");
+            assertThat(location.startLine()).isEqualTo(7);
+        });
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> arguments = ArgumentCaptor.forClass(List.class);
+        verify(runner, times(3)).run(eq(root.toRealPath()), arguments.capture(), anyMap());
+        assertThat(arguments.getAllValues().get(2)).containsExactly(
+                "query", "OrderService#load", "--path", root.toRealPath().toString(),
+                "--kind", "method", "--limit", "20", "--json", "--no-color");
+    }
+
+    @Test
+    void executesCallersAndCalleesAsIndependentCommands() throws Exception {
+        UUID taskId = UUID.randomUUID();
+        Path root = Files.createDirectory(temporaryDirectory.resolve("workspace-" + taskId + "-target"));
+        CodeGraphCommandRunner runner = mock(CodeGraphCommandRunner.class);
+        when(runner.run(eq(root.toRealPath()), anyList(), anyMap())).thenReturn(
+                output(0, "", ""),
+                output(0, "{\"initialized\":true,\"index\":{\"state\":\"complete\",\"pendingRefs\":0}}", ""),
+                output(0, "{\"callers\":[]}", ""),
+                output(0, "{\"callees\":[]}", ""));
+        CliCodeGraphClient target = new CliCodeGraphClient(
+                new CodeGraphProperties(), runner, new ObjectMapper());
+
+        target.prepare(taskId, CodeGraphSnapshot.TARGET, root);
+        target.callers(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 7);
+        target.callees(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 9);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> arguments = ArgumentCaptor.forClass(List.class);
+        verify(runner, times(4)).run(eq(root.toRealPath()), arguments.capture(), anyMap());
+        assertThat(arguments.getAllValues().get(2)).containsExactly(
+                "callers", "OrderService.load", "--path", root.toRealPath().toString(),
+                "--limit", "7", "--json", "--no-color");
+        assertThat(arguments.getAllValues().get(3)).containsExactly(
+                "callees", "OrderService.load", "--path", root.toRealPath().toString(),
+                "--limit", "9", "--json", "--no-color");
     }
 
     @Test

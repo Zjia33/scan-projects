@@ -233,38 +233,13 @@ public class AnalysisService {
         }
         String comparisonBaseSha = task.getMergeBaseSha() == null || task.getMergeBaseSha().isBlank()
                 ? task.getBaseCommitSha() : task.getMergeBaseSha();
-        String selectedBaseContext = task.getBaseCommitSha() != null
-                && !task.getBaseCommitSha().equals(comparisonBaseSha)
-                ? "；用户选择的基准分支提交 " + shortSha(task.getBaseCommitSha()) : "";
-        String auditContext = "分支变更扫描 " + shortSha(comparisonBaseSha) + " → "
-                + shortSha(task.getTargetCommitSha()) + "；" + task.getChangeSummary()
-                + selectedBaseContext
-                + "；深度范围 "
-                + (incrementalScope.changedChunkIds().size() + incrementalScope.impactedChunkIds().size())
-                + " 个代码块"
-                + "；方法变化 " + incrementalScope.semanticChangeSummary();
-        long confirmedUnlocated = candidates.stream()
-                .filter(candidate -> candidate.hypothesis().getStatus()
-                        == com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED)
-                .count();
-        if (confirmedUnlocated > 0) {
-            auditContext += "；另有 " + confirmedUnlocated + " 个漏洞已由 Critic 确认但精确位置待复核";
-        }
-        long insufficientEvidence = candidates.stream()
-                .filter(candidate -> candidate.hypothesis().getStatus()
-                        == com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE)
-                .count();
-        if (insufficientEvidence > 0) {
-            auditContext += "；另有 " + insufficientEvidence + " 个漏洞假设因 Critic 证据不足或响应异常保留待复核";
-        }
         int rejectedHypotheses = (int) candidates.stream()
                 .filter(candidate -> candidate.hypothesis().getStatus()
                         == com.deepaudit.domain.HypothesisStatus.REJECTED)
                 .count();
         stageStarted = ExecutionTiming.start();
         cancellationService.throwIfCancellationRequested(taskId);
-        reportAgent.generate(taskId, projectName, recon, confirmed, plan.size(),
-                rejectedHypotheses, auditContext);
+        reportAgent.generate(taskId, projectName, recon, confirmed);
         cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "REPORT_AGENT", stageStarted, analysisStarted,
                 "confirmed=" + confirmed.size() + ",rejected=" + rejectedHypotheses);

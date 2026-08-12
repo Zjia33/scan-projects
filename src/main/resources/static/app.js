@@ -548,6 +548,7 @@ async function renderTaskDetail(task) {
 }
 
 function buildTaskDetail(task, findings, agents, events, fileChanges) {
+    const visibleEvents = visibleAgentEvents(events);
     const fragment = document.createDocumentFragment();
     const header = el('header', 'detail-header');
     const title = el('div', 'detail-header-copy');
@@ -562,9 +563,9 @@ function buildTaskDetail(task, findings, agents, events, fileChanges) {
     const body = el('div', 'detail-body');
     body.append(buildProgress(task));
     if (task.errorMessage) body.append(el('p', 'error-banner', task.errorMessage));
-    body.append(buildTaskStats(task, events.length));
+    body.append(buildTaskStats(task, visibleEvents.length));
     body.append(buildFileChanges(fileChanges));
-    body.append(buildInvestigation(agents, events), buildFindings(findings, task.status));
+    body.append(buildInvestigation(agents, visibleEvents), buildFindings(findings, task.status));
     fragment.append(header, body);
     return fragment;
 }
@@ -655,6 +656,7 @@ function summaryStat(label, value, id) {
 }
 
 function buildInvestigation(agents, events) {
+    const visibleAgents = visibleAgentRuns(agents, events);
     const section = el('section', 'detail-section');
     const heading = el('div', 'section-heading-row');
     heading.append(el('h4', '', 'Agent 调查链路'), el('span', '', '实时事件 / 工具调用 / 证据观察'));
@@ -667,16 +669,17 @@ function buildInvestigation(agents, events) {
     consoleHead.append(liveTitle, el('span', '', '最多显示最近 120 条'));
     const feed = el('div', 'event-feed');
     feed.id = 'event-feed';
-    if (!events.length) feed.append(emptyState('等待 Agent 事件…', true));
-    events.slice(-120).forEach(event => feed.append(buildEventRow(event, false)));
+    renderEventFeed(feed, events);
     consolePanel.append(consoleHead, feed);
 
     const rosterPanel = el('aside', 'console-panel');
     const rosterHead = el('header', 'console-head');
-    rosterHead.append(el('strong', '', 'Agent 运行状态'), el('span', '', `${agents.length} RUNS`));
+    const rosterCount = el('span', '', `${visibleAgents.length} RUNS`);
+    rosterCount.id = 'visible-agent-run-count';
+    rosterHead.append(el('strong', '', 'Agent 运行状态'), rosterCount);
     const list = el('div', 'agent-list');
     list.id = 'agent-list';
-    renderAgentList(list, agents);
+    renderAgentList(list, visibleAgents);
     rosterPanel.append(rosterHead, list);
     grid.append(consolePanel, rosterPanel);
     section.append(heading, grid);
@@ -716,7 +719,7 @@ function buildFindingCard(finding) {
     const summary = el('summary');
     summary.append(el('i', `severity-mark ${finding.severity || ''}`));
     const title = el('span', 'finding-title');
-    title.append(el('strong', '', finding.title || vulnerabilityTypeText(finding.type)),
+    title.append(el('strong', '', readerFacingFindingText(finding.title) || vulnerabilityTypeText(finding.type)),
         el('small', '', `${vulnerabilityTypeText(finding.type)} · ${deltaStatusText(finding.deltaStatus)}`));
     summary.append(title, el('span', 'finding-meta', `${severityText(finding.severity)} · 可信度${confidenceText(finding.confidence)}`));
     const body = el('div', 'finding-body');
@@ -725,7 +728,8 @@ function buildFindingCard(finding) {
     body.append(el('p', 'finding-location', `实际漏洞位置：${location}${finding.endpoint ? ` · ${finding.endpoint}` : ''}`));
     appendFindingDescription(body, finding.description);
     body.append(buildFindingEvidence(finding.evidence));
-    if (finding.remediation) body.append(el('p', '', `修复建议：${finding.remediation}`));
+    const remediation = readerFacingFindingText(finding.remediation);
+    if (remediation) body.append(el('p', '', `修复建议：${remediation}`));
     card.append(summary, body);
     return card;
 }
@@ -736,11 +740,25 @@ function appendFindingDescription(container, value) {
     const index = description.indexOf(marker);
     const main = (index < 0 ? description : description.slice(0, index)).trim();
     const review = index < 0 ? '' : description.slice(index + marker.length).trim();
-    const content = main || review;
+    const readerDescription = readerFacingFindingText(main);
+    const content = readerDescription || readerFacingFindingText(review);
     if (!content) return;
     const section = el('section', 'finding-copy-section');
     section.append(el('h5', '', '漏洞说明'), el('p', 'finding-description', content));
     container.append(section);
+}
+
+// 兼容历史 Finding：隐藏模型写入用户文本的内部块号，证据字段仍保留原始结构。
+function readerFacingFindingText(value) {
+    return String(value || '')
+        .replace(/第\s*\d+\s*(?:个|号)?\s*(?:chunk\s*块?|代码块)/gi, '')
+        .replace(/[（(]\s*(?:chunk(?:\s*块|[_\s-]?id)?|代码块|primaryChunkId|evidenceChunkIds?|candidateChunkIds?)\s*(?:[:=#]|为|是)?\s*(?:\[[\d\s,，]+\]|\d+)(?:\s*第?\s*\d+(?:\s*[-–—至到]\s*\d+)?\s*行)?\s*[）)]/gi, '')
+        .replace(/(?:\[|【)?\s*(?:chunk(?:\s*块|[_\s-]?id)?|代码块|primaryChunkId|evidenceChunkIds?|candidateChunkIds?)\s*(?:[:=#]|为|是)?\s*(?:\[[\d\s,，]+\]|\d+)\s*(?:\]|】)?/gi, '')
+        .replace(/[（(]\s*[）)]/g, '')
+        .replace(/[ \t]+([，。；：、,.!?！？])/g, '$1')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/^[ \t]+|[ \t]+$/gm, '')
+        .trim();
 }
 
 function buildFindingEvidence(value) {
@@ -911,6 +929,56 @@ function seedEvents(taskId, events) {
     state.eventKeys.set(taskId, new Set(list.map(eventKey)));
 }
 
+function visibleAgentEvents(events) {
+    const source = Array.isArray(events) ? events : [];
+    const confirmedCriticRuns = confirmedCriticRunIds(source);
+    const rejectedReasons = new Map(source
+        .filter(event => event.eventType === 'REJECTED' && event.runId)
+        .map(event => [event.runId, normalizedEventMessage(event)]));
+    const modelCallRuns = new Set();
+    return source.filter(event => {
+        if (event.agentType === 'CRITIC'
+            && (!event.runId || !confirmedCriticRuns.has(event.runId))) return false;
+        if (event.eventType === 'REASONING' && event.runId) {
+            const rejectedReason = rejectedReasons.get(event.runId);
+            const reasoning = normalizedEventMessage(event);
+            if (rejectedReason
+                && (reasoning === rejectedReason || reasoning.endsWith(`；${rejectedReason}`))) return false;
+        }
+        if (event.eventType !== 'MODEL_CALL' || !event.runId) return true;
+        if (modelCallRuns.has(event.runId)) return false;
+        modelCallRuns.add(event.runId);
+        return true;
+    });
+}
+
+function normalizedEventMessage(event) {
+    return String(event?.message || '').replace(/\s+/g, ' ').trim();
+}
+
+function confirmedCriticRunIds(events) {
+    return new Set((Array.isArray(events) ? events : [])
+        .filter(event => event.agentType === 'CRITIC' && event.eventType === 'FINDING' && event.runId)
+        .map(event => event.runId));
+}
+
+function visibleAgentRuns(agents, events) {
+    const confirmedCriticRuns = confirmedCriticRunIds(events);
+    return (Array.isArray(agents) ? agents : []).filter(agent =>
+        agent.agentType !== 'CRITIC' || confirmedCriticRuns.has(agent.id));
+}
+
+function renderEventFeed(feed, events, animateLast = false) {
+    const visible = visibleAgentEvents(events).slice(-120);
+    feed.replaceChildren();
+    if (!visible.length) {
+        feed.append(emptyState('等待 Agent 事件…', true));
+        return;
+    }
+    visible.forEach((event, index) =>
+        feed.append(buildEventRow(event, animateLast && index === visible.length - 1)));
+}
+
 function connectEventStream(taskId) {
     if (state.eventSource?.datasetTaskId === taskId) return;
     closeEventStream();
@@ -936,20 +1004,30 @@ function appendAgentEvent(taskId, event) {
     keys.add(key);
     state.eventKeys.set(taskId, keys);
     const events = state.events.get(taskId) || [];
+    const displayEvent = event.eventType !== 'MODEL_CALL' || !event.runId
+        || !events.some(item => item.eventType === 'MODEL_CALL' && item.runId === event.runId);
     events.push(event);
     if (events.length > 300) events.splice(0, events.length - 300);
     state.events.set(taskId, events);
     if (state.route !== 'tasks' || state.selectedTaskId !== taskId || state.renderedTaskId !== taskId) return;
 
     const feed = ui.taskDetail.querySelector('#event-feed');
-    if (feed) {
+    const visibleEvents = visibleAgentEvents(events);
+    const eventIsVisible = visibleEvents.some(item => eventKey(item) === key);
+    const confirmedCritic = event.agentType === 'CRITIC' && event.eventType === 'FINDING';
+    const terminalRejection = event.eventType === 'REJECTED';
+    if (feed && (confirmedCritic || terminalRejection)) {
+        const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
+        renderEventFeed(feed, events, true);
+        if (nearBottom) feed.scrollTop = feed.scrollHeight;
+    } else if (feed && displayEvent && eventIsVisible) {
         const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
         feed.querySelector('.empty-state')?.remove();
         feed.append(buildEventRow(event, true));
         while (feed.children.length > 120) feed.firstElementChild.remove();
         if (nearBottom) feed.scrollTop = feed.scrollHeight;
     }
-    setText('#task-event-count', events.length);
+    setText('#task-event-count', visibleEvents.length);
     if (['STARTED', 'COMPLETED', 'CANCELLED', 'ERROR', 'FINDING', 'LOCATION_UNRESOLVED',
         'INSUFFICIENT_EVIDENCE', 'FORMAT_ERROR', 'REJECTED'].includes(event.eventType)) {
         scheduleAgentRefresh(taskId);
@@ -1012,7 +1090,9 @@ function scheduleAgentRefresh(taskId) {
         try {
             const agents = await fetchJson(`/api/tasks/${taskId}/agents`);
             const list = ui.taskDetail.querySelector('#agent-list');
-            if (list) renderAgentList(list, agents);
+            const visibleAgents = visibleAgentRuns(agents, state.events.get(taskId) || []);
+            if (list) renderAgentList(list, visibleAgents);
+            setText('#visible-agent-run-count', `${visibleAgents.length} RUNS`);
         } catch (_) {
             // SSE continues even if the roster refresh fails.
         }

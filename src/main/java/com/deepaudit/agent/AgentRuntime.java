@@ -18,6 +18,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,8 +43,11 @@ public class AgentRuntime {
     public Optional<AgentCandidate> investigate(UUID taskId, AgentTask task,
                                                 LlmGateway.ReconInsight recon, List<CodeChunk> chunks) {
         cancellationService.throwIfCancellationRequested(taskId);
+        // 每个并行专业 Agent 维护独立、可按需补充的 Chunk 视图。
+        List<CodeChunk> sessionChunks = new ArrayList<>(chunks);
         // 当前目标和确定性语义流是初始允许引用的证据集合。
-        Map<Long, CodeChunk> byId = chunks.stream().collect(Collectors.toMap(CodeChunk::getId, Function.identity()));
+        Map<Long, CodeChunk> byId = sessionChunks.stream().collect(Collectors.toMap(
+                CodeChunk::getId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
         CodeChunk target = byId.get(task.chunkId());
         if (target == null) return Optional.empty();
         AgentRun run = traceService.start(taskId, task.agentType(), target.getId(), target.getSymbolName());
@@ -56,6 +60,8 @@ public class AgentRuntime {
         allowedEvidence.addAll(semanticEvidence.evidenceChunkIds());
         try {
             int maxIterations = Math.max(1, properties.getMaxIterationsPerAgent());
+            traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
+                    "开始专业调查：结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断");
             // 每轮只允许继续调用只读工具、提交发现或结束调查。
             for (int iteration = 1; iteration <= maxIterations; iteration++) {
                 cancellationService.throwIfCancellationRequested(taskId);
@@ -65,22 +71,18 @@ public class AgentRuntime {
                         task.vulnerabilityType(), AgentPromptSupport.target(target, Set.of(task.vulnerabilityType())),
                         task.ruleHint(), semanticEvidence.text(), recon,
                         promptObservations(observations), iteration);
-                String observationContext = observations.isEmpty()
-                        ? "结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断"
-                        : "结合 Recon 架构事实、CodeGraph 调用关系、局部安全语义和 " + observations.size()
-                        + " 条工具观察进行安全判断";
-                traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.MODEL_CALL,
-                        "第 " + iteration + " 轮：" + observationContext);
                 long modelStarted = ExecutionTiming.start();
                 LlmGateway.AgentDecision decision = llmGateway.decide(turn);
                 cancellationService.throwIfCancellationRequested(taskId);
                 long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
                 TimingDetailLog.info("模型阶段结束：taskId={}，stage=PROFESSIONAL_AGENT_MODEL，agentType={}，chunkId={}，iteration={}，elapsedMs={}",
                         taskId, task.agentType(), task.chunkId(), iteration, modelElapsedMs);
-                traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REASONING,
-                        "模型调用完成，耗时 " + modelElapsedMs + " ms；" + safe(decision.summary()));
-                traceService.update(run);
                 String action = decision.action() == null ? "" : decision.action().toUpperCase();
+                if ("TOOL".equals(action) || "FINDING".equals(action)) {
+                    traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.REASONING,
+                            "模型调用完成，耗时 " + modelElapsedMs + " ms；" + safe(decision.summary()));
+                }
+                traceService.update(run);
                 if ("TOOL".equals(action)) {
                     // 工具返回分别标记为已验证证据或仍需关系验证的候选。
                     if (run.getToolCallCount() >= properties.getMaxToolCallsPerAgent()) break;
@@ -88,8 +90,10 @@ public class AgentRuntime {
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.TOOL_CALL,
                             decision.tool() + "：" + safe(decision.summary()));
                     ToolResult result = toolService.execute(decision.tool(), decision.arguments(),
-                            target, chunks, task.vulnerabilityType(),
+                            target, sessionChunks, task.vulnerabilityType(),
                             new ToolSessionContext(target.getId(), allowedEvidence, candidateEvidence));
+                    byId.clear();
+                    sessionChunks.forEach(chunk -> byId.putIfAbsent(chunk.getId(), chunk));
                     allowedEvidence.addAll(result.evidenceChunkIds());
                     candidateEvidence.addAll(result.candidateChunkIds());
                     candidateEvidence.removeAll(result.evidenceChunkIds());
@@ -224,7 +228,7 @@ public class AgentRuntime {
         for (int index = 0; index < observations.size(); index++) {
             RuntimeObservation observation = observations.get(index);
             String text = index >= detailedFrom
-                    ? truncate(observation.result(), maxChars)
+                    ? truncateObservation(observation.result(), maxChars)
                     : compactObservation(observation);
             result.add(new LlmGateway.Observation(
                     observation.tool(), observation.arguments(), text));
@@ -243,6 +247,31 @@ public class AgentRuntime {
     private String truncate(String value, int maxChars) {
         if (value == null) return "";
         return value.substring(0, Math.min(value.length(), maxChars));
+    }
+
+    private String truncateObservation(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) return value == null ? "" : value;
+        String markerText = "[OBSERVATION_TRUNCATED originalChars=" + value.length()
+                + " retainedChars=" + maxChars + " action=refine_query_or_use_cursor]";
+        String marker = "\n... " + markerText + " ...\n";
+        int available = Math.max(0, maxChars - marker.length());
+        int headChars = available * 2 / 3;
+        int tailChars = available - headChars;
+        int headEnd = lineBoundaryBefore(value, headChars);
+        int tailStart = lineBoundaryAfter(value, value.length() - tailChars);
+        return value.substring(0, headEnd).stripTrailing() + marker
+                + value.substring(tailStart).stripLeading();
+    }
+
+    private int lineBoundaryBefore(String value, int target) {
+        int boundary = value.lastIndexOf('\n', Math.min(target, value.length()));
+        return boundary < 0 ? Math.min(target, value.length()) : boundary;
+    }
+
+    private int lineBoundaryAfter(String value, int target) {
+        int safeTarget = Math.max(0, Math.min(target, value.length()));
+        int boundary = value.indexOf('\n', safeTarget);
+        return boundary < 0 ? safeTarget : Math.min(value.length(), boundary + 1);
     }
 
     private String safe(String value) {

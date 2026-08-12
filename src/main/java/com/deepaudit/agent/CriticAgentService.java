@@ -8,6 +8,7 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
+import com.deepaudit.domain.FindingLocationKind;
 import com.deepaudit.domain.HypothesisStatus;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.FindingDeltaStatus;
@@ -73,19 +74,22 @@ public class CriticAgentService {
                     candidate.proposal(), independentEvidence.evidenceChunkIds(), chunksById);
             Set<Long> relatedReviewIds = Optional.ofNullable(semanticEvidenceService.criticReviewContextIds(
                     taskId, allowedLocationChunks, 3)).orElse(Set.of());
+            LinkedHashSet<Long> verifiedLocationChunks = new LinkedHashSet<>(allowedLocationChunks);
+            relatedReviewIds.stream().filter(chunksById::containsKey).forEach(verifiedLocationChunks::add);
             ReviewContext reviewContext = buildReviewContext(
-                    candidate.proposal(), chunksById, allowedLocationChunks, relatedReviewIds);
+                    candidate.proposal(), chunksById, verifiedLocationChunks, relatedReviewIds);
             List<LlmGateway.LocationCandidate> locationCandidates =
-                    FindingLocationResolver.locationCandidates(chunksById, allowedLocationChunks);
+                    FindingLocationResolver.locationCandidates(
+                            candidate.proposal().type(), chunksById, verifiedLocationChunks);
             Map<Long, Integer> criticCallSites = semanticEvidenceService.callSiteLines(
-                    taskId, candidate.proposal().primaryChunkId(), allowedLocationChunks);
+                    taskId, candidate.proposal().primaryChunkId(), verifiedLocationChunks);
             String criticEvidence = FindingLocationResolver.formatCriticEvidence(
-                    candidate.proposal(), chunksById, allowedLocationChunks, criticCallSites);
+                    candidate.proposal(), chunksById, verifiedLocationChunks, criticCallSites);
             TimingDetailLog.info("任务 {} Critic 证据包已构建：type={}，primaryChunk={}，verifiedChunks={}，"
                             + "semanticChunks={}，reviewContextChunks={}，reviewContextTruncated={}，"
                             + "locationCandidates={}，evidenceChars={}，evidenceBuildElapsedMs={}",
                     taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
-                    allowedLocationChunks.size(), independentEvidence.evidenceChunkIds().size(),
+                    verifiedLocationChunks.size(), independentEvidence.evidenceChunkIds().size(),
                     reviewContext.chunkCount(), reviewContext.truncated(),
                     locationCandidates.size(), criticEvidence.length(),
                     ExecutionTiming.elapsedMillis(reviewStarted));
@@ -105,14 +109,12 @@ public class CriticAgentService {
                     modelElapsedMs, ExecutionTiming.elapsedMillis(reviewStarted));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
                     "Critic 模型调用完成，耗时 " + modelElapsedMs + " ms");
-            LinkedHashSet<Long> allowedCounterEvidenceIds = new LinkedHashSet<>(allowedLocationChunks);
+            LinkedHashSet<Long> allowedCounterEvidenceIds = new LinkedHashSet<>(verifiedLocationChunks);
             allowedCounterEvidenceIds.addAll(reviewContext.chunkIds());
             if (!validDecisionEnvelope(decision, allowedCounterEvidenceIds)) {
                 return markInsufficient(taskId, candidate, run, AgentEventType.FORMAT_ERROR,
                         "Critic 返回字段不完整、状态矛盾或引用了未验证反证，未执行漏洞否决");
             }
-            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
-                    safe(decision.reason()));
             candidate.hypothesis().setCriticReason(decision.reason());
             candidate.hypothesis().setUpdatedAt(Instant.now());
             TimingDetailLog.info("任务 {} Critic 判定完成：type={}，primaryChunk={}，verdict={}，confirmed={}，reasonChars={}",
@@ -133,10 +135,10 @@ public class CriticAgentService {
                 return Optional.empty();
             }
             Correction corrected = correctedProposal(candidate.proposal(), decision, chunksById,
-                    allowedLocationChunks, locationCandidates);
+                    verifiedLocationChunks, locationCandidates);
             if (corrected.proposal().isEmpty() && !locationCandidates.isEmpty()) {
                 corrected = repairLocation(taskId, candidate.proposal(), decision, chunksById,
-                        allowedLocationChunks, locationCandidates, corrected.reason(), run);
+                        verifiedLocationChunks, locationCandidates, corrected.reason(), run);
             }
             if (corrected.proposal().isEmpty()) {
                 String invalidLocation = "Critic 已确认漏洞，但精确位置仍待复核：" + corrected.reason();
@@ -155,11 +157,11 @@ public class CriticAgentService {
             Confidence confidence = decision.confidence() == null
                     ? fallbackConfidence(candidate.proposal().confidence()) : decision.confidence();
             LlmGateway.FindingProposal correctedProposal = corrected.proposal().orElseThrow();
-            Set<Long> correctedEvidenceIds = new LinkedHashSet<>(correctedProposal.evidenceChunkIds());
             Map<Long, Integer> callSites = Optional.ofNullable(semanticEvidenceService.callSiteLines(
-                    taskId, correctedProposal.primaryChunkId(), correctedEvidenceIds)).orElse(Map.of());
+                    taskId, correctedProposal.primaryChunkId(), verifiedLocationChunks)).orElse(Map.of());
             LlmGateway.FindingProposal proposal = reportProposal(
-                    candidate.proposal(), correctedProposal, decision, chunksById, callSites);
+                    candidate.proposal(), correctedProposal, decision, chunksById, callSites,
+                    locationCandidates);
             CodeChunk primary = chunksById.get(proposal.primaryChunkId());
             candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED);
             candidate.hypothesis().setConfidence(confidence);
@@ -174,11 +176,16 @@ public class CriticAgentService {
                     truncate(proposal.title(), 500), primary.getFilePath(), location.startLine(),
                     location.endLine(), endpoint,
                     safeText(proposal.description()) + "\n\nCritic Agent 复核：" + safeText(decision.reason()),
-                    FindingLocationResolver.formatEvidence(proposal, chunksById, callSites),
+                    FindingLocationResolver.formatEvidence(
+                            proposal, chunksById, callSites, corrected.locationKind(), decision.rootCauseKind()),
                     safeText(proposal.remediation()));
+            finding.setLocationKind(corrected.locationKind() == null
+                    ? FindingLocationKind.ROOT_CAUSE : corrected.locationKind());
             finding.setDeltaStatus(FindingDeltaStatus.normalize(decision.deltaStatus()));
             finding.setFingerprint(FindingFingerprint.create(
                     proposal.type(), primary, location.startLine(), location.endLine()));
+            traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
+                    safe(decision.reason()));
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.FINDING,
                     "确认 " + proposal.type().getDisplayName() + "：" + proposal.title());
             run.complete("Critic Agent 已确认漏洞证据链");
@@ -230,7 +237,8 @@ public class CriticAgentService {
         List<Long> evidenceIds = correctedEvidenceIds(original, primaryChunkId, allowed);
         return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
                 original.confidence(), original.title(), original.description(), original.remediation(),
-                primaryChunkId, evidenceIds, location.startLine(), location.endLine())), resolution.reason());
+                primaryChunkId, evidenceIds, location.startLine(), location.endLine())),
+                locationKind(resolution.resolved().orElseThrow()), resolution.reason());
     }
 
     private Correction repairLocation(UUID taskId, LlmGateway.FindingProposal original,
@@ -263,6 +271,7 @@ public class CriticAgentService {
             return new Correction(Optional.of(new LlmGateway.FindingProposal(original.type(), original.severity(),
                     original.confidence(), original.title(), original.description(), original.remediation(),
                     primaryChunkId, evidenceIds, location.startLine(), location.endLine())),
+                    locationKind(resolved.orElseThrow()),
                     "已通过受约束候选完成位置修复");
         } catch (RuntimeException exception) {
             traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.REASONING,
@@ -325,12 +334,12 @@ public class CriticAgentService {
     private LlmGateway.FindingProposal reportProposal(
             LlmGateway.FindingProposal original, LlmGateway.FindingProposal corrected,
             LlmGateway.CriticDecision decision, Map<Long, CodeChunk> chunks,
-            Map<Long, Integer> callSites) {
+            Map<Long, Integer> callSites, List<LlmGateway.LocationCandidate> locationCandidates) {
         LinkedHashSet<Long> reportEvidenceIds = new LinkedHashSet<>();
         reportEvidenceIds.add(corrected.primaryChunkId());
         corrected.evidenceChunkIds().stream()
                 .filter(id -> !id.equals(corrected.primaryChunkId()))
-                .filter(callSites::containsKey)
+                .filter(id -> callSites.containsKey(id) || hasReportPurpose(id, locationCandidates))
                 .forEach(reportEvidenceIds::add);
         if (requiresImpactContext(decision)) {
             original.evidenceChunkIds().stream()
@@ -341,6 +350,12 @@ public class CriticAgentService {
                 corrected.confidence(), corrected.title(), corrected.description(),
                 corrected.remediation(), corrected.primaryChunkId(), List.copyOf(reportEvidenceIds),
                 corrected.vulnerabilityStartLine(), corrected.vulnerabilityEndLine());
+    }
+
+    private boolean hasReportPurpose(Long chunkId, List<LlmGateway.LocationCandidate> candidates) {
+        return candidates.stream().filter(candidate -> candidate.chunkId() == chunkId)
+                .flatMap(candidate -> candidate.purposes().stream())
+                .anyMatch(purpose -> purpose.equals("IMPACT") || purpose.equals("ENTRY"));
     }
 
     private boolean requiresImpactContext(LlmGateway.CriticDecision decision) {
@@ -427,9 +442,15 @@ public class CriticAgentService {
                 .findFirst().orElse(null);
     }
 
-    private record Correction(Optional<LlmGateway.FindingProposal> proposal, String reason) {
+    private FindingLocationKind locationKind(FindingLocationResolver.ResolvedPrimary resolved) {
+        return "RESPONSIBILITY_ANCHOR".equals(resolved.locationKind())
+                ? FindingLocationKind.RESPONSIBILITY_ANCHOR : FindingLocationKind.ROOT_CAUSE;
+    }
+
+    private record Correction(Optional<LlmGateway.FindingProposal> proposal,
+                              FindingLocationKind locationKind, String reason) {
         private static Correction unresolved(String reason) {
-            return new Correction(Optional.empty(), reason == null ? "未知定位错误" : reason);
+            return new Correction(Optional.empty(), null, reason == null ? "未知定位错误" : reason);
         }
     }
 

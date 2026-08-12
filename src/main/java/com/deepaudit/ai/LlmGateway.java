@@ -126,9 +126,10 @@ public interface LlmGateway {
     // 由后端从真实证据源码生成的可选位置；模型只能选择 candidateId，不能创造行号。
     record LocationCandidate(String candidateId, long chunkId, String filePath, String symbolName,
                              int startLine, int endLine, String source, List<String> roles,
-                             String analysisScope) {
+                             List<String> purposes, String analysisScope) {
         public LocationCandidate {
             roles = roles == null ? List.of() : List.copyOf(roles);
+            purposes = purposes == null ? List.of() : List.copyOf(purposes);
         }
     }
 
@@ -151,11 +152,10 @@ public interface LlmGateway {
     }
 
     record ReportRequest(UUID taskId, String projectName, ReconInsight recon,
-                         List<ReportFinding> findings, int completedAgents, int rejectedHypotheses,
-                         String auditContext) {
+                         List<ReportFinding> findings) {
     }
 
-    record ReportNarrative(String executiveSummary, String coverageSummary) {
+    record ReportNarrative(String executiveSummary) {
     }
 
     private static Map<String, Object> safeArguments(Map<String, Object> arguments) {

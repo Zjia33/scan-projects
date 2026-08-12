@@ -98,7 +98,7 @@ public class TestLlmConfiguration {
             @Override
             public ReportNarrative writeReport(ReportRequest request) {
                 return new ReportNarrative("AI Agents 已完成订单接口安全审查并确认 "
-                        + request.findings().size() + " 个问题。", "已执行 Recon、规划、专业调查和 Critic 复核。");
+                        + request.findings().size() + " 个问题。");
             }
 
             private String tool(VulnerabilityType type) {

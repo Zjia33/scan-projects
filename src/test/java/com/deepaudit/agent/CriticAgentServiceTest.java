@@ -20,6 +20,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +28,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -121,9 +123,11 @@ class CriticAgentServiceTest {
         assertThat(finding.getFilePath()).isEqualTo("LabScenarioService.java");
         assertThat(finding.getStartLine()).isEqualTo(86);
         assertThat(finding.getEndLine()).isEqualTo(88);
+        assertThat(finding.getLocationKind()).isEqualTo(
+                com.deepaudit.domain.FindingLocationKind.RESPONSIBILITY_ANCHOR);
         assertThat(finding.getEndpoint()).isEqualTo("/payments/purchase");
         assertThat(finding.getEvidence())
-                .contains("[漏洞位置] LabScenarioService.java:86-88")
+                .contains("[责任锚点] LabScenarioService.java:86-88")
                 .contains("[调用入口] LabScenarioController.java:84")
                 .doesNotContain("旧的候选证据文本");
         assertThat(finding.getEvidence()).doesNotContain("AccountRepository.java");
@@ -134,6 +138,9 @@ class CriticAgentServiceTest {
         assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(vulnerableService.getId());
         assertThat(hypothesis.getEvidenceChunkIds())
                 .doesNotContain(String.valueOf(debitRepository.getId()));
+        verify(traceService).event(eq(taskId), any(), eq(AgentType.CRITIC),
+                eq(com.deepaudit.domain.AgentEventType.REASONING),
+                eq("实际风险发生在服务层扣款逻辑"));
     }
 
     @Test
@@ -184,8 +191,10 @@ class CriticAgentServiceTest {
         assertThat(finding.getEndLine()).isEqualTo(58);
         assertThat(finding.getEndpoint()).isEqualTo("/api/lab/notices/board");
         assertThat(finding.getDeltaStatus()).isEqualTo(FindingDeltaStatus.PERSISTING);
+        assertThat(finding.getLocationKind()).isEqualTo(
+                com.deepaudit.domain.FindingLocationKind.ROOT_CAUSE);
         assertThat(finding.getEvidence())
-                .contains("[漏洞位置] LabScenarioController.java:58")
+                .contains("[漏洞根因] LabScenarioController.java:58")
                 .contains(">>>    58 | @PreAuthorize")
                 .contains("[关联证据] LabScenarioService.java:60")
                 .doesNotContain(">>>    60 |     return noticeRepository.findAll().stream()");
@@ -193,7 +202,7 @@ class CriticAgentServiceTest {
     }
 
     @Test
-    void repairsConfirmedCustomOperationBySelectingServerGeneratedCandidate() {
+    void normalizesConfirmedPortOperationFromItsActualSourceRole() {
         UUID taskId = UUID.randomUUID();
         LlmGateway gateway = mock(LlmGateway.class);
         AgentTraceService traceService = mock(AgentTraceService.class);
@@ -216,14 +225,6 @@ class CriticAgentServiceTest {
                 true, Confidence.HIGH, "账本操作缺少服务端约束", FindingDeltaStatus.NEW,
                 operation.getId(), 40, 40, "MISSING_VALIDATION", "BUSINESS_OPERATION", null,
                 LlmGateway.CriticVerdict.CONFIRMED, List.of()));
-        when(gateway.repairLocation(any())).thenAnswer(invocation -> {
-            LlmGateway.LocationRepairRequest request = invocation.getArgument(0);
-            LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
-                    .filter(value -> value.source().contains("ledgerPort.apply"))
-                    .findFirst().orElseThrow();
-            return new LlmGateway.LocationDecision(selected.candidateId(), "选择真实账本调用");
-        });
-
         operation.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
         Optional<Finding> result = service.review(taskId, candidate, recon(), List.of(operation));
 
@@ -232,7 +233,7 @@ class CriticAgentServiceTest {
             assertThat(finding.getEndLine()).isEqualTo(41);
         });
         assertThat(hypothesis.getStatus()).isEqualTo(com.deepaudit.domain.HypothesisStatus.CONFIRMED);
-        verify(gateway).repairLocation(any());
+        verify(gateway, never()).repairLocation(any());
     }
 
     @Test
@@ -244,7 +245,13 @@ class CriticAgentServiceTest {
         SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
         CriticAgentService service = new CriticAgentService(
                 gateway, traceService, hypothesisMapper, semanticEvidenceService);
-        CodeChunk operation = customOperation(taskId);
+        CodeChunk operation = new CodeChunk(taskId, "CommandService.java", "CommandService#apply", null,
+                40, 42, """
+                public void apply(Command command) {
+                    handler.apply(command);
+                }
+                """, "JAVA_METHOD", "Command command", "", "apply");
+        operation.setId(2101L);
         LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
                 VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "未验证指令被提交", "外部指令直接交给账本端口执行", "提交前验证金额与归属",
@@ -270,6 +277,7 @@ class CriticAgentServiceTest {
                 .isEqualTo(com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED);
         assertThat(hypothesis.getCriticReason()).contains("已确认漏洞", "定位修复未选择合法候选 ID");
         verify(hypothesisMapper).update(hypothesis);
+        verify(gateway).repairLocation(any());
     }
 
     @Test
@@ -312,6 +320,54 @@ class CriticAgentServiceTest {
     }
 
     @Test
+    void promotesVerifiedCallGraphReviewContextToLocationCandidates() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        CodeChunk changedEntry = customOperation(taskId);
+        CodeChunk relatedOperation = vulnerableService(taskId);
+        changedEntry.setAnalysisScope(AnalysisScope.CHANGED);
+        relatedOperation.setAnalysisScope(AnalysisScope.CONTEXT);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
+                "客户端报价被用于扣款", "变更入口可到达未验证报价的扣款操作", "服务端查询可信价格",
+                changedEntry.getId(), List.of(changedEntry.getId()), 41, 41);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(), proposal.type(),
+                proposal.title(), changedEntry.getId(), String.valueOf(changedEntry.getId()), Confidence.HIGH);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(changedEntry.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, changedEntry.getId(), "apply"));
+        when(semanticEvidenceService.criticReviewContextIds(eq(taskId), anySet(), eq(3)))
+                .thenReturn(Set.of(relatedOperation.getId()));
+        when(gateway.critique(any())).thenAnswer(invocation -> {
+            LlmGateway.CriticRequest request = invocation.getArgument(0);
+            LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
+                    .filter(value -> value.chunkId() == relatedOperation.getId())
+                    .filter(value -> value.source().contains("quotedUnitPrice"))
+                    .findFirst().orElseThrow();
+            return new LlmGateway.CriticDecision(
+                    true, Confidence.HIGH, "已验证调用链到达未重算报价的扣款操作", FindingDeltaStatus.NEW,
+                    selected.chunkId(), selected.startLine(), selected.endLine(),
+                    "MISSING_VALIDATION", "BUSINESS_OPERATION", selected.candidateId(),
+                    LlmGateway.CriticVerdict.CONFIRMED, List.of());
+        });
+
+        Optional<Finding> result = service.review(
+                taskId, candidate, recon(), List.of(changedEntry, relatedOperation));
+
+        assertThat(result).get().satisfies(finding -> {
+            assertThat(finding.getFilePath()).isEqualTo("LabScenarioService.java");
+            assertThat(finding.getStartLine()).isEqualTo(86);
+        });
+        assertThat(hypothesis.getPrimaryChunkId()).isEqualTo(relatedOperation.getId());
+    }
+
+    @Test
     void keepsHypothesisAsInsufficientWhenCriticCannotReachAConclusion() {
         UUID taskId = UUID.randomUUID();
         LlmGateway gateway = mock(LlmGateway.class);
@@ -345,6 +401,9 @@ class CriticAgentServiceTest {
                 .isEqualTo(com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE);
         assertThat(hypothesis.getCriticReason()).contains("证据不足", "完整关系");
         verify(hypothesisMapper).update(hypothesis);
+        verify(traceService, never()).event(eq(taskId), any(), eq(AgentType.CRITIC),
+                eq(com.deepaudit.domain.AgentEventType.REASONING),
+                eq("缺少入口到危险操作的完整关系"));
     }
 
     @Test

@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class IncrementalReviewService {
-    private static final int MAX_CONTEXT_CHARS = 8_000;
+    private static final int MAX_CONTEXT_CHARS = 12_000;
     private static final Set<String> SECURITY_ANNOTATIONS = Set.of(
             "preauthorize", "postauthorize", "secured", "rolesallowed", "permitall", "denyall");
     private static final Set<String> SECURITY_CONFIGURATION = Set.of(

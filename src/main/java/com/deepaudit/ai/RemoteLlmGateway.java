@@ -138,8 +138,9 @@ public class RemoteLlmGateway implements LlmGateway {
                         Map.entry("deltaStatus", "NEW|PERSISTING"),
                         Map.entry("rootCauseKind", "INEFFECTIVE_SECURITY_CONTROL|MISSING_AUTHORIZATION_CHECK|"
                                 + "UNSAFE_DATA_EXPOSURE|HARDCODED_SECRET|UNSAFE_QUERY|MISSING_VALIDATION|UNSAFE_OUTPUT"),
-                        Map.entry("locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|SECRET_DEFINITION|QUERY|VALIDATION|"
-                                + "DATA_ACCESS|DATA_OUTPUT|DANGEROUS_OPERATION|BUSINESS_OPERATION"),
+                        Map.entry("locationRole", "SECURITY_BOUNDARY|SECURITY_CONFIGURATION|SECRET_DEFINITION|"
+                                + "QUERY_CONSTRUCTION|QUERY_EXECUTION|QUERY|VALIDATION|DATA_ACCESS|DATA_OUTPUT|"
+                                + "UNSAFE_RENDER|DANGEROUS_OPERATION|BUSINESS_OPERATION"),
                         Map.entry("locationCandidateId", "confirmed=true 时优先填写，且必须来自 locationCandidates"),
                         Map.entry("primaryChunkId", "confirmed=true 时复制所选 locationCandidate.chunkId"),
                         Map.entry("vulnerabilityStartLine", "confirmed=true 时复制所选 locationCandidate.startLine"),
@@ -163,7 +164,7 @@ public class RemoteLlmGateway implements LlmGateway {
     public ReportNarrative writeReport(ReportRequest request) {
         String systemPrompt = AgentPrompts.reportAgent();
         String userPrompt = json(Map.of("reportFacts", request, "outputSchema",
-                Map.of("executiveSummary", "string", "coverageSummary", "string")));
+                Map.of("executiveSummary", "不含内部代码块编号或工具标识的简体中文 string")));
         return call(request.taskId(), "REPORT", systemPrompt, userPrompt, ReportNarrative.class);
     }
 

@@ -85,7 +85,7 @@ class AuditFlowIntegrationTest {
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(script).contains("中断审计", "/cancel", "确认中断",
                         "taskRequestSequence", "selectedTask() !== task",
-                        "withoutInternalChunkIds", "finding-evidence-chunk",
+                        "withoutInternalChunkIds", "readerFacingFindingText", "finding-evidence-chunk",
                         "正在创建审计任务并加入队列", "queuedTaskFromSubmission",
                         "void loadTasks({ forceDetail: true })", "state.submittingAudit")
                 .doesNotContain("chunk.id ? `CHUNK", "代码证据 ${index + 1}");
@@ -140,7 +140,7 @@ class AuditFlowIntegrationTest {
                 "SENSITIVE_INFORMATION_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
         assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
-        assertThat(findingsJson).contains("[漏洞位置]", ">>>");
+        assertThat(findingsJson).containsAnyOf("[漏洞根因]", "[责任锚点]").contains(">>>");
         assertThat(findingsJson).contains("\"deltaStatus\":\"NEW\"");
 
         String report = mockMvc.perform(get("/api/tasks/{taskId}/report.html", taskId))

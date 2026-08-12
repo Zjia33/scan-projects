@@ -28,7 +28,7 @@ import java.util.UUID;
 
 @Service
 public class GitDiffService {
-    private static final int MAX_CONTEXT_CHARS = 12_000;
+    private static final int MAX_CONTEXT_CHARS = 20_000;
     private static final int DIFF_CONTEXT_LINES = 5;
     private static final long MAX_DIFF_BLOB_BYTES = 2L * 1024L * 1024L;
 

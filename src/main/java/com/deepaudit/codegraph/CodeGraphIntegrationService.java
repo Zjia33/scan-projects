@@ -30,6 +30,7 @@ public class CodeGraphIntegrationService {
     private final CodeGraphClient client;
     private final CodeGraphResultMapper resultMapper;
     private final Map<UUID, Set<CodeGraphSnapshot>> preparedSnapshots = new ConcurrentHashMap<>();
+    private final Map<UUID, Path> targetRoots = new ConcurrentHashMap<>();
 
     // 增量任务必须分别建立 Comparison Base 和 Target 索引。
     public boolean prepare(UUID taskId, Path baseRoot, Path targetRoot) {
@@ -51,6 +52,9 @@ public class CodeGraphIntegrationService {
             client.prepare(taskId, snapshot, root);
             preparedSnapshots.computeIfAbsent(taskId,
                     ignored -> ConcurrentHashMap.newKeySet()).add(snapshot);
+            if (snapshot == CodeGraphSnapshot.TARGET) {
+                targetRoots.put(taskId, root.toAbsolutePath().normalize());
+            }
             TimingDetailLog.info("任务 {} CodeGraph {} 索引已就绪", taskId, snapshot);
             return true;
         } catch (RuntimeException exception) {
@@ -153,8 +157,8 @@ public class CodeGraphIntegrationService {
         if (symbol.isBlank() || !prepared(taskId, CodeGraphSnapshot.BASE)
                 || !queried.add(CodeGraphSnapshot.BASE + ":callers:" + symbol)) return;
         try {
-            locations.addAll(client.related(taskId, CodeGraphSnapshot.BASE, symbol,
-                    safeRelationLimit()).callers());
+            locations.addAll(client.callers(taskId, CodeGraphSnapshot.BASE, symbol,
+                    safeRelationLimit()));
         } catch (RuntimeException exception) {
             failedQueries[0]++;
             log.warn("任务 {} CodeGraph BASE callers 查询失败，symbol={}：{}",
@@ -183,9 +187,11 @@ public class CodeGraphIntegrationService {
             String symbol = codeGraphSymbol(current.getSymbolName());
             if (symbol.isBlank() || !queried.add(symbol)) continue;
             try {
-                CodeGraphClient.RelatedLocations related = client.related(taskId, CodeGraphSnapshot.TARGET,
-                        symbol, safeRelationLimit());
-                for (CodeGraphClient.CodeGraphLocation callerLocation : related.callers()) {
+                List<CodeGraphClient.CodeGraphLocation> callers = client.callers(
+                        taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
+                List<CodeGraphClient.CodeGraphLocation> callees = client.callees(
+                        taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
+                for (CodeGraphClient.CodeGraphLocation callerLocation : callers) {
                     locations.add(callerLocation);
                     CodeChunk caller = resultMapper.mapLocation(chunks, callerLocation);
                     if (caller == null || caller.getId() == null || caller.getId().equals(id)) {
@@ -195,7 +201,7 @@ public class CodeGraphIntegrationService {
                     contextIds.add(caller.getId());
                     addRelation(relations, caller, current, "CODEGRAPH_CALLER");
                 }
-                for (CodeGraphClient.CodeGraphLocation calleeLocation : related.callees()) {
+                for (CodeGraphClient.CodeGraphLocation calleeLocation : callees) {
                     locations.add(calleeLocation);
                     CodeChunk callee = resultMapper.mapLocation(chunks, calleeLocation);
                     if (callee == null || callee.getId() == null || callee.getId().equals(id)) {
@@ -237,11 +243,9 @@ public class CodeGraphIntegrationService {
         String symbol = codeGraphSymbol(current.getSymbolName());
         if (symbol.isBlank()) return RelationContext.empty();
         try {
-            CodeGraphClient.RelatedLocations related = client.related(taskId, CodeGraphSnapshot.TARGET,
-                    symbol, limit);
             List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
-            locations.addAll(related.callers());
-            locations.addAll(related.callees());
+            locations.addAll(client.callers(taskId, CodeGraphSnapshot.TARGET, symbol, limit));
+            locations.addAll(client.callees(taskId, CodeGraphSnapshot.TARGET, symbol, limit));
             CodeGraphResultMapper.MappingResult mapping = resultMapper.map(chunks, locations);
             Set<Long> ids = new LinkedHashSet<>(mapping.chunkIds());
             ids.remove(current.getId());
@@ -255,7 +259,7 @@ public class CodeGraphIntegrationService {
                     .limit(limit).toList();
             Set<Long> selectedIds = selected.stream().map(CodeChunk::getId)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
-            String text = "[VERIFIED_EVIDENCE][CODEGRAPH_RELATIONS] CodeGraph Target 索引确认以下方法与当前方法存在直接调用关系。\n"
+            String text = "[UNVERIFIED_CANDIDATE][CODEGRAPH_RELATIONS] CodeGraph Target 索引返回以下直接关系候选；需本地调用点验证后才能作为证据。\n"
                     + selected.stream()
                     .map(chunk -> "CHUNK_ID=" + chunk.getId() + " | " + chunk.getFilePath() + ":"
                             + chunk.getStartLine() + " | " + chunk.getSymbolName())
@@ -279,18 +283,15 @@ public class CodeGraphIntegrationService {
         String symbol = codeGraphSymbol(current.getSymbolName());
         if (symbol.isBlank()) return RelationCheck.unverified("当前代码块没有可查询的 CodeGraph 符号");
         try {
-            CodeGraphClient.RelatedLocations related = client.related(
-                    taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
             List<CodeGraphClient.CodeGraphLocation> locations = new ArrayList<>();
-            locations.addAll(related.callers());
-            locations.addAll(related.callees());
+            locations.addAll(client.callers(
+                    taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit()));
+            locations.addAll(client.callees(
+                    taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit()));
             Set<Long> mapped = new LinkedHashSet<>(resultMapper.map(chunks, locations).chunkIds());
             boolean verified = candidate.getId() != null && mapped.contains(candidate.getId());
-            if (verified) {
-                TimingDetailLog.info("任务 {} CodeGraph 直接关系复验通过：{} <-> {}",
-                        taskId, current.getId(), candidate.getId());
-                return new RelationCheck(true, "CodeGraph Target 索引确认两个方法存在直接调用关系");
-            }
+            if (verified) return RelationCheck.unverified(
+                    "CodeGraph Target 索引命中直接关系候选，但仍需当前快照的本地调用点验证");
             TimingDetailLog.info("任务 {} CodeGraph 直接关系复验未命中：{} <-> {}，mapped={}",
                     taskId, current.getId(), candidate.getId(), mapped.size());
             return RelationCheck.unverified("CodeGraph 未确认当前方法与待验证方法存在直接调用关系");
@@ -301,8 +302,67 @@ public class CodeGraphIntegrationService {
         }
     }
 
+    /** 在完整 Target CodeGraph 索引中按名称搜索符号；结果仍只是待映射候选。 */
+    public SymbolQueryResult querySymbols(UUID taskId, String search, String kind, int limit) {
+        if (search == null || search.isBlank() || !prepared(taskId, CodeGraphSnapshot.TARGET)) {
+            return SymbolQueryResult.notAttempted();
+        }
+        String query = codeGraphSymbol(search);
+        if (query.isBlank()) return SymbolQueryResult.notAttempted();
+        try {
+            List<CodeGraphClient.CodeGraphLocation> locations = client.query(
+                    taskId, CodeGraphSnapshot.TARGET, query, kind,
+                    Math.max(1, Math.min(limit, 100)));
+            return new SymbolQueryResult(true, false, List.copyOf(locations), targetRoots.get(taskId), "");
+        } catch (RuntimeException exception) {
+            log.warn("任务 {} CodeGraph 符号查询失败：search={}，kind={}，error={}",
+                    taskId, search, kind, exception.getMessage());
+            return new SymbolQueryResult(true, true, List.of(), targetRoots.get(taskId),
+                    exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage());
+        }
+    }
+
+    /** 查询一个 Target 方法的一跳调用邻居；方向由调用者决定，不隐式查询另一方向。 */
+    public CallGraphNeighbors queryCallGraphNeighbors(UUID taskId, CodeChunk current,
+                                                       String direction, int requestedLimit) {
+        if (current == null || !"JAVA_METHOD".equals(current.getChunkType())
+                || !prepared(taskId, CodeGraphSnapshot.TARGET)) {
+            return CallGraphNeighbors.notAttempted();
+        }
+        String symbol = codeGraphSymbol(current.getSymbolName());
+        if (symbol.isBlank()) return CallGraphNeighbors.notAttempted();
+        int limit = Math.max(1, Math.min(requestedLimit <= 0
+                ? properties.getAgentContextLimit() : requestedLimit, safeRelationLimit()));
+        List<CodeGraphClient.CodeGraphLocation> callers = List.of();
+        List<CodeGraphClient.CodeGraphLocation> callees = List.of();
+        List<String> errors = new ArrayList<>();
+        if ("CALLERS".equals(direction)) {
+            try {
+                callers = client.callers(taskId, CodeGraphSnapshot.TARGET, symbol, limit);
+            } catch (RuntimeException exception) {
+                errors.add("callers: " + exception.getMessage());
+            }
+        } else if ("CALLEES".equals(direction)) {
+            try {
+                callees = client.callees(taskId, CodeGraphSnapshot.TARGET, symbol, limit);
+            } catch (RuntimeException exception) {
+                errors.add("callees: " + exception.getMessage());
+            }
+        } else {
+            return new CallGraphNeighbors(true, true, List.of(), List.of(), targetRoots.get(taskId),
+                    "unsupported direction: " + direction);
+        }
+        if (!errors.isEmpty()) {
+            log.warn("任务 {} CodeGraph 调用图邻居查询失败，symbol={}，direction={}，error={}",
+                    taskId, symbol, direction, String.join("; ", errors));
+        }
+        return new CallGraphNeighbors(true, !errors.isEmpty(), callers, callees,
+                targetRoots.get(taskId), String.join("; ", errors));
+    }
+
     public void release(UUID taskId) {
         boolean prepared = preparedSnapshots.remove(taskId) != null;
+        targetRoots.remove(taskId);
         safeClientRelease(taskId);
         if (prepared) TimingDetailLog.info("任务 {} CodeGraph Base/Target 任务状态已释放", taskId);
     }
@@ -374,6 +434,41 @@ public class CodeGraphIntegrationService {
     public record RelationCheck(boolean verified, String reason) {
         private static RelationCheck unverified(String reason) {
             return new RelationCheck(false, reason);
+        }
+    }
+
+    public record SymbolQueryResult(boolean attempted, boolean failed,
+                                    List<CodeGraphClient.CodeGraphLocation> locations,
+                                    Path targetRoot, String detail) {
+        public SymbolQueryResult {
+            locations = locations == null ? List.of() : List.copyOf(locations);
+            detail = detail == null ? "" : detail;
+        }
+
+        public static SymbolQueryResult notAttempted() {
+            return new SymbolQueryResult(false, false, List.of(), null, "");
+        }
+    }
+
+    public record CallGraphNeighbors(boolean attempted, boolean failed,
+                                     List<CodeGraphClient.CodeGraphLocation> callers,
+                                     List<CodeGraphClient.CodeGraphLocation> callees,
+                                     Path targetRoot, String detail) {
+        public CallGraphNeighbors {
+            callers = callers == null ? List.of() : List.copyOf(callers);
+            callees = callees == null ? List.of() : List.copyOf(callees);
+            detail = detail == null ? "" : detail;
+        }
+
+        public static CallGraphNeighbors notAttempted() {
+            return new CallGraphNeighbors(false, false, List.of(), List.of(), null, "");
+        }
+
+        public List<CodeGraphClient.CodeGraphLocation> locations() {
+            List<CodeGraphClient.CodeGraphLocation> result = new ArrayList<>(callers.size() + callees.size());
+            result.addAll(callers);
+            result.addAll(callees);
+            return List.copyOf(result);
         }
     }
 }

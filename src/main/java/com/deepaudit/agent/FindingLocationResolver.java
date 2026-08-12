@@ -2,14 +2,19 @@ package com.deepaudit.agent;
 
 import com.deepaudit.ai.LlmGateway;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.FindingLocationKind;
 import com.deepaudit.domain.VulnerabilityType;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.ConstructorDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
+import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 
@@ -61,7 +66,7 @@ public final class FindingLocationResolver {
             LlmGateway.FindingProposal proposal, LlmGateway.CriticDecision decision,
             Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         return resolveCriticLocation(proposal, decision, chunks, allowedChunkIds,
-                locationCandidates(chunks, allowedChunkIds)).resolved();
+                locationCandidates(proposal.type(), chunks, allowedChunkIds)).resolved();
     }
 
     /**
@@ -98,9 +103,13 @@ public final class FindingLocationResolver {
                 Set<LocationRole> actualRoles = roles(selected, explicit.get());
                 LocationRole acceptedRole = actualRoles.stream()
                         .filter(allowedRoles(rootCause)::contains).findFirst().orElse(null);
-                if (acceptedRole != null) {
+                Set<CandidatePurpose> actualPurposes = purposes(
+                        rootCause, actualRoles, selected, sourceAt(selected, explicit.get()));
+                CandidatePurpose acceptedPurpose = preferredPrimaryPurpose(rootCause, actualPurposes).orElse(null);
+                if (acceptedRole != null && acceptedPurpose != null) {
                     return new LocationResolution(LocationStatus.EXACT,
-                            Optional.of(new ResolvedPrimary(selected.getId(), explicit.get(), acceptedRole.name())),
+                            Optional.of(new ResolvedPrimary(selected.getId(), explicit.get(), acceptedRole.name(),
+                                    acceptedPurpose.name())),
                             "Critic 行号位于真实证据块内并符合根因代码角色");
                 }
             }
@@ -117,7 +126,7 @@ public final class FindingLocationResolver {
 
     // 从验证过的证据代码块生成稳定候选 ID；Java 优先使用 AST 表达式，其他文本使用真实源码行。
     public static List<LlmGateway.LocationCandidate> locationCandidates(
-            Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
+            VulnerabilityType vulnerabilityType, Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         List<LlmGateway.LocationCandidate> result = new ArrayList<>();
         for (Long chunkId : allowedChunkIds) {
             CodeChunk chunk = chunks.get(chunkId);
@@ -138,7 +147,8 @@ public final class FindingLocationResolver {
             }
             if (ranges.isEmpty()) {
                 for (int index = 0; index < lines.length; index++) {
-                    if (isExecutableCandidate(codeLines[index])) {
+                    if (isExecutableCandidate(codeLines[index])
+                            && !isStructuralDeclaration(codeLines[index])) {
                         int relative = index + 1;
                         ranges.put(relative + ":" + relative, new SourceRange(relative, relative));
                     }
@@ -151,10 +161,16 @@ public final class FindingLocationResolver {
                 int end = chunkStart + relative.end() - 1;
                 String source = source(lines, relative.start(), relative.end());
                 String code = source(codeLines, relative.start(), relative.end());
-                List<String> detectedRoles = roles(code).stream().map(Enum::name).sorted().toList();
+                if (isStructuralDeclaration(code)) continue;
+                Location location = new Location(start, end);
+                Set<LocationRole> actualRoles = new LinkedHashSet<>(roles(chunk, location));
+                actualRoles.addAll(roles(code));
+                List<String> detectedRoles = actualRoles.stream().map(Enum::name).sorted().toList();
+                List<String> purposes = purposes(vulnerabilityType, actualRoles, chunk, code)
+                        .stream().map(Enum::name).sorted().toList();
                 String candidateId = chunk.getId() + ":" + start + "-" + end;
                 result.add(new LlmGateway.LocationCandidate(candidateId, chunk.getId(), chunk.getFilePath(),
-                        chunk.getSymbolName(), start, end, source, detectedRoles,
+                        chunk.getSymbolName(), start, end, source, detectedRoles, purposes,
                         chunk.getAnalysisScope() == null ? "" : chunk.getAnalysisScope().name()));
             }
         }
@@ -167,10 +183,9 @@ public final class FindingLocationResolver {
             LlmGateway.FindingProposal proposal, LlmGateway.CriticDecision decision,
             Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         if (!hasText(candidateId)) return Optional.empty();
-        LocationRole declaredRole = parseRole(decision.locationRole()).orElse(null);
         return candidates.stream().filter(candidate -> candidate.candidateId().equals(candidateId))
                 .findFirst().flatMap(candidate -> validateCandidate(
-                        candidate, rootCause(proposal, decision), declaredRole, true,
+                        candidate, rootCause(proposal, decision),
                         chunks, allowedChunkIds))
                 .map(ValidatedLocation::resolved);
     }
@@ -199,7 +214,8 @@ public final class FindingLocationResolver {
             }
         }
         if (best == null) return Optional.empty();
-        return Optional.of(new ResolvedPrimary(best.chunkId(), best.location(), best.role().name()));
+        return Optional.of(new ResolvedPrimary(best.chunkId(), best.location(), best.role().name(),
+                CandidatePurpose.ROOT_CAUSE.name()));
     }
 
     // 安全注解比普通安全配置更接近“失效控制”的使用位置，端点上的注解优先级最高。
@@ -222,10 +238,13 @@ public final class FindingLocationResolver {
                 safe(decision.reason())).toLowerCase(Locale.ROOT);
         List<RankedLocation> ranked = candidates.stream()
                 .map(candidate -> validateCandidate(
-                        candidate, rootCause, declared, false, chunks, allowedChunkIds))
+                        candidate, rootCause, chunks, allowedChunkIds))
                 .flatMap(Optional::stream)
                 .map(validated -> {
-                    int score = 100;
+                    int score = validated.purposes().contains(CandidatePurpose.ROOT_CAUSE) ? 1_000 : 700;
+                    String candidateSource = validated.candidate().source().strip();
+                    if (candidateSource.endsWith(";") || (candidateSource.startsWith("if")
+                            && candidateSource.endsWith("}"))) score += 20;
                     if (declared != null && validated.roles().contains(declared)) score += 25;
                     if (decision.primaryChunkId() != null
                             && decision.primaryChunkId() == validated.candidate().chunkId()) score += 8;
@@ -235,14 +254,13 @@ public final class FindingLocationResolver {
                     }
                     return new RankedLocation(validated, score);
                 }).sorted(Comparator.comparingInt(RankedLocation::score).reversed()).toList();
-        if (ranked.isEmpty() || ranked.get(0).score() < 100) return Optional.empty();
+        if (ranked.isEmpty() || ranked.get(0).score() < 700) return Optional.empty();
         if (ranked.size() > 1 && ranked.get(0).score() == ranked.get(1).score()) return Optional.empty();
         return Optional.of(ranked.get(0).validated().resolved());
     }
 
     private static Optional<ValidatedLocation> validateCandidate(
-            LlmGateway.LocationCandidate candidate, RootCause rootCause, LocationRole declaredRole,
-            boolean allowDeclaredRoleFallback,
+            LlmGateway.LocationCandidate candidate, RootCause rootCause,
             Map<Long, CodeChunk> chunks, Set<Long> allowedChunkIds) {
         if (candidate == null || !allowedChunkIds.contains(candidate.chunkId())) return Optional.empty();
         CodeChunk chunk = chunks.get(candidate.chunkId());
@@ -253,15 +271,15 @@ public final class FindingLocationResolver {
             return Optional.empty();
         }
         Set<LocationRole> actualRoles = roles(chunk, location.get());
+        actualRoles.addAll(roles(candidate.source()));
         LocationRole acceptedRole = actualRoles.stream()
                 .filter(allowedRoles(rootCause)::contains).findFirst().orElse(null);
-        if (acceptedRole == null && allowDeclaredRoleFallback && declaredRole != null
-                && allowedRoles(rootCause).contains(declaredRole)) {
-            acceptedRole = declaredRole;
-        }
-        if (acceptedRole == null) return Optional.empty();
+        Set<CandidatePurpose> actualPurposes = purposes(rootCause, actualRoles, chunk, candidate.source());
+        CandidatePurpose acceptedPurpose = preferredPrimaryPurpose(rootCause, actualPurposes).orElse(null);
+        if (acceptedRole == null || acceptedPurpose == null) return Optional.empty();
         return Optional.of(new ValidatedLocation(candidate,
-                new ResolvedPrimary(chunk.getId(), location.get(), acceptedRole.name()), actualRoles));
+                new ResolvedPrimary(chunk.getId(), location.get(), acceptedRole.name(), acceptedPurpose.name()),
+                actualRoles, actualPurposes));
     }
 
     private static boolean matchesCurrentSource(LlmGateway.LocationCandidate candidate, CodeChunk chunk) {
@@ -304,7 +322,7 @@ public final class FindingLocationResolver {
         for (Node node : parsed.findAll(Node.class)) {
             if (!(node instanceof AnnotationExpr || node instanceof MethodCallExpr
                     || node instanceof AssignExpr || node instanceof VariableDeclarationExpr
-                    || node instanceof ExpressionStmt || node instanceof ReturnStmt
+                    || node instanceof ExpressionStmt || node instanceof IfStmt || node instanceof ReturnStmt
                     || node instanceof ThrowStmt)) continue;
             node.getRange().ifPresent(range -> {
                 int start = Math.max(1, Math.min(range.begin.line, lineCount));
@@ -319,6 +337,39 @@ public final class FindingLocationResolver {
     private static boolean isExecutableCandidate(String sourceLine) {
         String line = safe(sourceLine).strip();
         return isLocationCandidateLine(line) && !line.startsWith("@");
+    }
+
+    // JAVA_CHANGE 可能是无法独立解析的文件片段；兜底时排除字段、类型和构造器参数等结构声明。
+    // 硬编码凭据字段仍是实际漏洞位置，因此保留包含真实赋值的秘密定义。
+    private static boolean isStructuralDeclaration(String sourceLine) {
+        String line = safe(sourceLine).strip();
+        if (line.isEmpty()) return true;
+        if (line.matches("(?s)^this\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*=.*;$")
+                && !looksLikeSecretDefinition(line)) return true;
+        try {
+            Node declaration = StaticJavaParser.parseBodyDeclaration(line);
+            if (declaration instanceof FieldDeclaration field) {
+                if (looksLikeSecretDefinition(line)) return false;
+                boolean explicitField = field.isPublic() || field.isProtected() || field.isPrivate()
+                        || field.isStatic() || field.isTransient() || field.isVolatile();
+                return explicitField || !line.contains("=");
+            }
+            if (declaration instanceof TypeDeclaration<?> || declaration instanceof ConstructorDeclaration) {
+                return true;
+            }
+        } catch (RuntimeException ignored) {
+            // Partial changed ranges often cannot be parsed as a body declaration.
+        }
+        if (!line.contains("=") && (line.endsWith(",") || line.endsWith(")"))) {
+            String parameter = line.substring(0, line.length() - 1).strip();
+            try {
+                StaticJavaParser.parseParameter(parameter);
+                return true;
+            } catch (RuntimeException ignored) {
+                // The line is an expression rather than a constructor/method parameter.
+            }
+        }
+        return false;
     }
 
     private static boolean isLocationCandidateLine(String sourceLine) {
@@ -406,15 +457,120 @@ public final class FindingLocationResolver {
                     LocationRole.SECURITY_BOUNDARY, LocationRole.SECURITY_CONFIGURATION);
             case MISSING_AUTHORIZATION_CHECK -> Set.of(
                     LocationRole.SECURITY_BOUNDARY, LocationRole.DATA_ACCESS,
-                    LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION);
+                    LocationRole.DATA_OUTPUT, LocationRole.DANGEROUS_OPERATION,
+                    LocationRole.BUSINESS_OPERATION);
             case UNSAFE_DATA_EXPOSURE -> Set.of(LocationRole.DATA_ACCESS, LocationRole.DATA_OUTPUT);
             case HARDCODED_SECRET -> Set.of(
                     LocationRole.SECRET_DEFINITION, LocationRole.SECURITY_CONFIGURATION);
-            case UNSAFE_QUERY -> Set.of(LocationRole.QUERY, LocationRole.DANGEROUS_OPERATION);
+            case UNSAFE_QUERY -> Set.of(LocationRole.QUERY_CONSTRUCTION, LocationRole.QUERY_EXECUTION,
+                    LocationRole.QUERY, LocationRole.DANGEROUS_OPERATION);
             case MISSING_VALIDATION -> Set.of(LocationRole.VALIDATION,
                     LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION);
             case UNSAFE_OUTPUT -> Set.of(LocationRole.DATA_OUTPUT, LocationRole.DANGEROUS_OPERATION);
         };
+    }
+
+    private static RootCause defaultRootCause(VulnerabilityType type) {
+        if (type == null) return RootCause.UNSAFE_QUERY;
+        return switch (type) {
+            case AUTHORIZATION -> RootCause.MISSING_AUTHORIZATION_CHECK;
+            case SENSITIVE_INFORMATION_DISCLOSURE -> RootCause.UNSAFE_DATA_EXPOSURE;
+            case SQL_INJECTION -> RootCause.UNSAFE_QUERY;
+            case STORED_XSS -> RootCause.UNSAFE_OUTPUT;
+            case VALIDATION_BYPASS -> RootCause.MISSING_VALIDATION;
+        };
+    }
+
+    private static Set<CandidatePurpose> purposes(RootCause rootCause, Set<LocationRole> roles,
+                                                   CodeChunk chunk, String source) {
+        Set<CandidatePurpose> result = new LinkedHashSet<>();
+        boolean endpoint = chunk != null && hasText(chunk.getEndpoint());
+        boolean delegatingEntry = endpoint && looksLikeDelegatingEntry(source);
+        if (endpoint) result.add(CandidatePurpose.ENTRY);
+        switch (rootCause) {
+            case INEFFECTIVE_SECURITY_CONTROL -> {
+                if (roles.contains(LocationRole.SECURITY_BOUNDARY)
+                        || roles.contains(LocationRole.SECURITY_CONFIGURATION)) {
+                    result.add(CandidatePurpose.ROOT_CAUSE);
+                }
+            }
+            case MISSING_AUTHORIZATION_CHECK -> {
+                if (roles.contains(LocationRole.SECURITY_BOUNDARY)) result.add(CandidatePurpose.ROOT_CAUSE);
+                if (!delegatingEntry && intersects(roles, LocationRole.DATA_ACCESS, LocationRole.DATA_OUTPUT,
+                        LocationRole.DANGEROUS_OPERATION, LocationRole.BUSINESS_OPERATION)) {
+                    result.add(CandidatePurpose.RESPONSIBILITY_ANCHOR);
+                }
+            }
+            case UNSAFE_DATA_EXPOSURE -> {
+                if (roles.contains(LocationRole.SECRET_DEFINITION)
+                        || (!delegatingEntry && roles.contains(LocationRole.DATA_OUTPUT))) {
+                    result.add(CandidatePurpose.ROOT_CAUSE);
+                }
+                if (roles.contains(LocationRole.DATA_ACCESS)) result.add(CandidatePurpose.IMPACT);
+            }
+            case HARDCODED_SECRET -> {
+                if (roles.contains(LocationRole.SECRET_DEFINITION)) result.add(CandidatePurpose.ROOT_CAUSE);
+            }
+            case UNSAFE_QUERY -> {
+                if (roles.contains(LocationRole.QUERY_CONSTRUCTION)) result.add(CandidatePurpose.ROOT_CAUSE);
+                if (roles.contains(LocationRole.QUERY_EXECUTION)) result.add(CandidatePurpose.IMPACT);
+            }
+            case MISSING_VALIDATION -> {
+                if (roles.contains(LocationRole.VALIDATION)) result.add(CandidatePurpose.ROOT_CAUSE);
+                if (!delegatingEntry && intersects(roles, LocationRole.DANGEROUS_OPERATION,
+                        LocationRole.BUSINESS_OPERATION, LocationRole.DATA_ACCESS)) {
+                    result.add(CandidatePurpose.RESPONSIBILITY_ANCHOR);
+                }
+            }
+            case UNSAFE_OUTPUT -> {
+                if (roles.contains(LocationRole.UNSAFE_RENDER)) result.add(CandidatePurpose.ROOT_CAUSE);
+                if (roles.contains(LocationRole.DATA_OUTPUT) || roles.contains(LocationRole.DATA_ACCESS)
+                        || roles.contains(LocationRole.DANGEROUS_OPERATION)) {
+                    result.add(CandidatePurpose.IMPACT);
+                }
+            }
+        }
+        if (result.isEmpty()) result.add(CandidatePurpose.SUPPORTING);
+        return result;
+    }
+
+    private static Set<CandidatePurpose> purposes(VulnerabilityType type, Set<LocationRole> roles,
+                                                   CodeChunk chunk, String source) {
+        Set<CandidatePurpose> result = new LinkedHashSet<>();
+        for (RootCause rootCause : compatibleRootCauses(type)) {
+            result.addAll(purposes(rootCause, roles, chunk, source));
+        }
+        if (result.size() > 1) result.remove(CandidatePurpose.SUPPORTING);
+        return result;
+    }
+
+    private static Set<RootCause> compatibleRootCauses(VulnerabilityType type) {
+        if (type == null) return Set.of(RootCause.UNSAFE_QUERY);
+        return switch (type) {
+            case AUTHORIZATION -> Set.of(
+                    RootCause.INEFFECTIVE_SECURITY_CONTROL, RootCause.MISSING_AUTHORIZATION_CHECK);
+            case SENSITIVE_INFORMATION_DISCLOSURE -> Set.of(
+                    RootCause.INEFFECTIVE_SECURITY_CONTROL, RootCause.MISSING_AUTHORIZATION_CHECK,
+                    RootCause.UNSAFE_DATA_EXPOSURE, RootCause.HARDCODED_SECRET);
+            case SQL_INJECTION -> Set.of(RootCause.UNSAFE_QUERY);
+            case STORED_XSS -> Set.of(RootCause.UNSAFE_OUTPUT);
+            case VALIDATION_BYPASS -> Set.of(RootCause.MISSING_VALIDATION);
+        };
+    }
+
+    private static Optional<CandidatePurpose> preferredPrimaryPurpose(
+            RootCause rootCause, Set<CandidatePurpose> purposes) {
+        if (purposes.contains(CandidatePurpose.ROOT_CAUSE)) return Optional.of(CandidatePurpose.ROOT_CAUSE);
+        if ((rootCause == RootCause.MISSING_AUTHORIZATION_CHECK || rootCause == RootCause.MISSING_VALIDATION)
+                && purposes.contains(CandidatePurpose.RESPONSIBILITY_ANCHOR)) {
+            return Optional.of(CandidatePurpose.RESPONSIBILITY_ANCHOR);
+        }
+        return Optional.empty();
+    }
+
+    private static boolean intersects(Set<LocationRole> roles, LocationRole... expected) {
+        for (LocationRole role : expected) if (roles.contains(role)) return true;
+        return false;
     }
 
     private static Set<LocationRole> roles(CodeChunk chunk, Location location) {
@@ -425,7 +581,17 @@ public final class FindingLocationResolver {
             int index = line - chunkStart;
             if (index >= 0 && index < lines.length) result.addAll(roles(lines[index]));
         }
+        result.addAll(roles(source(lines,
+                location.startLine() - chunkStart + 1,
+                location.endLine() - chunkStart + 1)));
         return result;
+    }
+
+    private static String sourceAt(CodeChunk chunk, Location location) {
+        String[] lines = contentLines(chunk);
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        return source(lines, location.startLine() - chunkStart + 1,
+                location.endLine() - chunkStart + 1);
     }
 
     // 只识别能够解释安全影响的明确代码角色，不把任意第一条可执行语句当作最终漏洞位置。
@@ -448,13 +614,16 @@ public final class FindingLocationResolver {
                 result.add(LocationRole.SECURITY_CONFIGURATION);
             }
         }
-        if (containsAny(line, "executequery", "executeupdate", "statement.execute", "createstatement",
-                "preparestatement", "jdbctemplate", "createquery", "createnativequery", "${", "select ",
-                "insert ", "update ", "delete ")) {
+        if (looksLikeUnsafeQueryConstruction(line)) {
+            result.add(LocationRole.QUERY_CONSTRUCTION);
             result.add(LocationRole.QUERY);
         }
-        if (containsAny(line, "validate", "isvalid", "verify", "checktoken", "checksignature",
-                "captcha", "otp", "signature", "bypass")) {
+        if (containsAny(line, "executequery", "executeupdate", "statement.execute", "createstatement",
+                "preparestatement", "jdbctemplate", "queryfor", "createquery", "createnativequery")) {
+            result.add(LocationRole.QUERY_EXECUTION);
+            result.add(LocationRole.QUERY);
+        }
+        if (looksLikeValidationDecision(line)) {
             result.add(LocationRole.VALIDATION);
         }
         if (containsAny(line, "repository.", "mapper.", "dao.", "findall(", "findby", "selectone(",
@@ -466,8 +635,13 @@ public final class FindingLocationResolver {
                 "document.write", "th:utext", "v-html", "render(") || looksLikeLogWrite(line)) {
             result.add(LocationRole.DATA_OUTPUT);
         }
+        if (looksLikeUnsafeRender(line)) result.add(LocationRole.UNSAFE_RENDER);
         if (containsAny(line, ".delete(", ".deleteby", ".save(", ".update(", ".debit(", ".credit(",
                 ".transfer(", ".withdraw(", ".execute(", "executequery", "executeupdate")) {
+            result.add(LocationRole.DANGEROUS_OPERATION);
+        }
+        if (line.matches(".*\\b[a-z_$][a-z0-9_$]*(?:port|gateway|client)\\s*\\.\\s*"
+                + "(?:apply|submit|send|publish|write|execute|commit)\\s*\\(.*")) {
             result.add(LocationRole.DANGEROUS_OPERATION);
         }
         if (containsAny(line, "amount", "price", "balance", "total", "debit", "credit", "transfer",
@@ -494,6 +668,39 @@ public final class FindingLocationResolver {
     private static boolean looksLikeLogWrite(String line) {
         return line.matches(".*\\b(?:log|logger|[a-z_$][a-z0-9_$]*logger)\\s*\\.\\s*"
                 + "(?:trace|debug|info|warn|error)\\s*\\(.*");
+    }
+
+    private static boolean looksLikeUnsafeQueryConstruction(String source) {
+        String value = safe(source).toLowerCase(Locale.ROOT);
+        if (value.contains("${")) return true;
+        boolean queryContext = containsAny(value, "sql", "select ", " from ", " where ", " like ",
+                " order by ", " group by ", " having ", " union ", "insert ", "update ", "delete ");
+        if (!queryContext) return false;
+        boolean dynamicAppend = value.matches("(?s).*\\.append\\(\\s*(?![\"']).+?");
+        boolean dynamicConcatenation = value.matches("(?s).*[\"']\\s*\\+\\s*[a-z_$].*")
+                || value.matches("(?s).*\\+\\s*(?:request|input|param|value|name|id|field)[a-z0-9_$.()]*.*");
+        return dynamicAppend || dynamicConcatenation || containsAny(value, "string.format(", ".formatted(");
+    }
+
+    private static boolean looksLikeValidationDecision(String source) {
+        String value = safe(source).toLowerCase(Locale.ROOT);
+        if (containsAny(value, "validate", "isvalid", "verify", "checktoken", "checksignature",
+                "captcha", "otp", "signature", "bypass")) return true;
+        return value.contains("if") && containsAny(value, "throw ", "return false", "return null")
+                && containsAny(value, "request", "input", "amount", "price", "quantity", "token",
+                "field", "value", "parameter");
+    }
+
+    private static boolean looksLikeUnsafeRender(String source) {
+        String value = safe(source).toLowerCase(Locale.ROOT);
+        return containsAny(value, "innerhtml", "outerhtml", "document.write", "th:utext", "v-html",
+                "dangerouslysetinnerhtml", "html(", "mediatype.text_html", "text/html");
+    }
+
+    private static boolean looksLikeDelegatingEntry(String source) {
+        String value = safe(source).strip().toLowerCase(Locale.ROOT);
+        return (value.startsWith("return ") || value.matches("(?s)^[a-z_$][a-z0-9_$]*\\..*"))
+                && containsAny(value, "service.", "usecase.", "handler.", "facade.", "gateway.", "client.");
     }
 
     private static String safe(String value) {
@@ -641,11 +848,18 @@ public final class FindingLocationResolver {
 
     public static String formatEvidence(LlmGateway.FindingProposal proposal,
                                         java.util.Map<Long, CodeChunk> chunks) {
-        return formatEvidence(proposal, chunks, Map.of());
+        return formatEvidence(proposal, chunks, Map.of(), FindingLocationKind.ROOT_CAUSE, null);
     }
 
     public static String formatEvidence(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks,
                                         Map<Long, Integer> callSiteLines) {
+        return formatEvidence(proposal, chunks, callSiteLines, FindingLocationKind.ROOT_CAUSE, null);
+    }
+
+    public static String formatEvidence(LlmGateway.FindingProposal proposal, Map<Long, CodeChunk> chunks,
+                                        Map<Long, Integer> callSiteLines,
+                                        FindingLocationKind primaryLocationKind,
+                                        String rootCauseKind) {
         return proposal.evidenceChunkIds().stream().distinct().map(chunks::get)
                 .filter(java.util.Objects::nonNull)
                 .map(chunk -> {
@@ -654,15 +868,49 @@ public final class FindingLocationResolver {
                     Location location = primary ? resolve(proposal, chunk)
                             : validCallSite(callSiteLine, chunk).orElseGet(() ->
                             infer(proposal.type(), proposal.description(), chunk));
-                    String label = primary ? "[漏洞位置]" : callSiteLine == null ? "[关联证据]"
-                            : chunk.getEndpoint() == null || chunk.getEndpoint().isBlank()
-                            ? "[调用链]" : "[调用入口]";
+                    String label;
+                    if (primary) {
+                        label = primaryLocationKind == FindingLocationKind.RESPONSIBILITY_ANCHOR
+                                ? "[责任锚点]" : "[漏洞根因]";
+                    } else if (callSiteLine != null) {
+                        label = chunk.getEndpoint() == null || chunk.getEndpoint().isBlank()
+                                ? "[调用链]" : "[调用入口]";
+                    } else {
+                        String purpose = evidencePurpose(proposal.type(), rootCauseKind, chunk, location);
+                        label = "ROOT_CAUSE".equals(purpose) ? "[根因证据]"
+                                : "IMPACT".equals(purpose) ? "[影响位置]" : "[关联证据]";
+                    }
                     return "[CHUNK " + chunk.getId() + "] " + label + " " + chunk.getFilePath() + ":"
                             + location.startLine()
                             + (location.endLine() == location.startLine() ? "" : "-" + location.endLine())
                             + " " + chunk.getSymbolName() + "\n" + formatContext(chunk, location, primary);
                 })
                 .collect(java.util.stream.Collectors.joining("\n\n"));
+    }
+
+    public static String evidencePurpose(VulnerabilityType type, CodeChunk chunk, Location location) {
+        return evidencePurpose(type, null, chunk, location);
+    }
+
+    public static String evidencePurpose(VulnerabilityType type, String rootCauseKind,
+                                         CodeChunk chunk, Location location) {
+        Set<LocationRole> detected = roles(chunk, location);
+        RootCause rootCause = parseRootCause(rootCauseKind).filter(value -> compatible(type, value))
+                .orElseGet(() -> defaultRootCause(type));
+        return purposes(rootCause, detected, chunk, sourceAt(chunk, location)).stream()
+                .filter(purpose -> purpose != CandidatePurpose.SUPPORTING)
+                .sorted(Comparator.comparingInt(FindingLocationResolver::purposePriority).reversed())
+                .map(Enum::name).findFirst().orElse(CandidatePurpose.SUPPORTING.name());
+    }
+
+    private static int purposePriority(CandidatePurpose purpose) {
+        return switch (purpose) {
+            case ROOT_CAUSE -> 5;
+            case RESPONSIBILITY_ANCHOR -> 4;
+            case IMPACT -> 3;
+            case ENTRY -> 2;
+            case SUPPORTING -> 1;
+        };
     }
 
     /**
@@ -749,7 +997,7 @@ public final class FindingLocationResolver {
     }
 
     // 保存通过根因和代码角色双重校验后的最终主位置。
-    public record ResolvedPrimary(long chunkId, Location location, String locationRole) {
+    public record ResolvedPrimary(long chunkId, Location location, String locationRole, String locationKind) {
     }
 
     // 表达位置解析结果，避免把“定位失败”错误转换为“漏洞被否决”。
@@ -775,7 +1023,8 @@ public final class FindingLocationResolver {
     }
 
     private record ValidatedLocation(LlmGateway.LocationCandidate candidate,
-                                     ResolvedPrimary resolved, Set<LocationRole> roles) {
+                                     ResolvedPrimary resolved, Set<LocationRole> roles,
+                                     Set<CandidatePurpose> purposes) {
     }
 
     private record RankedLocation(ValidatedLocation validated, int score) {
@@ -795,11 +1044,22 @@ public final class FindingLocationResolver {
         SECURITY_BOUNDARY,
         SECURITY_CONFIGURATION,
         QUERY,
+        QUERY_CONSTRUCTION,
+        QUERY_EXECUTION,
         VALIDATION,
         DATA_ACCESS,
         DATA_OUTPUT,
+        UNSAFE_RENDER,
         SECRET_DEFINITION,
         DANGEROUS_OPERATION,
         BUSINESS_OPERATION
+    }
+
+    private enum CandidatePurpose {
+        ROOT_CAUSE,
+        RESPONSIBILITY_ANCHOR,
+        IMPACT,
+        ENTRY,
+        SUPPORTING
     }
 }

@@ -34,7 +34,7 @@ public class AgentTraceService {
 
     // 持久化截断后的事件消息并实时推送给当前 SSE 订阅者。
     public void event(UUID taskId, UUID runId, AgentType type, AgentEventType eventType, String message) {
-        String safe = message == null ? "" : message.substring(0, Math.min(message.length(), 12_000));
+        String safe = message == null ? "" : message.substring(0, Math.min(message.length(), 24_000));
         AgentEvent event = new AgentEvent(taskId, runId, type, eventType, safe);
         eventMapper.insert(event);
         eventStreamService.publish(event);

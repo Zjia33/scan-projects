@@ -10,7 +10,7 @@ import java.util.Set;
 
 final class AgentPromptSupport {
     private static final int CHANGE_CONTEXT_LINES = 5;
-    private static final int MAX_CHANGE_CONTEXT_CHARS = 12_000;
+    private static final int MAX_CHANGE_CONTEXT_CHARS = 20_000;
 
     private AgentPromptSupport() {
     }

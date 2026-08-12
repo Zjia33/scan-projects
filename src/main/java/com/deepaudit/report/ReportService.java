@@ -26,6 +26,18 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ReportService {
 
+    private static final String INTERNAL_LOCATION_TOKEN =
+            "(?:chunk(?:\\s*块|[_\\s-]?id)?|代码块|primaryChunkId|evidenceChunkIds?|candidateChunkIds?)";
+    private static final Pattern INTERNAL_REFERENCE_GROUP = Pattern.compile(
+            "(?iu)[（(]\\s*" + INTERNAL_LOCATION_TOKEN
+                    + "\\s*(?:[:=#]|为|是)?\\s*(?:\\[[\\d\\s,，]+]|\\d+)"
+                    + "(?:\\s*第?\\s*\\d+(?:\\s*[-–—至到]\\s*\\d+)?\\s*行)?\\s*[）)]");
+    private static final Pattern INTERNAL_REFERENCE = Pattern.compile(
+            "(?iu)(?:\\[|【)?\\s*" + INTERNAL_LOCATION_TOKEN
+                    + "\\s*(?:[:=#]|为|是)?\\s*(?:\\[[\\d\\s,，]+]|\\d+)\\s*(?:]|】)?");
+    private static final Pattern ORDINAL_CODE_BLOCK = Pattern.compile(
+            "(?iu)第\\s*\\d+\\s*(?:个|号)?\\s*(?:chunk\\s*块?|代码块)");
+
     private final AuditTaskMapper taskMapper;
     private final ProjectMapper projectMapper;
     private final FindingMapper findingMapper;
@@ -40,7 +52,12 @@ public class ReportService {
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         Project project = projectMapper.findById(task.getProjectId());
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + task.getProjectId());
-        return new AuditReport(project, task, summaryMapper.findByTaskId(taskId),
+        AiReportSummary aiSummary = summaryMapper.findByTaskId(taskId);
+        if (aiSummary != null) {
+            // 只清理返回给报告和 JSON 前端的展示值，不回写历史数据库记录。
+            aiSummary.setExecutiveSummary(readerFacingReportText(aiSummary.getExecutiveSummary()));
+        }
+        return new AuditReport(project, task, aiSummary,
                 findings(taskId), agentRunMapper.findByTaskId(taskId),
                 hypothesisMapper.findByTaskId(taskId), changeMapper.findByTaskId(taskId));
     }
@@ -77,7 +94,8 @@ public class ReportService {
             rows.append("<article class='finding-card'><header class='finding-head'>")
                     .append("<span class='finding-number'>")
                     .append(String.format(java.util.Locale.ROOT, "%02d", findingNumber)).append("</span>")
-                    .append("<div><h2>").append(escape(finding.getTitle())).append("</h2><p class='badges'>")
+                    .append("<div><h2>").append(escape(readerFacingReportText(finding.getTitle())))
+                    .append("</h2><p class='badges'>")
                     .append("<span>").append(escape(finding.getType().getDisplayName())).append("</span>")
                     .append("<span>").append(severityLabel(finding.getSeverity())).append("</span>")
                     .append("<span>可信度 ").append(confidenceLabel(finding.getConfidence())).append("</span>")
@@ -90,7 +108,8 @@ public class ReportService {
                     .append(descriptionHtml(finding.getDescription()))
                     .append(evidenceHtml(finding.getEvidence()))
                     .append("<section class='content-block remediation'><h3>修复建议</h3><p>")
-                    .append(escape(finding.getRemediation())).append("</p></section></div></article>");
+                    .append(escape(readerFacingReportText(finding.getRemediation())))
+                    .append("</p></section></div></article>");
         }
         return "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>安全审计报告</title>"
                 + "<meta name='viewport' content='width=device-width,initial-scale=1'><style>" + reportStyles()
@@ -112,9 +131,7 @@ public class ReportService {
                 + "<div class='wide'><small>变更摘要</small><p>" + escape(report.task().getChangeSummary()) + "</p></div></section>"
                 + "<section class='summary-card'><p class='section-label'>EXECUTIVE SUMMARY</p><h2>审计摘要</h2><p>"
                 + escape(report.aiSummary() == null ? "暂无摘要" : report.aiSummary().getExecutiveSummary())
-                + "</p><div class='coverage'><b>审计覆盖</b><span>"
-                + escape(report.aiSummary() == null ? "暂无覆盖说明" : report.aiSummary().getCoverageSummary())
-                + "</span></div></section><div class='findings-heading'><div><p class='section-label'>CONFIRMED FINDINGS</p>"
+                + "</p></section><div class='findings-heading'><div><p class='section-label'>CONFIRMED FINDINGS</p>"
                 + "<h2>确认漏洞</h2></div><span>" + report.findings().size() + "</span></div>"
                 + (report.findings().isEmpty() ? "<div class='empty-report'>本轮审计没有产生已完成精确定位的问题。</div>" : rows)
                 + (unlocated.isEmpty() ? "" : "<div class='findings-heading'><div><p class='section-label'>CONFIRMED · LOCATION PENDING</p>"
@@ -143,11 +160,27 @@ public class ReportService {
         String description = value == null ? "" : value.strip();
         String marker = "Critic Agent 复核：";
         int critic = description.indexOf(marker);
-        if (critic < 0) return contentBlock("漏洞说明", description, "finding-description");
+        if (critic < 0) {
+            return contentBlock("漏洞说明", readerFacingReportText(description), "finding-description");
+        }
         String findingDescription = description.substring(0, critic).strip();
         String review = description.substring(critic + marker.length()).strip();
-        return contentBlock("漏洞说明", findingDescription.isBlank() ? review : findingDescription,
-                "finding-description");
+        String readerDescription = readerFacingReportText(findingDescription);
+        return contentBlock("漏洞说明", readerDescription.isBlank()
+                ? readerFacingReportText(review) : readerDescription, "finding-description");
+    }
+
+    // 兼容历史报告：只清理面向读者文本中的内部块号，不修改数据库内容或代码证据。
+    private String readerFacingReportText(String value) {
+        String sanitized = value == null ? "" : value;
+        sanitized = ORDINAL_CODE_BLOCK.matcher(sanitized).replaceAll("");
+        sanitized = INTERNAL_REFERENCE_GROUP.matcher(sanitized).replaceAll("");
+        sanitized = INTERNAL_REFERENCE.matcher(sanitized).replaceAll("");
+        return sanitized.replaceAll("[（(]\\s*[）)]", "")
+                .replaceAll("[ \\t]+([，。；：、,.!?！？])", "$1")
+                .replaceAll("[ \\t]{2,}", " ")
+                .replaceAll("(?m)^[ \\t]+|[ \\t]+$", "")
+                .strip();
     }
 
     // 按内部代码块边界拆分证据，报告只展示位置和源码，不暴露块号或证据序号。
@@ -233,13 +266,13 @@ public class ReportService {
                 .eyebrow,.section-label{margin:0;color:#7de2d1;font-size:10px;font-weight:800;letter-spacing:.14em}.report-hero h1{margin:8px 0 4px;font-size:34px;line-height:1.2}.hero-copy{margin:0;color:#b8c4d7}
                 .report-meta{margin-top:28px;display:grid;grid-template-columns:1.6fr repeat(3,1fr);gap:10px}.report-meta article{min-width:0;padding:13px 15px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:10px}.report-meta small,.report-meta strong{display:block}.report-meta small{color:#91a0b7;font-size:9px}.report-meta strong{margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
                 .context-card,.summary-card,.finding-card,.unlocated-card,.empty-report{margin-top:18px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 7px 24px rgba(22,35,57,.05)}.context-card{padding:19px 22px;display:grid;grid-template-columns:2fr 1fr;gap:14px 28px}.context-card .wide{grid-column:1/-1}.context-card small{color:var(--muted);font-size:9px;font-weight:700}.context-card p{margin:3px 0 0;overflow-wrap:anywhere}.unlocated-card{padding:19px 22px;border-color:#e5b96b;background:#fffaf0}.unlocated-card h3{margin:0;font-size:16px}.unlocated-card>p{white-space:pre-wrap}.unlocated-card>small{color:#805b1f}
-                .summary-card{padding:26px 28px}.summary-card h2,.findings-heading h2{margin:5px 0 8px;font-size:23px}.summary-card>p:not(.section-label){margin:0;white-space:pre-wrap}.coverage{margin-top:18px;padding:13px 15px;display:grid;grid-template-columns:100px 1fr;gap:12px;background:var(--soft);border-radius:9px}.coverage span{color:#536075}
+                .summary-card{padding:26px 28px}.summary-card h2,.findings-heading h2{margin:5px 0 8px;font-size:23px}.summary-card>p:not(.section-label){margin:0;white-space:pre-wrap}
                 .findings-heading{margin:32px 2px 10px;display:flex;justify-content:space-between;align-items:end}.findings-heading>span{min-width:34px;height:34px;padding:0 10px;display:grid;place-items:center;color:var(--blue);background:#eaf0ff;border-radius:9px;font-weight:800}.finding-card{overflow:hidden}.finding-head{padding:18px 22px;display:grid;grid-template-columns:38px 1fr;gap:14px;align-items:start}.finding-number{width:36px;height:36px;display:grid;place-items:center;color:white;background:var(--nav);border-radius:9px;font:800 10px monospace}.finding-head h2{margin:0;font-size:17px;line-height:1.4}.badges{margin:7px 0 0;display:flex;flex-wrap:wrap;gap:6px}.badges span{padding:3px 7px;color:#536075;background:var(--soft);border:1px solid var(--line);border-radius:5px;font-size:9px;font-weight:700}
                 .finding-body{padding:20px 24px 24px 74px;border-top:1px solid var(--line)}.vulnerability-location{margin:0;padding:10px 12px;display:flex;gap:14px;align-items:baseline;color:#2557be;background:#edf3ff;border:1px solid #cbd9fb;border-radius:8px;font:700 12px/1.6 monospace}.vulnerability-location b{flex:0 0 auto;color:#234b9e;font:700 10px/1.6 Inter,"Segoe UI",sans-serif}.vulnerability-location span{overflow-wrap:anywhere}
                 .content-block{margin-top:18px}.content-block h3{margin:0 0 8px;font-size:12px}.finding-description,.remediation p{margin:0;white-space:pre-wrap}.finding-description{padding:14px 16px;background:#f8fafd;border-left:3px solid var(--blue);border-radius:0 9px 9px 0}.remediation{padding:14px 16px;background:#eef9f7;border:1px solid #ccebe5;border-radius:9px}.remediation h3{color:#197d70}
                 .evidence-list{display:grid;gap:11px}.evidence-chunk{min-width:0;overflow:hidden;background:var(--nav);border:1px solid #2a3750;border-radius:10px}.evidence-chunk header{min-height:40px;padding:9px 13px;display:flex;align-items:center;border-bottom:1px solid #2a3750}.evidence-chunk header span{min-width:0;overflow:hidden;color:#93a0b5;text-overflow:ellipsis;white-space:nowrap;font:10px monospace}.evidence-code{max-height:380px;padding:11px 0;overflow:auto;color:#dbe3ef;font:11px/1.7 "SFMono-Regular",Consolas,monospace}.evidence-code-line{min-width:max-content;display:grid;grid-template-columns:62px minmax(620px,1fr)}.evidence-line-number{padding:0 13px 0 8px;color:#728097;border-right:1px solid #2a3750;text-align:right;user-select:none}.evidence-code-line code{padding:0 16px;color:inherit;white-space:pre;font:inherit}.evidence-code-line.vulnerable{color:#dffaf5;background:rgba(56,183,163,.16);box-shadow:inset 3px 0 var(--cyan)}.evidence-code-line.vulnerable .evidence-line-number{color:#7de2d1;font-weight:800}.evidence-code-line.ellipsis{color:#65748b}
                 .empty-report{padding:42px;text-align:center;color:var(--muted)}footer{padding:24px 4px 0;color:#7b8799;text-align:center;font-size:11px}
-                @media(max-width:700px){.report-shell{width:min(100% - 18px,1080px);margin-top:9px}.report-hero{padding:25px 22px}.report-meta{grid-template-columns:1fr 1fr}.context-card{grid-template-columns:1fr}.context-card .wide{grid-column:auto}.finding-body{padding:17px}.finding-head{padding:16px}.coverage{grid-template-columns:1fr}.vulnerability-location{display:block}.vulnerability-location span{display:block;margin-top:4px}.evidence-chunk header{align-items:flex-start;flex-direction:column;gap:3px}.evidence-chunk header span{width:100%}}
+                @media(max-width:700px){.report-shell{width:min(100% - 18px,1080px);margin-top:9px}.report-hero{padding:25px 22px}.report-meta{grid-template-columns:1fr 1fr}.context-card{grid-template-columns:1fr}.context-card .wide{grid-column:auto}.finding-body{padding:17px}.finding-head{padding:16px}.vulnerability-location{display:block}.vulnerability-location span{display:block;margin-top:4px}.evidence-chunk header{align-items:flex-start;flex-direction:column;gap:3px}.evidence-chunk header span{width:100%}}
                 @media print{body{background:white}.report-shell{width:100%;margin:0}.report-hero,.context-card,.summary-card,.finding-card{box-shadow:none}.finding-card{break-inside:avoid}.evidence-code{max-height:none}}
                 """;
     }

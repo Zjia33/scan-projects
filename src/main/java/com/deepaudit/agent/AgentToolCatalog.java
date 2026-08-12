@@ -22,60 +22,73 @@ public final class AgentToolCatalog {
     private static final List<ToolSpec> SPECS = List.of(
             spec(READ_SOURCE, Set.of("chunkId", "startLine", "endLine", "contextLines"),
                     """
-                    用途：读取当前会话中已验证或已发现候选代码块的真实源码，适合精读危险语句及其附近上下文。
-                    参数：chunkId(long，必填)；startLine/endLine(int，可选，必须位于该代码块范围内；只填 startLine 时默认读取该行)；contextLines(int，0..10，默认2)。
-                    结果：读取已验证代码块时仍是证据；读取候选只返回 UNVERIFIED_CANDIDATE，不会因为读取而自动成为证据。单次最多返回80行，截断后应缩小行号范围继续读取。
+                    读取已知代码块的真实源码和行号；不验证代码块关系。
+                    参数：chunkId(long，必填)必须来自 target/evidenceChunkIds/candidateChunkIds；startLine/endLine(int，可选)是该代码块范围内的文件绝对行号，只填 startLine 时读取该行，都不填时读取整个块；contextLines(int，0..20，默认2)附加两侧上下文。
+                    返回：>>> 标记请求行；最多160行且无 cursor。候选读取后仍是 candidateChunkIds；truncated=true 时缩小行号范围。
+                    示例 arguments：{"chunkId":1234,"startLine":86,"endLine":92,"contextLines":2}（示例数字必须替换）。
                     """),
             spec(VERIFY_RELATION, Set.of("candidateChunkId", "anchorChunkId"),
                     """
-                    用途：验证一个已由搜索、调用图或语义工具发现的候选代码块，是否与当前目标或已验证证据存在可靠调用、语义流或安全策略关系。
-                    参数：candidateChunkId(long，必填，必须来自 candidateChunkIds/UNVERIFIED_CANDIDATE)；anchorChunkId(long，可选，省略时使用当前目标；填写时只能是已验证 evidenceChunkId)。
-                    结果：VERIFIED_EVIDENCE 才表示候选已提升为可引用证据；RELATION_REJECTED 表示仍只能作为上下文。不得用它验证猜测出来的代码块 ID，也不得用未验证候选作为 anchorChunkId。
+                    将最终需要引用或作为新锚点的候选，与已验证锚点核对调用、语义或策略关系；它不直接证明漏洞成立。
+                    参数：candidateChunkId(long，必填)取自 candidateChunkIds；anchorChunkId(long，可选)取自 target/evidenceChunkIds，省略时为最初目标。未知 ID 或以候选作锚点会被拒绝。
+                    返回：只有 status=OK、VERIFIED_EVIDENCE 且候选进入 evidenceChunkIds 才验证通过；RELATION_REJECTED/status=DENIED 时仍是候选。结果不含源码，按需再 read_source。
+                    示例 arguments：{"candidateChunkId":2234,"anchorChunkId":1234}（示例数字必须替换）。
                     """),
             spec(SEARCH_SYMBOLS, Set.of("symbol", "kind", "annotation", "filePath", "endpoint",
-                            "text", "limit", "cursor", "anchorChunkId"),
+                            "limit", "cursor", "anchorChunkId"),
                     """
-                    用途：按结构化元数据定位类、方法、注解、文件或接口，适合已知名称或安全注解时查找定义；不是源码字面量搜索。
-                    参数：symbol/kind/annotation/filePath/endpoint/text(string，至少填写一个；同时填写时按组合条件过滤)；limit(int，1..10，默认6)；cursor(long，可选，分页时原样使用上次 nextCursor)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：除当前锚点外的匹配通常是 UNVERIFIED_CANDIDATE；若 truncated=true，使用 nextCursor 继续，不要自行计算游标。
+                    按本地语义索引和完整 Target CodeGraph 索引定位定义并取得 chunkId；不搜索源码字面量。提供 symbol 时会执行 CodeGraph 名称查询并按需物化尚未加载的候选位置。以下字符串均为不区分大小写的子串，至少填一项，多项为 AND：
+                    - symbol：类/方法/Class#method/限定名/签名片段，如 "OrderService#load"；不要传 "service.load(id)"。
+                    - kind：优先复用 target.chunkType 或结果 kind；常见 "JAVA_METHOD"、"TEXT_XML"、"MYBATIS_SQL"、"TEMPLATE_SINK"，不是固定枚举。
+                    - annotation：注解名或稳定片段，如 "PreAuthorize"；不要传自然语言。
+                    - filePath：使用 / 的项目相对路径或片段，如 "OrderService.java"。
+                    - endpoint：路由路径或片段，如 "/orders/{id}"；不含 HTTP 方法和域名。
+                    limit/cursor/anchorChunkId 遵循通用规则。CodeGraph kind 会由常见本地类型转换为 method/class 等固定类型；annotation、filePath、endpoint 仍由本地元数据过滤。返回元数据和 CODEGRAPH_QUERY 覆盖摘要，不含源码；锚点外结果是 candidateChunkIds，未映射位置不会伪造 ID。
+                    示例 arguments：{"symbol":"OrderService#load","kind":"JAVA_METHOD","limit":5}。
                     """),
             spec(SEARCH_CODE, Set.of("query", "scope", "filePattern", "includeTests", "caseSensitive",
                             "contextLines", "depth", "limit", "cursor", "anchorChunkId"),
                     """
-                    用途：对真实源码执行字面量搜索，适合查找调用、字段名、配置键或危险 API；不支持正则表达式。
-                    参数：query(string，必填，非空且最长200字符)；scope(string，可选枚举 CURRENT_FILE|RELATED|PROJECT，默认RELATED)；filePattern(string，可选 glob)；includeTests(boolean，默认false)；caseSensitive(boolean，默认false)；contextLines(int，0..5，默认2)；depth(int，1..5，默认2，仅RELATED有效)；limit(int，1..10，默认6)；cursor(long，可选，原样使用 nextCursor)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：当前锚点内匹配可保留原证据属性，其他匹配均是 UNVERIFIED_CANDIDATE；需要写入 FINDING 时先 verify_relation。
+                    搜索每行源码中的单个字面量；不支持正则、自然语言问题、备选词表达式或跨行片段。
+                    参数：query(string，必填，1..500字符，如 "permitAll"、"tenant_id"、"${")；scope(string，CURRENT_FILE|RELATED|PROJECT，默认RELATED)，分别表示锚点文件、锚点文件加可靠调用图范围、全项目；filePattern(string，可选 glob，支持 *、**、?，如 "**/*Security*.java")；includeTests(boolean，默认false)；caseSensitive(boolean，默认false)；contextLines(int，0..5，默认2)；depth(int，1..5，默认2，仅RELATED有效)；limit/cursor/anchorChunkId 遵循通用规则。
+                    返回：>>> 标记命中行，相交或相邻的上下文窗口会合并；只有锚点命中保留证据资格，其他结果是 candidateChunkIds。
+                    示例 arguments：{"query":"permitAll","scope":"PROJECT","filePattern":"**/*Security*.java","limit":5}。
                     """),
-            spec(EXPLORE_CALL_GRAPH, Set.of("direction", "depth", "targetChunkId", "targetSymbol",
+            spec(EXPLORE_CALL_GRAPH, Set.of("direction", "depth", "targetChunkId",
                             "limit", "anchorChunkId"),
                     """
-                    用途：从锚点探索可靠调用路径；查入口使用 CALLERS，查下游危险操作使用 CALLEES，方向不确定才使用 BOTH。
-                    参数：direction(string，可选枚举 CALLERS|CALLEES|BOTH，默认BOTH)；depth(int，1..5，默认3)；targetChunkId(long，可选，优先于 targetSymbol)；targetSymbol(string，可选)；limit(int，1..10，默认6)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：CALL_GRAPH/CODEGRAPH_RELATIONS 中明确返回的关系代码块属于 evidenceChunkIds，可作为调用链证据；无路径不等于不存在调用，只表示当前索引范围内未解析到。
+                    查询调用者、被调用者或到指定代码块的调用路径；调用可达不等于值可控或漏洞成立。
+                    参数：direction(string，CALLERS|CALLEES|BOTH，默认BOTH，相对锚点；上游/下游/双向)；depth(int，1..3，默认2，最大调用边数)；targetChunkId(long，可选，来自已出现的真实代码块 ID，未知时先 search_symbols)；limit/anchorChunkId 遵循通用规则。
+                    返回：本地语义边和 CodeGraph 邻居在同一 BFS 中按 depth 逐层展开；每个节点包含 chunkId、symbol、filePath:startLine，已定位的边包含 line 和不可信调用表达式摘要。VERIFIED 边的可达节点进入 evidenceChunkIds；CANDIDATE 边或经过未验证边才到达的节点进入 candidateChunkIds。未映射位置会按需物化为可读取 Chunk；完整源码用 read_source，EMPTY 不等于不存在调用。
+                    示例 arguments：{"direction":"CALLEES","targetChunkId":2234,"depth":3,"limit":5}。
                     """),
             spec(GET_CHANGE_CONTEXT, Set.of("selector", "includeConfiguration", "limit", "anchorChunkId"),
                     """
-                    用途：核对 Base/Target 方法或文件差异，判断漏洞是 NEW、PERSISTING，还是仅由影响范围纳入；不要用它代替 target.codeExcerpt 中已经提供的当前变更。
-                    参数：selector(string，可选，可填写方法名、符号、文件路径或变更特征关键词)；includeConfiguration(boolean，默认true)；limit(int，1..10，默认6)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：当前文件内的变更可作为证据；其他文件变更可能是 UNVERIFIED_CANDIDATE，引用前需 verify_relation。差异中的 - 为 Base、+ 为 Target，B/T 标签是实际旧/新行号。
+                    仅用于增量调查；target.codeExcerpt 已含当前 CHANGED 差异，不要重复查询当前正文。
+                    参数：selector(string，可选)：查方法变化时用方法名/Class#method/路径，只匹配 Base/Target 路径、符号和方法名；查文件变化时还可用 changeType 或 diff 字面量，多词为 OR。includeConfiguration(boolean，默认false)仅在 selector 省略时附加配置变化索引，不返回其 diff；limit 是方法与文件结果总数；anchorChunkId 遵循通用规则。
+                    返回：显式 selector 才返回其他方法/文件差异；文件最多返回3个相关 hunk。- 为 Base、+ 为 Target，B/T 为实际旧/新行号；其他变化块是 candidateChunkIds。
+                    示例 arguments：{"selector":"application.yml","limit":5}；仅列配置索引用 {"includeConfiguration":true,"limit":5}。
                     """),
             spec(RESOLVE_DATA_ACCESS, Set.of("selector", "depth", "limit", "anchorChunkId"),
                     """
-                    用途：沿调用关系解析 Mapper、Repository、DAO、SQL 和参数绑定，适合确认真实数据访问、查询构造和对象范围。
-                    参数：selector(string，可选，可填写表名、Mapper/Repository 方法、SQL 关键词或字段名)；depth(int，1..5，默认3)；limit(int，1..10，默认6)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：调用范围内解析到的结果标记为 SEMANTIC_EVIDENCE；仅靠项目范围搜索发现的结果是 UNVERIFIED_CANDIDATE，必须先 verify_relation。单个语法指标本身不能直接证明漏洞。
+                    定位 Mapper/Repository/DAO/SQL、参数绑定和 tenant/owner 约束；语法指标本身不能确认或排除漏洞。
+                    参数：selector(string，可选)用长度至少2的技术标识，如 "OrderMapper#selectById"、"tenant_id"、"${"；它在路径、符号、endpoint、类型、参数、注解、被调符号和源码中分词 OR 匹配，不要传自然语言。depth(int，1..5，默认3，沿可靠调用边双向扩展)；limit/anchorChunkId 遵循通用规则。
+                    返回：优先返回可达范围内的 SEMANTIC_EVIDENCE；仅在完全没有可达结果时退回项目搜索并标记 UNVERIFIED_CANDIDATE。只含关键行及前后5行，完整查询用 read_source。
+                    示例 arguments：{"selector":"tenant_id","depth":3,"limit":5}。
                     """),
             spec(INSPECT_SECURITY_POLICY, Set.of("endpoint", "limit", "anchorChunkId"),
                     """
-                    用途：检查方法安全注解、过滤器/拦截器和能够匹配入口的全局安全规则，适合核对授权缺失或安全控制是否实际生效。
-                    参数：endpoint(string，可选，省略时使用锚点 endpoint)；limit(int，1..10，默认6)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：方法注解、endpoint 规则匹配或直接调用关联可成为已验证策略证据；普通项目级安全配置只是 UNVERIFIED_CANDIDATE。未发现策略不等于已经证明入口无保护，仍需结合 Recon 的框架启用事实。
+                    检查锚点方法注解、requestMatchers、过滤器和拦截器；找到或未找到策略都不能单独证明控制生效或缺失。
+                    参数：endpoint(string，可选)是实际请求路径，如 "/orders/42"，省略时使用锚点 endpoint；不含 HTTP 方法、域名或查询参数。limit/anchorChunkId 遵循通用规则；锚点方法注解占一个结果名额。
+                    返回：先检查全部策略并排序，再应用 limit。endpoint 匹配或直接关联策略进入 evidenceChunkIds，普通项目配置进入 candidateChunkIds；结合 Recon 的框架启用和配置顺序判断。
+                    示例 arguments：{"endpoint":"/orders/42","limit":5}。
                     """),
             spec(TRACE_VALUE, Set.of("source", "sink", "variable", "depth", "limit", "anchorChunkId"),
                     """
-                    用途：追踪外部输入、敏感值或业务字段到危险终点的路径，并核对跨调用参数映射和路径 Guard。
-                    参数：source/sink/variable(string，可选，至少优先填写最明确的一项；全部省略时返回当前漏洞类型下与锚点相关的已有流)；depth(int，1..5，默认3)；limit(int，1..10，默认6)；anchorChunkId(long，可选，仅允许已验证证据)。
-                    结果：VALUE_TRACE/ARGUMENT_MAPPING 中返回的是已解析语义证据；没有结果只表示当前分析未解析到满足条件的数据流，不能单独作为漏洞不存在的反证。
+                    查询已有 source-to-sink 流或跨调用参数映射。source/sink 优先复用 semanticEvidence/TOOL_RESULT 中的描述子串，如 "HTTP parameter"、"Statement.execute"；variable 用标识符，如 "orderId"，不要编造自然语言。
+                    参数：source/sink/variable(string，可选)：已有 SecurityFlow 中多项为 AND；无匹配流时只用首个非空项回退到参数映射，优先级 variable、source、sink。全部省略时先返回当前漏洞类型的已有流，否则返回参数映射。depth(int，1..5，默认3，仅参数映射回退有效)；limit/anchorChunkId 遵循通用规则。
+                    返回：VALUE_TRACE 是完整语义流；ARGUMENT_MAPPING 只证明局部参数传递，不证明完整路径、可控性或 Guard 缺失。没有结果只表示当前分析未解析到满足条件的数据流，不能排除漏洞。
+                    示例 arguments：{"variable":"orderId","depth":3,"limit":5}。
                     """)
     );
     private static final Map<String, ToolSpec> BY_NAME = SPECS.stream().collect(Collectors.toMap(
@@ -95,12 +108,14 @@ public final class AgentToolCatalog {
     public static String prompt() {
         return """
 
-                工具调用说明：
-                - 只能调用下列只读工具；arguments 只能包含对应工具列出的字段，禁止增加自定义参数。
-                - long/int 必须使用 JSON 数字，boolean 必须使用 true/false；省略可选参数时使用说明中的默认值。
-                - anchorChunkId 省略时使用当前调查目标；填写时必须来自当前目标或已验证 evidenceChunkIds。UNVERIFIED_CANDIDATE 不能直接作为锚点或 FINDING 证据，必须先 verify_relation。
-                - TOOL_RESULT 的 status=INVALID/DENIED/ERROR 表示本次调用未形成证据；不得把错误说明当作代码事实。truncated=true 时仅对支持 cursor 的搜索工具原样传回 nextCursor，其他工具应缩小条件重试。
-                - VERIFIED_EVIDENCE、SEMANTIC_EVIDENCE、CODEGRAPH_RELATIONS 及工具返回的 evidenceChunkIds 可以进入证据链；UNVERIFIED_CANDIDATE/candidateChunkIds 只能作为线索。
+                工具选择：源码/行号 read_source；候选关系 verify_relation；符号/注解/路径 search_symbols；源码字面量 search_code；调用路径 explore_call_graph；增量差异 get_change_context；数据访问 resolve_data_access；安全策略 inspect_security_policy；值流 trace_value。
+
+                通用规则：
+                - 先读 target、semanticEvidence、recon 和已有 observations；不要重复查询已给出的事实。工具均只读，arguments 只能含允许参数；string/整数/boolean 必须使用正确 JSON 类型。非法类型、范围或枚举返回 INVALID_ARGUMENT，不会自动转换、裁剪或回退。
+                - anchorChunkId 省略时为最初目标；填写时只能来自 target/evidenceChunkIds。limit 为1..20、默认6。search_symbols/search_code 的 cursor 仅在 truncated=true 时原样回传 nextCursor 数值；游标只越过本次实际返回的结果，不要自行计算。
+                - evidenceChunkIds/VERIFIED_EVIDENCE/SEMANTIC_EVIDENCE 可进入证据链；原始 CODEGRAPH_RELATIONS、UNVERIFIED_CANDIDATE/candidateChunkIds 只能作为线索，不能直接作为锚点或 FINDING 证据。候选流程：搜索 -> read_source 判断相关性 -> 需要引用时 verify_relation。
+                - 证据资格不等于漏洞成立，仍须用源码证明输入、失效控制、危险操作和影响。EMPTY 不是反证；INVALID/DENIED/ERROR 不形成新证据。TOOL_RESULT_TRUNCATED、OBSERVATION_TRUNCATED、ITEM_TRUNCATED 表示结果不完整。
+                - 下列示例中的 ID 和行号仅说明 JSON 类型，必须替换为当前输入或工具结果中的真实值。
 
                 可用工具：
                 """ + SPECS.stream().map(ToolSpec::promptLine)

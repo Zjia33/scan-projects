@@ -1,5 +1,6 @@
 package com.deepaudit.agent;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -24,38 +25,39 @@ final class ToolArguments {
 
     String string(String name) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
-        return value == null ? "" : String.valueOf(value).strip();
+        if (value == null) return "";
+        if (!(value instanceof String text)) throw invalid(name, "必须是 JSON 字符串");
+        return text.strip();
     }
 
     int integer(String name, int defaultValue, int minimum, int maximum) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
-        int parsed = defaultValue;
-        if (value instanceof Number number) {
-            parsed = number.intValue();
-        } else if (value != null) {
-            try {
-                parsed = Integer.parseInt(String.valueOf(value));
-            } catch (NumberFormatException ignored) {
-                parsed = defaultValue;
-            }
+        if (value == null) return defaultValue;
+        int parsed = exactInteger(name, value);
+        if (parsed < minimum || parsed > maximum) {
+            throw invalid(name, "必须位于 " + minimum + ".." + maximum + " 范围内");
         }
-        return Math.max(minimum, Math.min(parsed, maximum));
+        return parsed;
     }
 
     Long longValue(String name) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
-        if (value instanceof Number number) return number.longValue();
         if (value == null) return null;
         try {
-            return Long.parseLong(String.valueOf(value).replaceAll("[^0-9]", ""));
-        } catch (NumberFormatException exception) {
-            return null;
+            if (!(value instanceof Number)) throw invalid(name, "必须是 JSON 整数");
+            long parsed = new BigDecimal(value.toString()).longValueExact();
+            if (parsed < 0) throw invalid(name, "不能是负数");
+            return parsed;
+        } catch (ArithmeticException exception) {
+            throw invalid(name, "必须是有效的 JSON 整数");
         }
     }
 
     boolean bool(String name, boolean defaultValue) {
         Object value = values.get(name.toLowerCase(Locale.ROOT));
-        return value == null ? defaultValue : Boolean.parseBoolean(String.valueOf(value));
+        if (value == null) return defaultValue;
+        if (!(value instanceof Boolean result)) throw invalid(name, "必须是 JSON boolean");
+        return result;
     }
 
     boolean has(String name) {
@@ -68,6 +70,25 @@ final class ToolArguments {
         return values.keySet().stream()
                 .filter(key -> !normalizedAllowed.contains(key))
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private int exactInteger(String name, Object value) {
+        if (!(value instanceof Number)) throw invalid(name, "必须是 JSON 整数");
+        try {
+            return new BigDecimal(value.toString()).intValueExact();
+        } catch (ArithmeticException exception) {
+            throw invalid(name, "必须是有效的 JSON 整数");
+        }
+    }
+
+    private InvalidArgumentException invalid(String name, String reason) {
+        return new InvalidArgumentException("参数 " + name + " " + reason + "。");
+    }
+
+    static final class InvalidArgumentException extends IllegalArgumentException {
+        private InvalidArgumentException(String message) {
+            super(message);
+        }
     }
 
 }
