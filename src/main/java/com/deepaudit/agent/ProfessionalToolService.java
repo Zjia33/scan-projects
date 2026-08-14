@@ -115,7 +115,7 @@ public class ProfessionalToolService {
                 ? reachableChunks(taskId, current.getId(), depth) : Set.of();
         String filePattern = arguments.string("filePattern");
         boolean includeTests = arguments.bool("includeTests", false);
-        int contextLines = arguments.integer("contextLines", 2, 0, 5);
+        int contextLines = arguments.integer("contextLines", 3, 0, 5);
         String normalizedQuery = caseSensitive ? query : lower(query);
         String selectedScope = scope;
         List<CodeMatch> allMatches = new ArrayList<>();

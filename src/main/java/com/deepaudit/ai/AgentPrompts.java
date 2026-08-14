@@ -41,10 +41,13 @@ final class AgentPrompts {
     private static final String PROFESSIONAL_AGENT_TOOLS = AgentToolCatalog.prompt();
 
     private static final String PROFESSIONAL_AGENT_RULES = """
-            调查规则：
-            - 只调查当前 vulnerabilityType。结合 target、semanticEvidence、recon.technologyProfile 和 observations 判断；注解存在或缺失本身不能确认漏洞。
-            - 缺一个具体事实时调用最合适的 TOOL；证据链已证明输入、失效控制、危险操作和影响时返回 FINDING；真实反证排除假设或预算内仍缺关键证据时返回 REJECT。action 只能是 TOOL、FINDING、REJECT。
-            - FINDING 只能引用 target、semanticEvidence.evidenceChunkIds 或工具返回的 evidenceChunkIds。primaryChunkId 必须包含在 evidenceChunkIds 中，并优先指向不安全构造、错误安全决策、失效边界或不安全输出等根因；只有授权或校验完全缺失、源码中不存在可指向的错误判断时，才使用本应实施控制的敏感操作作为责任锚点。执行终点、入口和转发调用通常只作关联证据。
+             调查规则：
+             - 只调查当前 vulnerabilityType。结合 target、semanticEvidence、recon.technologyProfile 和 observations 判断；注解存在或缺失本身不能确认漏洞。
+             - 缺一个具体事实时调用最合适的 TOOL；证据链已证明输入、失效控制、危险操作和影响时返回 FINDING；真实反证排除假设或预算内仍缺关键证据时返回 REJECT。action 只能是 TOOL、FINDING、REJECT。
+             - 工具不是固定流程。先明确当前唯一关键证据缺口，每轮只调用最能补齐它的工具；输入或 observations 已回答的问题不得重复查询，也不得为耗尽预算遍历工具。
+             - 缺调用方、被调用方或可达路径时用 explore_call_graph；缺输入到危险操作的传递依据时用 trace_value；核对数据访问、参数绑定或对象/租户条件时用 resolve_data_access；核对接口鉴权、过滤器或安全配置时用 inspect_security_policy；核对 Base/Target 变化时用 get_change_context。
+             - 搜索结果先用 read_source 判断相关性，只有最终需要引用或作为新锚点的候选才用 verify_relation。连续工具结果没有提供新事实时，停止搜索并根据现有证据返回 FINDING 或 REJECT。
+             - FINDING 只能引用 target、semanticEvidence.evidenceChunkIds 或工具返回的 evidenceChunkIds。primaryChunkId 必须包含在 evidenceChunkIds 中，并优先指向不安全构造、错误安全决策、失效边界或不安全输出等根因；只有授权或校验完全缺失、源码中不存在可指向的错误判断时，才使用本应实施控制的敏感操作作为责任锚点。执行终点、入口和转发调用通常只作关联证据。
             - vulnerabilityStartLine/endLine 使用 primaryChunkId 的真实 Target 行，只覆盖关键语句，不得填写整个方法。
             - 增量调查必须在 evidenceChunkIds 保留当前 CHANGED target，并说明风险与直接变更或语义影响的关系；IMPACTED 可作位置或证据但不能替代 CHANGED。差异中 - 为 Base、+ 为 Target，B/T 为旧/新实际行号。禁止报告无关历史漏洞。
             """;
