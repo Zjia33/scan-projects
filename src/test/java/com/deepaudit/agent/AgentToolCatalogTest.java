@@ -12,6 +12,8 @@ class AgentToolCatalogTest {
 
         assertThat(prompt)
                 .contains("工具选择：", "read_source", "verify_relation", "search_symbols", "search_code")
+                .contains("已知类/方法/注解/文件/接口时 search_symbols -> read_source")
+                .contains("普通变量、字段使用、字符串、配置键或未知使用位置时 search_code")
                 .contains("explore_call_graph", "get_change_context", "resolve_data_access")
                 .contains("inspect_security_policy", "trace_value")
                 .contains("候选流程：搜索 -> read_source", "需要引用时 verify_relation")
@@ -24,9 +26,12 @@ class AgentToolCatalogTest {
     @Test
     void descriptionsKeepImportantRuntimeSemantics() {
         assertThat(description(AgentToolCatalog.READ_SOURCE))
+                .contains("不负责搜索", "先用 search_symbols 取得 chunkId")
                 .contains("文件绝对行号", "最多160行", "候选读取后仍是 candidateChunkIds");
         assertThat(description(AgentToolCatalog.SEARCH_CODE))
                 .contains("CURRENT_FILE|RELATED|PROJECT", "单个字面量", "不支持正则")
+                .contains("普通变量/字段使用、字符串、配置键、危险 API 文本或未知使用位置")
+                .contains("已知结构化目标应使用 search_symbols -> read_source")
                 .contains("相交或相邻的上下文窗口会合并")
                 .contains("\"permitAll\"", "\"**/*Security*.java\"");
         assertThat(description(AgentToolCatalog.EXPLORE_CALL_GRAPH))
@@ -47,6 +52,9 @@ class AgentToolCatalogTest {
         String description = description(AgentToolCatalog.SEARCH_SYMBOLS);
 
         assertThat(description)
+                .contains("已知类名、方法名、注解、文件路径、接口路径或代码块类型时优先使用本工具")
+                .contains("不要先用 search_code 猜定义")
+                .contains("不搜索普通变量使用、字符串或配置字面量")
                 .contains("symbol：类/方法/Class#method/限定名/签名片段")
                 .contains("\"OrderService#load\"", "不要传 \"service.load(id)\"")
                 .contains("kind：优先复用 target.chunkType 或结果 kind")

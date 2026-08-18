@@ -22,7 +22,7 @@ public final class AgentToolCatalog {
     private static final List<ToolSpec> SPECS = List.of(
             spec(READ_SOURCE, Set.of("chunkId", "startLine", "endLine", "contextLines"),
                     """
-                    读取已知代码块的真实源码和行号；不验证代码块关系。
+                    读取已知代码块的真实源码和行号；不负责搜索，也不验证代码块关系。已知类、方法、注解、文件路径或接口路径时，先用 search_symbols 取得 chunkId，再用本工具精读。
                     参数：chunkId(long，必填)必须来自 target/evidenceChunkIds/candidateChunkIds；startLine/endLine(int，可选)是该代码块范围内的文件绝对行号，只填 startLine 时读取该行，都不填时读取整个块；contextLines(int，0..20，默认2)附加两侧上下文。
                     返回：>>> 标记请求行；最多160行且无 cursor。候选读取后仍是 candidateChunkIds；truncated=true 时缩小行号范围。
                     示例 arguments：{"chunkId":1234,"startLine":86,"endLine":92,"contextLines":2}（示例数字必须替换）。
@@ -37,7 +37,7 @@ public final class AgentToolCatalog {
             spec(SEARCH_SYMBOLS, Set.of("symbol", "kind", "annotation", "filePath", "endpoint",
                             "limit", "cursor", "anchorChunkId"),
                     """
-                    按本地语义索引和完整 Target CodeGraph 索引定位定义并取得 chunkId；不搜索源码字面量。提供 symbol 时会执行 CodeGraph 名称查询并按需物化尚未加载的候选位置。以下字符串均为不区分大小写的子串，至少填一项，多项为 AND：
+                    已知类名、方法名、注解、文件路径、接口路径或代码块类型时优先使用本工具，再用 read_source 精读；不要先用 search_code 猜定义。它按本地语义索引和完整 Target CodeGraph 索引定位定义并取得 chunkId，不搜索普通变量使用、字符串或配置字面量。提供 symbol 时会执行 CodeGraph 名称查询并按需物化尚未加载的候选位置。以下字符串均为不区分大小写的子串，至少填一项，多项为 AND：
                     - symbol：类/方法/Class#method/限定名/签名片段，如 "OrderService#load"；不要传 "service.load(id)"。
                     - kind：优先复用 target.chunkType 或结果 kind；常见 "JAVA_METHOD"、"TEXT_XML"、"MYBATIS_SQL"、"TEMPLATE_SINK"，不是固定枚举。
                     - annotation：注解名或稳定片段，如 "PreAuthorize"；不要传自然语言。
@@ -49,7 +49,7 @@ public final class AgentToolCatalog {
             spec(SEARCH_CODE, Set.of("query", "scope", "filePattern", "includeTests", "caseSensitive",
                             "contextLines", "depth", "limit", "cursor", "anchorChunkId"),
                     """
-                    搜索每行源码中的单个字面量；不支持正则、自然语言问题、备选词表达式或跨行片段。
+                    仅在目标不能通过类名、方法名、注解、文件路径或接口路径结构化定位时，搜索当前任务已有代码块中每行源码的单个字面量。适合普通变量/字段使用、字符串、配置键、危险 API 文本或未知使用位置；已知结构化目标应使用 search_symbols -> read_source。它不支持正则、自然语言问题、备选词表达式或跨行片段。
                     参数：query(string，必填，1..500字符，如 "permitAll"、"tenant_id"、"${")；scope(string，CURRENT_FILE|RELATED|PROJECT，默认RELATED)，分别表示锚点文件、锚点文件加可靠调用图范围、全项目；filePattern(string，可选 glob，支持 *、**、?，如 "**/*Security*.java")；includeTests(boolean，默认false)；caseSensitive(boolean，默认false)；contextLines(int，0..5，默认2)；depth(int，1..5，默认2，仅RELATED有效)；limit/cursor/anchorChunkId 遵循通用规则。
                     返回：>>> 标记命中行，相交或相邻的上下文窗口会合并；只有锚点命中保留证据资格，其他结果是 candidateChunkIds。
                     示例 arguments：{"query":"permitAll","scope":"PROJECT","filePattern":"**/*Security*.java","limit":5}。
@@ -108,7 +108,7 @@ public final class AgentToolCatalog {
     public static String prompt() {
         return """
 
-                工具选择：源码/行号 read_source；候选关系 verify_relation；符号/注解/路径 search_symbols；源码字面量 search_code；调用路径 explore_call_graph；增量差异 get_change_context；数据访问 resolve_data_access；安全策略 inspect_security_policy；值流 trace_value。
+                工具选择：已知类/方法/注解/文件/接口时 search_symbols -> read_source；普通变量、字段使用、字符串、配置键或未知使用位置时 search_code；候选关系 verify_relation；调用路径 explore_call_graph；增量差异 get_change_context；数据访问 resolve_data_access；安全策略 inspect_security_policy；值流 trace_value。
 
                 通用规则：
                 - 先读 target、semanticEvidence、recon 和已有 observations；不要重复查询已给出的事实。工具均只读，arguments 只能含允许参数；string/整数/boolean 必须使用正确 JSON 类型。非法类型、范围或枚举返回 INVALID_ARGUMENT，不会自动转换、裁剪或回退。
