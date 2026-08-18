@@ -76,6 +76,7 @@ public class IncrementalReviewService {
                     hints.getOrDefault(chunk.getId(), Set.of()));
             Set<VulnerabilityType> mandatoryTypes = mandatoryTypes(
                     hints.getOrDefault(chunk.getId(), Set.of()), relatedChanges, relatedFlows);
+            if (isDtoOrEntityFile(chunk.getFilePath()) && mandatoryTypes.isEmpty()) continue;
             String deterministicEvidence = joinNonBlank(hintDescriptions.get(chunk.getId()),
                     flowSummary(relatedFlows));
             String changeContext = AgentPromptSupport.changeContext(chunk);
@@ -144,6 +145,17 @@ public class IncrementalReviewService {
 
     private boolean insideIncrementalScope(CodeChunk chunk) {
         return chunk.getAnalysisScope() == AnalysisScope.CHANGED;
+    }
+
+    // 普通 DTO/Entity 变更保留在代码索引中但不作为独立审查目标；强制证据命中时仍须调查。
+    private boolean isDtoOrEntityFile(String filePath) {
+        if (filePath == null || filePath.isBlank()) return false;
+        String normalized = filePath.replace('\\', '/');
+        String fileName = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (!fileName.toLowerCase(Locale.ROOT).endsWith(".java")) return false;
+        String typeName = fileName.substring(0, fileName.length() - ".java".length())
+                .toLowerCase(Locale.ROOT);
+        return typeName.endsWith("dto") || typeName.endsWith("entity");
     }
 
     private Set<String> facts(CodeChunk chunk, List<SemanticCallEdge> edges, List<SecurityFlow> flows,

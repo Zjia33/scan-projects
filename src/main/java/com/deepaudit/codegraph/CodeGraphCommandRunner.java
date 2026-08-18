@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -40,6 +41,8 @@ class CodeGraphCommandRunner {
         List<String> command = new ArrayList<>(commandPrefix());
         command.addAll(arguments);
         Process process = null;
+        CompletableFuture<BoundedOutput> stdout = null;
+        CompletableFuture<BoundedOutput> stderr = null;
         try {
             logStarted(operation, root);
             ProcessBuilder builder = new ProcessBuilder(command);
@@ -48,14 +51,13 @@ class CodeGraphCommandRunner {
             sanitizeEnvironment(builder.environment(), environment);
             process = builder.start();
             Process running = process;
-            CompletableFuture<BoundedOutput> stdout = CompletableFuture.supplyAsync(
+            stdout = CompletableFuture.supplyAsync(
                     () -> readBounded(running.getInputStream(), properties.getMaxOutputBytes()));
-            CompletableFuture<BoundedOutput> stderr = CompletableFuture.supplyAsync(
+            stderr = CompletableFuture.supplyAsync(
                     () -> readBounded(running.getErrorStream(), properties.getMaxOutputBytes()));
             boolean completed = process.waitFor(Math.max(1, properties.getTimeoutSeconds()), TimeUnit.SECONDS);
             if (!completed) {
-                process.destroyForcibly();
-                process.waitFor(5, TimeUnit.SECONDS);
+                terminateProcessTree(process);
                 long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
                 log.warn("CodeGraph 命令超时：operation={}，workspace={}，elapsedMs={}",
                         operation, root.getFileName(), elapsedMs);
@@ -75,8 +77,60 @@ class CodeGraphCommandRunner {
         } catch (CodeGraphException exception) {
             throw exception;
         } catch (Exception exception) {
-            if (process != null && process.isAlive()) process.destroyForcibly();
             throw new CodeGraphException("无法执行 CodeGraph 命令: " + exception.getMessage(), exception);
+        } finally {
+            cleanupProcess(process, stdout, stderr);
+        }
+    }
+
+    // 无论正常、超时还是异常退出，都不得留下占用任务快照目录的子进程或管道。
+    private void cleanupProcess(Process process, CompletableFuture<BoundedOutput> stdout,
+                                CompletableFuture<BoundedOutput> stderr) {
+        if (process == null) return;
+        if (process.isAlive()) terminateProcessTree(process);
+        closeQuietly(process.getOutputStream());
+        closeQuietly(process.getInputStream());
+        closeQuietly(process.getErrorStream());
+        awaitReader(stdout);
+        awaitReader(stderr);
+    }
+
+    // CodeGraph 目前不使用 Shell，但仍一并终止可能派生的后代进程。
+    private void terminateProcessTree(Process process) {
+        List<ProcessHandle> descendants = process.descendants().toList();
+        descendants.forEach(this::destroyForcibly);
+        process.destroyForcibly();
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS) && process.isAlive()) {
+                log.warn("CodeGraph 进程强制终止后仍未退出：pid={}", process.pid());
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+        descendants.forEach(this::destroyForcibly);
+    }
+
+    private void destroyForcibly(ProcessHandle process) {
+        if (process.isAlive()) process.destroyForcibly();
+    }
+
+    private void awaitReader(CompletableFuture<BoundedOutput> reader) {
+        if (reader == null) return;
+        try {
+            reader.get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            reader.cancel(true);
+        } catch (Exception ignored) {
+            reader.cancel(true);
+        }
+    }
+
+    private void closeQuietly(Closeable stream) {
+        try {
+            stream.close();
+        } catch (IOException ignored) {
+            // 进程退出后管道可能已经被异步读取任务关闭。
         }
     }
 

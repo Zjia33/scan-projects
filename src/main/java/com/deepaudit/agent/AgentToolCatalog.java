@@ -112,7 +112,7 @@ public final class AgentToolCatalog {
 
                 通用规则：
                 - 先读 target、semanticEvidence、recon 和已有 observations；不要重复查询已给出的事实。工具均只读，arguments 只能含允许参数；string/整数/boolean 必须使用正确 JSON 类型。非法类型、范围或枚举返回 INVALID_ARGUMENT，不会自动转换、裁剪或回退。
-                - anchorChunkId 省略时为最初目标；填写时只能来自 target/evidenceChunkIds。limit 为1..20、默认6。search_symbols/search_code 的 cursor 仅在 truncated=true 时原样回传 nextCursor 数值；游标只越过本次实际返回的结果，不要自行计算。
+                - anchorChunkId 省略时为最初目标；填写时只能来自 target/evidenceChunkIds。limit 为1..20、默认10。search_symbols/search_code 的 cursor 仅在 truncated=true 时原样回传 nextCursor 数值；游标只越过本次实际返回的结果，不要自行计算。
                 - evidenceChunkIds/VERIFIED_EVIDENCE/SEMANTIC_EVIDENCE 可进入证据链；原始 CODEGRAPH_RELATIONS、UNVERIFIED_CANDIDATE/candidateChunkIds 只能作为线索，不能直接作为锚点或 FINDING 证据。候选流程：搜索 -> read_source 判断相关性 -> 需要引用时 verify_relation。
                 - 证据资格不等于漏洞成立，仍须用源码证明输入、失效控制、危险操作和影响。EMPTY 不是反证；INVALID/DENIED/ERROR 不形成新证据。TOOL_RESULT_TRUNCATED、OBSERVATION_TRUNCATED、ITEM_TRUNCATED 表示结果不完整。
                 - 下列示例中的 ID 和行号仅说明 JSON 类型，必须替换为当前输入或工具结果中的真实值。

@@ -133,6 +133,44 @@ class IncrementalReviewServiceTest {
         assertThat(unit.changeSummary()).contains("GUARD_REMOVED", "删除对象归属校验");
     }
 
+    @Test
+    void skipsChangedDtoAndEntityFilesUnlessMandatoryEvidenceRequiresInvestigation() {
+        UUID taskId = UUID.randomUUID();
+        SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
+        SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
+        SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
+        when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
+
+        CodeChunk dto = chunk(taskId, 21L, "UserDTO#getName", "return name;");
+        dto.setFilePath("src/main/java/demo/dto/UserDTO.java");
+        dto.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk entity = chunk(taskId, 22L, "OrderEntity#getId", "return id;");
+        entity.setFilePath("src\\main\\java\\demo\\entity\\OrderEntity.java");
+        entity.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk regular = chunk(taskId, 23L, "OrderEntityService#load", "return repository.findById(id);");
+        regular.setFilePath("src/main/java/demo/service/OrderEntityService.java");
+        regular.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk dtoPackageOnly = chunk(taskId, 24L, "UserRequest#getName", "return name;");
+        dtoPackageOnly.setFilePath("src/main/java/demo/dto/UserRequest.java");
+        dtoPackageOnly.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk mandatoryDto = chunk(taskId, 25L, "CredentialDTO#getToken", "return token;");
+        mandatoryDto.setFilePath("src/main/java/demo/dto/CredentialDTO.java");
+        mandatoryDto.setAnalysisScope(AnalysisScope.CHANGED);
+
+        List<IncrementalReviewUnit> units = service.build(taskId,
+                List.of(dto, entity, regular, dtoPackageOnly, mandatoryDto),
+                Map.of(25L, java.util.Set.of(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE)),
+                Map.of(25L, "确定性敏感信息调查线索"));
+
+        assertThat(units).extracting(IncrementalReviewUnit::primaryChunkId)
+                .containsExactly(23L, 24L, 25L);
+        assertThat(units.get(2).mandatoryTypes())
+                .containsExactly(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
+    }
+
     private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {
         CodeChunk chunk = new CodeChunk(taskId, "Demo.java", symbol, null, 1, 3, content,
                 "JAVA_METHOD", "Long id", "", "findById");

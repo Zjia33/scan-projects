@@ -39,14 +39,18 @@ class CodeGraphCommandRunnerTest {
     }
 
     @Test
-    void terminatesCommandsThatExceedTimeout() {
+    void terminatesCommandsThatExceedTimeout() throws Exception {
         CodeGraphProperties properties = properties();
         properties.setTimeoutSeconds(1);
         CodeGraphCommandRunner runner = new CodeGraphCommandRunner(properties);
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("timeout-command"));
 
-        assertThatThrownBy(() -> runner.run(temporaryDirectory, helper("sleep"), Map.of()))
+        assertThatThrownBy(() -> runner.run(workingDirectory, helper("sleep"), Map.of()))
                 .isInstanceOf(CodeGraphException.class)
                 .hasMessageContaining("执行超时");
+
+        // Windows 不允许删除仍被子进程占用的工作目录。
+        Files.delete(workingDirectory);
     }
 
     @Test

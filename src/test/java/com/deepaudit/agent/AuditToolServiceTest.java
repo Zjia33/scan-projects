@@ -42,7 +42,7 @@ class AuditToolServiceTest {
                 .contains("CALLERS|CALLEES|BOTH")
                 .contains("depth(int，1..5，默认3")
                 .contains("contextLines(int，0..20，默认2)")
-                .contains("limit 为1..20、默认6", "1..500字符", "最多160行")
+                .contains("limit 为1..20、默认10", "1..500字符", "最多160行")
                 .contains("includeConfiguration(boolean，默认false", "文件最多返回3个相关 hunk")
                 .contains("INVALID_ARGUMENT", "不会自动转换、裁剪或回退")
                 .contains("evidenceChunkIds", "candidateChunkIds", "TOOL_RESULT_TRUNCATED")
