@@ -70,7 +70,7 @@ final class AgentPrompts {
             - REJECTED：具体源码反证推翻主张，confirmed=false；reason 说明反证，counterEvidenceChunkIds 只引用输入中的真实反证 CHUNK_ID。
             - INSUFFICIENT_EVIDENCE：既不能确认也不能推翻，confirmed=false；不得表述为已否决。
             非 REJECTED 时 counterEvidenceChunkIds=[]。reason、confidence、verdict、confirmed、counterEvidenceChunkIds 始终必填。
-            confirmed=true 时，从 locationCandidates 选择 locationCandidateId，原样复制其 chunkId/startLine/endLine，禁止自行计算行号，并填写 outputSchema 规定的 deltaStatus、rootCauseKind、locationRole。优先选择 purposes 含 ROOT_CAUSE 的候选；仅 MISSING_AUTHORIZATION_CHECK 或 MISSING_VALIDATION 且没有真实根因语句时可选 RESPONSIBILITY_ANCHOR。IMPACT、ENTRY、SUPPORTING 只能作关联证据，不能覆盖根因位置。
+            locationCandidates 是轻量定位引用，不重复携带源码；必须通过 candidateId、chunkId 和行号在 evidence 的同名 LOCATION_REF 与源码窗口中核对真实语义。confirmed=true 时，从 locationCandidates 选择 locationCandidateId，原样复制其 chunkId/startLine/endLine，禁止自行计算行号，并填写 outputSchema 规定的 deltaStatus、rootCauseKind、locationRole。优先选择 purposes 含 ROOT_CAUSE 的候选；仅 MISSING_AUTHORIZATION_CHECK 或 MISSING_VALIDATION 且没有真实根因语句时可选 RESPONSIBILITY_ANCHOR。IMPACT、ENTRY、SUPPORTING 只能作关联证据，不能覆盖根因位置。
             confirmed=false 时不要求 deltaStatus、rootCauseKind、locationRole、locationCandidateId、primaryChunkId 和漏洞行号，不得为这些条件字段编造占位值。
             增量候选还须证明与 Target 直接变更或影响链的因果关系。变更引入、防护削弱或影响链变化用 NEW；只有 Base 和 Target 均有明确漏洞证据才用 PERSISTING。changeContext 中 - 为 Base、+ 为 Target。
             """;

@@ -63,29 +63,46 @@ class AgentRuntimeTest {
                         "读取候选"),
                 tool("read_source", Map.of("chunkId", 2L, "startLine", 1, "endLine", 2),
                         "重复读取"),
+                tool("verify_relation", Map.of("candidateChunkId", 2L), "验证候选关系"),
                 new LlmGateway.AgentDecision("REJECT", null, Map.of(), "证据不足", null));
         when(toolService.execute(anyString(), anyMap(), eq(target), eq(chunks),
                 eq(VulnerabilityType.AUTHORIZATION),
                 any(ToolSessionContext.class))).thenReturn(
-                new ToolResult("search result\n" + "x".repeat(5_000),
+                new ToolResult("[CODE_SEARCH][UNVERIFIED_CANDIDATE]\n" + "x".repeat(5_000),
                         Set.of(1L), Set.of(2L)),
-                new ToolResult("source range", Set.of(), Set.of(2L)),
-                new ToolResult("source range repeated\n" + "z".repeat(10_000) + "\nTAIL_MARKER",
-                        Set.of(), Set.of(2L)));
+                new ToolResult("[SOURCE] CHUNK_ID=2 | demo/Source.java:1-2 | OrderService#load\n"
+                        + "<UNTRUSTED_CODE>\n>>>     1 | return repository.find(input);\n"
+                        + "</UNTRUSTED_CODE>", Set.of(), Set.of(2L)),
+                new ToolResult("[SOURCE] CHUNK_ID=2 | demo/Source.java:1-2 | OrderService#load\n"
+                        + "<UNTRUSTED_CODE>\n>>>     1 | return repository.find(input);\n"
+                        + "</UNTRUSTED_CODE>\n" + "z".repeat(10_000) + "\nTAIL_MARKER",
+                        Set.of(), Set.of(2L)),
+                new ToolResult("[VERIFIED_EVIDENCE][CALL_EDGE_VERIFIED] 存在唯一调用关系\n"
+                        + "CHUNK_ID=2 | demo/Source.java:1 | OrderService#load\n"
+                        + "[SOURCE_NOT_INCLUDED] 请使用 read_source 精读该代码块。", Set.of(2L), Set.of()));
 
         runtime.investigate(taskId, task, null, chunks);
 
-        verify(toolService, times(3)).execute(anyString(), anyMap(), eq(target), eq(chunks),
+        verify(toolService, times(4)).execute(anyString(), anyMap(), eq(target), eq(chunks),
                 eq(VulnerabilityType.AUTHORIZATION),
                 any(ToolSessionContext.class));
         ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
-        verify(gateway, times(4)).decide(turns.capture());
-        LlmGateway.AgentTurn finalTurn = turns.getAllValues().get(3);
-        assertThat(finalTurn.observations()).hasSize(3);
+        verify(gateway, times(5)).decide(turns.capture());
+        LlmGateway.AgentTurn finalTurn = turns.getAllValues().get(4);
+        assertThat(finalTurn.observations()).hasSize(5);
         assertThat(finalTurn.observations().get(0).result()).contains("COMPACT_OBSERVATION");
         assertThat(finalTurn.observations().get(2).result())
                 .contains("OBSERVATION_TRUNCATED", "TAIL_MARKER", "TOOL_BUDGET", "candidateChunkIds=[2]")
                 .doesNotContain("CACHE_HIT");
+        LlmGateway.Observation ledger = finalTurn.observations().get(4);
+        assertThat(ledger.tool()).isEqualTo("evidence_ledger");
+        assertThat(ledger.result())
+                .contains("[EVIDENCE_LEDGER]", "tool=search_code", "[DISCOVERY_ONLY]",
+                        "tool=read_source", "[SOURCE] CHUNK_ID=2", "<UNTRUSTED_CODE>",
+                        "</UNTRUSTED_CODE>", "return repository.find(input);", "tool=verify_relation",
+                        "[VERIFIED_EVIDENCE]", "evidenceChunkIds=[2]")
+                .doesNotContain("x".repeat(1_000));
+        assertThat(ledger.result()).hasSizeLessThanOrEqualTo(6_000);
 
         ArgumentCaptor<AgentEventType> eventTypes = ArgumentCaptor.forClass(AgentEventType.class);
         ArgumentCaptor<String> eventMessages = ArgumentCaptor.forClass(String.class);

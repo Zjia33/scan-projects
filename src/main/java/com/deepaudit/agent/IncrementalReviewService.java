@@ -155,7 +155,10 @@ public class IncrementalReviewService {
         if (!fileName.toLowerCase(Locale.ROOT).endsWith(".java")) return false;
         String typeName = fileName.substring(0, fileName.length() - ".java".length())
                 .toLowerCase(Locale.ROOT);
-        return typeName.endsWith("dto") || typeName.endsWith("entity");
+        return typeName.endsWith("dto")
+                || typeName.endsWith("entity")
+                || typeName.endsWith("vo")
+                || typeName.endsWith("po");
     }
 
     private Set<String> facts(CodeChunk chunk, List<SemanticCallEdge> edges, List<SecurityFlow> flows,

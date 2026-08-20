@@ -10,6 +10,7 @@ import com.deepaudit.domain.CodeChunk;
 import com.deepaudit.domain.Confidence;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.FindingDeltaStatus;
+import com.deepaudit.domain.HypothesisStatus;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
@@ -17,6 +18,7 @@ import com.deepaudit.semantic.SemanticEvidenceService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -35,7 +37,7 @@ import static org.mockito.Mockito.when;
 class CriticAgentServiceTest {
 
     @Test
-    void rebuildsCriticRequestWithWiderServerVerifiedContext() {
+    void rebuildsCriticRequestWithCandidateAlignedContextAndRejectsUnknownCandidateId() {
         UUID taskId = UUID.randomUUID();
         LlmGateway gateway = mock(LlmGateway.class);
         AgentTraceService traceService = mock(AgentTraceService.class);
@@ -61,9 +63,9 @@ class CriticAgentServiceTest {
         when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(chunk.getId()), any()))
                 .thenReturn(new AgentRun(taskId, AgentType.CRITIC, chunk.getId(), "search"));
         when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
-                false, Confidence.LOW, "扩展上下文不足以确认", FindingDeltaStatus.NEW,
-                null, null, null, null, null, null,
-                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE, List.of()));
+                true, Confidence.HIGH, "返回了本次请求未下发的候选", FindingDeltaStatus.NEW,
+                chunk.getId(), 130, 130, "UNSAFE_QUERY_CONSTRUCTION", "DATA_ACCESS",
+                "candidate-not-in-request", LlmGateway.CriticVerdict.CONFIRMED, List.of()));
 
         chunk.setAnalysisScope(com.deepaudit.domain.AnalysisScope.CHANGED);
         service.review(taskId, candidate, recon(), List.of(chunk));
@@ -73,11 +75,71 @@ class CriticAgentServiceTest {
         verify(gateway).critique(request.capture());
         assertThat(request.getValue().changeContext()).contains("[CHANGE_CONTEXT]");
         assertThat(request.getValue().evidence())
-                .contains("[CRITIC_PRIMARY_CONTEXT]")
-                .contains("    110 | line110();")
+                .contains("[CRITIC_LOCATION_EVIDENCE]")
+                .contains("[LOCATION_REF] candidateId=3001:130-130")
+                .contains("    128 | line128();")
                 .contains(">>>   130 | statement.execute(userSql);")
-                .contains("    150 | line150();")
+                .contains("    132 | line132();")
                 .doesNotContain("旧的四行证据");
+        assertThat(hypothesis.getStatus()).isEqualTo(HypothesisStatus.INSUFFICIENT_EVIDENCE);
+    }
+
+    @Test
+    void limitsCriticLocationReferencesToThirtyAndFivePerChunk() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        CriticAgentService service = new CriticAgentService(
+                gateway, traceService, hypothesisMapper, semanticEvidenceService);
+        List<CodeChunk> chunks = new java.util.ArrayList<>();
+        for (int chunkIndex = 0; chunkIndex < 10; chunkIndex++) {
+            StringBuilder source = new StringBuilder("public void run" + chunkIndex + "(Command command) {\n");
+            for (int call = 0; call < 10; call++) {
+                source.append("    validator.check").append(call).append("(command);\n");
+            }
+            source.append("}");
+            CodeChunk chunk = new CodeChunk(taskId, "Service" + chunkIndex + ".java",
+                    "Service" + chunkIndex + "#run", null, 100 + chunkIndex * 20,
+                    111 + chunkIndex * 20, source.toString(), "JAVA_METHOD", "Command command", "", "check");
+            chunk.setId(5_000L + chunkIndex);
+            chunk.setAnalysisScope(chunkIndex == 0 ? AnalysisScope.CHANGED : AnalysisScope.CONTEXT);
+            chunks.add(chunk);
+        }
+        CodeChunk primary = chunks.get(0);
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.MEDIUM,
+                "服务端校验可能被绕过", "变更入口到达多个校验和业务节点", "补充不可绕过的校验",
+                primary.getId(), List.of(primary.getId()), primary.getStartLine() + 1,
+                primary.getStartLine() + 1);
+        AuditHypothesis hypothesis = new AuditHypothesis(taskId, UUID.randomUUID(), proposal.type(),
+                proposal.title(), primary.getId(), String.valueOf(primary.getId()), Confidence.MEDIUM);
+        AgentCandidate candidate = new AgentCandidate(
+                AgentType.VALIDATION_BYPASS, proposal, "候选证据", hypothesis);
+        when(traceService.start(eq(taskId), eq(AgentType.CRITIC), eq(primary.getId()), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.CRITIC, primary.getId(), "run"));
+        LinkedHashSet<Long> relatedIds = chunks.stream().skip(1).map(CodeChunk::getId)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        when(semanticEvidenceService.criticReviewContextIds(eq(taskId), anySet(), eq(3)))
+                .thenReturn(relatedIds);
+        when(gateway.critique(any())).thenReturn(new LlmGateway.CriticDecision(
+                false, Confidence.LOW, "当前候选不足以确认绕过", FindingDeltaStatus.NEW,
+                null, null, null, null, null, null,
+                LlmGateway.CriticVerdict.INSUFFICIENT_EVIDENCE, List.of()));
+
+        service.review(taskId, candidate, recon(), chunks);
+
+        ArgumentCaptor<LlmGateway.CriticRequest> request =
+                ArgumentCaptor.forClass(LlmGateway.CriticRequest.class);
+        verify(gateway).critique(request.capture());
+        List<LlmGateway.LocationCandidateRef> references = request.getValue().locationCandidates();
+        assertThat(references).hasSize(30);
+        assertThat(references.stream().collect(java.util.stream.Collectors.groupingBy(
+                        LlmGateway.LocationCandidateRef::chunkId, java.util.stream.Collectors.counting())))
+                .allSatisfy((chunkId, count) -> assertThat(count).isLessThanOrEqualTo(5));
+        assertThat(references).allSatisfy(reference ->
+                assertThat(request.getValue().evidence()).contains(reference.candidateId()));
     }
 
     @Test
@@ -237,7 +299,7 @@ class CriticAgentServiceTest {
     }
 
     @Test
-    void preservesConfirmedVerdictWhenLocationRepairStillCannotResolve() {
+    void treatsCandidateAsInsufficientWhenLocationRepairStillCannotResolve() {
         UUID taskId = UUID.randomUUID();
         LlmGateway gateway = mock(LlmGateway.class);
         AgentTraceService traceService = mock(AgentTraceService.class);
@@ -274,8 +336,9 @@ class CriticAgentServiceTest {
 
         assertThat(result).isEmpty();
         assertThat(hypothesis.getStatus())
-                .isEqualTo(com.deepaudit.domain.HypothesisStatus.CONFIRMED_UNLOCATED);
-        assertThat(hypothesis.getCriticReason()).contains("已确认漏洞", "定位修复未选择合法候选 ID");
+                .isEqualTo(com.deepaudit.domain.HypothesisStatus.INSUFFICIENT_EVIDENCE);
+        assertThat(hypothesis.getCriticReason()).contains("未通过精确定位门禁", "定位修复未选择合法候选 ID")
+                .doesNotContain("已确认漏洞");
         verify(hypothesisMapper).update(hypothesis);
         verify(gateway).repairLocation(any());
     }
@@ -346,10 +409,10 @@ class CriticAgentServiceTest {
                 .thenReturn(Set.of(relatedOperation.getId()));
         when(gateway.critique(any())).thenAnswer(invocation -> {
             LlmGateway.CriticRequest request = invocation.getArgument(0);
-            LlmGateway.LocationCandidate selected = request.locationCandidates().stream()
+            LlmGateway.LocationCandidateRef selected = request.locationCandidates().stream()
                     .filter(value -> value.chunkId() == relatedOperation.getId())
-                    .filter(value -> value.source().contains("quotedUnitPrice"))
                     .findFirst().orElseThrow();
+            assertThat(request.evidence()).contains("quotedUnitPrice", selected.candidateId());
             return new LlmGateway.CriticDecision(
                     true, Confidence.HIGH, "已验证调用链到达未重算报价的扣款操作", FindingDeltaStatus.NEW,
                     selected.chunkId(), selected.startLine(), selected.endLine(),

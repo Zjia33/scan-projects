@@ -149,9 +149,12 @@ class RemoteLlmGatewayTest {
                 VulnerabilityType.VALIDATION_BYPASS, Severity.HIGH, Confidence.HIGH,
                 "客户端报价被用于扣款", "服务端信任客户端报价", "查询可信价格",
                 1497L, List.of(1497L, 1549L), 82, 83);
+        LlmGateway.LocationCandidateRef locationRef = new LlmGateway.LocationCandidateRef(
+                "1549:86-88", 1549L, 86, 88, List.of("BUSINESS_OPERATION"),
+                List.of("RESPONSIBILITY_ANCHOR"), "CHANGED");
         LlmGateway.CriticRequest request = new LlmGateway.CriticRequest(UUID.randomUUID(),
                 AgentType.VALIDATION_BYPASS, proposal, "跨方法证据", "调用链证据", recon(),
-                "MODIFIED", "CHANGED", "[CHANGE_CONTEXT]\n- old\n+ new", List.of());
+                "MODIFIED", "CHANGED", "[CHANGE_CONTEXT]\n- old\n+ new", List.of(locationRef));
 
         LlmGateway.CriticDecision decision = gateway.critique(request);
 
@@ -168,8 +171,9 @@ class RemoteLlmGatewayTest {
         assertThat(gateway.requests.get(0).get(1).get("content"))
                 .contains("\"primaryChunkId\"", "\"vulnerabilityStartLine\"",
                         "\"vulnerabilityEndLine\"", "\"rootCauseKind\"", "\"locationRole\"",
-                        "\"changeContext\":\"[CHANGE_CONTEXT]")
-                .doesNotContain("\"baseCodeExcerpt\"");
+                        "\"changeContext\":\"[CHANGE_CONTEXT]", "\"candidateId\":\"1549:86-88\"")
+                .doesNotContain("\"baseCodeExcerpt\"", "\"source\":", "\"filePath\":",
+                        "\"symbolName\":");
     }
 
     @Test

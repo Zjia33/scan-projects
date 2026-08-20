@@ -34,6 +34,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Slf4j
 public class CriticAgentService {
+    private static final int MAX_CRITIC_LOCATION_CANDIDATES = 30;
+    private static final int MAX_CRITIC_CANDIDATES_PER_CHUNK = 5;
+    private static final int MAX_INDEPENDENT_EVIDENCE_CHARS = 8_000;
+
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
     private final AuditHypothesisMapper hypothesisMapper;
@@ -76,22 +80,37 @@ public class CriticAgentService {
                     taskId, allowedLocationChunks, 3)).orElse(Set.of());
             LinkedHashSet<Long> verifiedLocationChunks = new LinkedHashSet<>(allowedLocationChunks);
             relatedReviewIds.stream().filter(chunksById::containsKey).forEach(verifiedLocationChunks::add);
-            ReviewContext reviewContext = buildReviewContext(
-                    candidate.proposal(), chunksById, verifiedLocationChunks, relatedReviewIds);
             List<LlmGateway.LocationCandidate> locationCandidates =
                     FindingLocationResolver.locationCandidates(
                             candidate.proposal().type(), chunksById, verifiedLocationChunks);
-            Map<Long, Integer> criticCallSites = semanticEvidenceService.callSiteLines(
-                    taskId, candidate.proposal().primaryChunkId(), verifiedLocationChunks);
-            String criticEvidence = FindingLocationResolver.formatCriticEvidence(
-                    candidate.proposal(), chunksById, verifiedLocationChunks, criticCallSites);
+            List<LlmGateway.LocationCandidate> selectedLocationCandidates = selectLocationCandidates(
+                    locationCandidates, candidate.proposal());
+            FindingLocationResolver.CriticEvidencePackage evidencePackage =
+                    FindingLocationResolver.formatCriticEvidencePackage(
+                            chunksById, selectedLocationCandidates);
+            String criticEvidence = evidencePackage.text();
+            if (criticEvidence.isBlank()) {
+                Map<Long, Integer> criticCallSites = semanticEvidenceService.callSiteLines(
+                        taskId, candidate.proposal().primaryChunkId(), verifiedLocationChunks);
+                criticEvidence = FindingLocationResolver.formatCriticEvidence(
+                        candidate.proposal(), chunksById, verifiedLocationChunks, criticCallSites);
+            }
+            Set<Long> evidenceChunkIds = evidencePackage.chunkIds().isEmpty()
+                    ? allowedLocationChunks : evidencePackage.chunkIds();
+            ReviewContext reviewContext = buildReviewContext(
+                    candidate.proposal(), chunksById, evidenceChunkIds, relatedReviewIds);
+            String independentEvidenceText = limitIndependentEvidence(independentEvidence.text());
+            List<LlmGateway.LocationCandidateRef> locationCandidateRefs = evidencePackage.candidates().stream()
+                    .map(this::locationCandidateRef).toList();
             TimingDetailLog.info("任务 {} Critic 证据包已构建：type={}，primaryChunk={}，verifiedChunks={}，"
                             + "semanticChunks={}，reviewContextChunks={}，reviewContextTruncated={}，"
-                            + "locationCandidates={}，evidenceChars={}，evidenceBuildElapsedMs={}",
+                            + "locationCandidates={}，promptLocationCandidates={}，evidenceChars={}，"
+                            + "independentEvidenceChars={}，evidenceBuildElapsedMs={}",
                     taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
                     verifiedLocationChunks.size(), independentEvidence.evidenceChunkIds().size(),
                     reviewContext.chunkCount(), reviewContext.truncated(),
-                    locationCandidates.size(), criticEvidence.length(),
+                    locationCandidates.size(), locationCandidateRefs.size(), criticEvidence.length(),
+                    independentEvidenceText.length(),
                     ExecutionTiming.elapsedMillis(reviewStarted));
             // Critic 只接收确定性技术栈，不携带 Recon 模型生成的架构意见。
             LlmGateway.ReconInsight criticRecon = new LlmGateway.ReconInsight("",
@@ -99,10 +118,10 @@ public class CriticAgentService {
             long modelStarted = ExecutionTiming.start();
             LlmGateway.CriticDecision decision = llmGateway.critique(new LlmGateway.CriticRequest(
                     taskId, candidate.sourceAgent(), candidate.proposal(), criticEvidence,
-                    independentEvidence.text() + reviewContext.text(), criticRecon,
+                    independentEvidenceText + reviewContext.text(), criticRecon,
                     originalPrimary.getChangeType().name(),
                     originalPrimary.getAnalysisScope().name(), changeContext,
-                    locationCandidates));
+                    locationCandidateRefs));
             long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
             TimingDetailLog.info("模型阶段结束：taskId={}，stage=CRITIC_MODEL，type={}，primaryChunk={}，elapsedMs={}，reviewElapsedMs={}",
                     taskId, candidate.proposal().type(), candidate.proposal().primaryChunkId(),
@@ -111,9 +130,11 @@ public class CriticAgentService {
                     "Critic 模型调用完成，耗时 " + modelElapsedMs + " ms");
             LinkedHashSet<Long> allowedCounterEvidenceIds = new LinkedHashSet<>(verifiedLocationChunks);
             allowedCounterEvidenceIds.addAll(reviewContext.chunkIds());
-            if (!validDecisionEnvelope(decision, allowedCounterEvidenceIds)) {
+            if (!validDecisionEnvelope(decision, allowedCounterEvidenceIds)
+                    || !validLocationSelection(decision, locationCandidateRefs)) {
                 return markInsufficient(taskId, candidate, run, AgentEventType.FORMAT_ERROR,
-                        "Critic 返回字段不完整、状态矛盾或引用了未验证反证，未执行漏洞否决");
+                        "Critic 返回字段不完整、状态矛盾，或引用了未下发的定位候选/"
+                                + "未验证反证，未执行漏洞否决");
             }
             candidate.hypothesis().setCriticReason(decision.reason());
             candidate.hypothesis().setUpdatedAt(Instant.now());
@@ -136,22 +157,15 @@ public class CriticAgentService {
             }
             Correction corrected = correctedProposal(candidate.proposal(), decision, chunksById,
                     verifiedLocationChunks, locationCandidates);
-            if (corrected.proposal().isEmpty() && !locationCandidates.isEmpty()) {
+            if (corrected.proposal().isEmpty() && !evidencePackage.candidates().isEmpty()) {
                 corrected = repairLocation(taskId, candidate.proposal(), decision, chunksById,
-                        verifiedLocationChunks, locationCandidates, corrected.reason(), run);
+                        verifiedLocationChunks, evidencePackage.candidates(), corrected.reason(), run);
             }
             if (corrected.proposal().isEmpty()) {
-                String invalidLocation = "Critic 已确认漏洞，但精确位置仍待复核：" + corrected.reason();
-                candidate.hypothesis().setStatus(HypothesisStatus.CONFIRMED_UNLOCATED);
-                candidate.hypothesis().setConfidence(decision.confidence() == null
-                        ? fallbackConfidence(candidate.proposal().confidence()) : decision.confidence());
-                candidate.hypothesis().setCriticReason(safe(decision.reason()) + "；" + invalidLocation);
-                hypothesisMapper.update(candidate.hypothesis());
-                traceService.event(taskId, run.getId(), AgentType.CRITIC, AgentEventType.LOCATION_UNRESOLVED,
+                String invalidLocation = "Critic 风险判断未通过精确定位门禁：" + corrected.reason()
+                        + "；复核理由：" + safe(decision.reason());
+                return markInsufficient(taskId, candidate, run, AgentEventType.INSUFFICIENT_EVIDENCE,
                         invalidLocation);
-                run.complete(invalidLocation);
-                traceService.update(run);
-                return Optional.empty();
             }
             // Critic 对整条证据链重新选择实际漏洞点，最终报告不复用专业 Agent 的旧位置文本。
             Confidence confidence = decision.confidence() == null
@@ -220,6 +234,93 @@ public class CriticAgentService {
 
     private String safeText(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private String limitIndependentEvidence(String value) {
+        String text = safeText(value);
+        if (text.length() <= MAX_INDEPENDENT_EVIDENCE_CHARS) return text;
+        return text.substring(0, MAX_INDEPENDENT_EVIDENCE_CHARS)
+                + "\n... [INDEPENDENT_EVIDENCE_TRUNCATED]";
+    }
+
+    // 这里只执行高召回候选选择，最终漏洞位置仍由 Critic 从轻量引用中决定。
+    private List<LlmGateway.LocationCandidate> selectLocationCandidates(
+            List<LlmGateway.LocationCandidate> candidates,
+            LlmGateway.FindingProposal proposal) {
+        LinkedHashSet<Long> evidenceChunkIds = new LinkedHashSet<>(proposal.evidenceChunkIds());
+        evidenceChunkIds.add(proposal.primaryChunkId());
+        List<LlmGateway.LocationCandidate> ordered = candidates.stream()
+                .sorted(java.util.Comparator
+                        .comparingInt((LlmGateway.LocationCandidate value) ->
+                                locationCandidatePriority(value, proposal, evidenceChunkIds))
+                        .reversed()
+                        .thenComparingLong(LlmGateway.LocationCandidate::chunkId)
+                        .thenComparingInt(LlmGateway.LocationCandidate::startLine)
+                        .thenComparing(LlmGateway.LocationCandidate::candidateId))
+                .toList();
+        Map<Long, Integer> countsByChunk = new java.util.HashMap<>();
+        List<LlmGateway.LocationCandidate> selected = new java.util.ArrayList<>();
+        for (LlmGateway.LocationCandidate candidate : ordered) {
+            int count = countsByChunk.getOrDefault(candidate.chunkId(), 0);
+            if (count >= MAX_CRITIC_CANDIDATES_PER_CHUNK) continue;
+            selected.add(candidate);
+            countsByChunk.put(candidate.chunkId(), count + 1);
+            if (selected.size() >= MAX_CRITIC_LOCATION_CANDIDATES) break;
+        }
+        return List.copyOf(selected);
+    }
+
+    private int locationCandidatePriority(LlmGateway.LocationCandidate candidate,
+                                          LlmGateway.FindingProposal proposal,
+                                          Set<Long> evidenceChunkIds) {
+        int priority = 0;
+        if (candidate.purposes().contains("ROOT_CAUSE")) priority += 10_000;
+        if (candidate.purposes().contains("RESPONSIBILITY_ANCHOR")) priority += 8_000;
+        if (sameProposedLocation(candidate, proposal)) priority += 6_000;
+        if (evidenceChunkIds.contains(candidate.chunkId())) priority += 4_000;
+        if ("CHANGED".equals(candidate.analysisScope())) priority += 3_000;
+        if (proposal.primaryChunkId() != null && candidate.chunkId() == proposal.primaryChunkId()) {
+            priority += 2_000;
+        }
+        priority += vulnerabilityRolePriority(proposal.type(), candidate.roles());
+        if (candidate.purposes().contains("IMPACT")) priority += 400;
+        if (candidate.purposes().contains("ENTRY")) priority += 200;
+        return priority;
+    }
+
+    private boolean sameProposedLocation(LlmGateway.LocationCandidate candidate,
+                                         LlmGateway.FindingProposal proposal) {
+        return proposal.primaryChunkId() != null && candidate.chunkId() == proposal.primaryChunkId()
+                && proposal.vulnerabilityStartLine() != null && proposal.vulnerabilityEndLine() != null
+                && candidate.startLine() <= proposal.vulnerabilityEndLine()
+                && proposal.vulnerabilityStartLine() <= candidate.endLine();
+    }
+
+    private int vulnerabilityRolePriority(com.deepaudit.domain.VulnerabilityType type, List<String> roles) {
+        if (type == null || roles == null || roles.isEmpty()) return 0;
+        return switch (type) {
+            case AUTHORIZATION -> roleScore(roles, "SECURITY_BOUNDARY", "SECURITY_CONFIGURATION",
+                    "BUSINESS_OPERATION");
+            case SQL_INJECTION -> roleScore(roles, "QUERY_CONSTRUCTION", "QUERY_EXECUTION", "QUERY");
+            case SENSITIVE_INFORMATION_DISCLOSURE -> roleScore(roles, "DATA_OUTPUT", "SECRET_DEFINITION",
+                    "DATA_ACCESS");
+            case STORED_XSS -> roleScore(roles, "UNSAFE_RENDER", "DATA_OUTPUT", "DATA_ACCESS");
+            case VALIDATION_BYPASS -> roleScore(roles, "VALIDATION", "BUSINESS_OPERATION",
+                    "DANGEROUS_OPERATION");
+        };
+    }
+
+    private int roleScore(List<String> roles, String first, String second, String third) {
+        if (roles.contains(first)) return 1_500;
+        if (roles.contains(second)) return 1_000;
+        return roles.contains(third) ? 500 : 0;
+    }
+
+    private LlmGateway.LocationCandidateRef locationCandidateRef(
+            LlmGateway.LocationCandidate candidate) {
+        return new LlmGateway.LocationCandidateRef(candidate.candidateId(), candidate.chunkId(),
+                candidate.startLine(), candidate.endLine(), candidate.roles(), candidate.purposes(),
+                candidate.analysisScope());
     }
 
     private Correction correctedProposal(
@@ -304,6 +405,16 @@ public class CriticAgentService {
         if (decision.verdict() != LlmGateway.CriticVerdict.REJECTED) return true;
         return !decision.counterEvidenceChunkIds().isEmpty()
                 && decision.counterEvidenceChunkIds().stream().allMatch(allowedCounterEvidenceIds::contains);
+    }
+
+    private boolean validLocationSelection(LlmGateway.CriticDecision decision,
+                                           List<LlmGateway.LocationCandidateRef> locationCandidateRefs) {
+        if (decision == null || decision.verdict() != LlmGateway.CriticVerdict.CONFIRMED
+                || decision.locationCandidateId() == null || decision.locationCandidateId().isBlank()) {
+            return true;
+        }
+        return locationCandidateRefs.stream().anyMatch(candidate ->
+                candidate.candidateId().equals(decision.locationCandidateId()));
     }
 
     private Optional<Finding> markInsufficient(UUID taskId, AgentCandidate candidate, AgentRun run,

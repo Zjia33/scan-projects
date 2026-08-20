@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 public final class FindingLocationResolver {
     private static final int CONTEXT_LINES = 4;
@@ -35,6 +36,9 @@ public final class FindingLocationResolver {
     private static final int CRITIC_PRIMARY_MAX_CHARS = 6_000;
     private static final int CRITIC_RELATED_MAX_CHARS = 4_000;
     private static final int CRITIC_TOTAL_MAX_CHARS = 20_000;
+    private static final int CRITIC_LOCATION_CONTEXT_LINES = 2;
+    private static final int CRITIC_LOCATION_MAX_RANGE_LINES = 12;
+    private static final int CRITIC_LOCATION_MAX_LINE_CHARS = 800;
     private static final int MAX_VULNERABLE_LINES = 5;
 
     private FindingLocationResolver() {
@@ -953,6 +957,115 @@ public final class FindingLocationResolver {
         return result.toString();
     }
 
+    /**
+     * 将待模型选择的定位候选与源码窗口打包。文件和符号在每个代码块头部只出现一次，
+     * 同一源码行在一个证据包内也只出现一次；只有实际进入字符预算的候选才会返回给 Critic。
+     */
+    public static CriticEvidencePackage formatCriticEvidencePackage(
+            Map<Long, CodeChunk> chunks, List<LlmGateway.LocationCandidate> selectedCandidates) {
+        if (chunks == null || chunks.isEmpty() || selectedCandidates == null || selectedCandidates.isEmpty()) {
+            return new CriticEvidencePackage("", List.of(), Set.of());
+        }
+        List<LlmGateway.LocationCandidate> included = new ArrayList<>();
+        String evidence = "";
+        for (LlmGateway.LocationCandidate candidate : selectedCandidates) {
+            if (!validEvidenceCandidate(candidate, chunks.get(candidate == null ? null : candidate.chunkId()))) {
+                continue;
+            }
+            List<LlmGateway.LocationCandidate> trial = new ArrayList<>(included);
+            trial.add(candidate);
+            String rendered = renderLocationEvidence(chunks, trial);
+            if (rendered.length() > CRITIC_TOTAL_MAX_CHARS) continue;
+            included.add(candidate);
+            evidence = rendered;
+        }
+        LinkedHashSet<Long> chunkIds = included.stream().map(LlmGateway.LocationCandidate::chunkId)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        return new CriticEvidencePackage(evidence, included, chunkIds);
+    }
+
+    private static boolean validEvidenceCandidate(LlmGateway.LocationCandidate candidate, CodeChunk chunk) {
+        if (candidate == null || chunk == null || candidate.endLine() < candidate.startLine()) return false;
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        int chunkEnd = chunkStart + Math.max(0, contentLines(chunk).length - 1);
+        return candidate.startLine() >= chunkStart && candidate.endLine() <= chunkEnd;
+    }
+
+    private static String renderLocationEvidence(
+            Map<Long, CodeChunk> chunks, List<LlmGateway.LocationCandidate> candidates) {
+        Map<Long, List<LlmGateway.LocationCandidate>> byChunk = new LinkedHashMap<>();
+        for (LlmGateway.LocationCandidate candidate : candidates) {
+            byChunk.computeIfAbsent(candidate.chunkId(), ignored -> new ArrayList<>()).add(candidate);
+        }
+        StringBuilder result = new StringBuilder();
+        for (Map.Entry<Long, List<LlmGateway.LocationCandidate>> entry : byChunk.entrySet()) {
+            CodeChunk chunk = chunks.get(entry.getKey());
+            if (chunk == null) continue;
+            if (!result.isEmpty()) result.append("\n\n");
+            result.append("[CRITIC_LOCATION_EVIDENCE] CHUNK_ID=").append(chunk.getId())
+                    .append(" | ").append(safe(chunk.getFilePath())).append(":")
+                    .append(chunk.getStartLine()).append("-").append(chunk.getEndLine())
+                    .append(" | ").append(safe(chunk.getSymbolName())).append('\n');
+            for (LlmGateway.LocationCandidate candidate : entry.getValue()) {
+                result.append("[LOCATION_REF] candidateId=").append(candidate.candidateId())
+                        .append(" | lines=").append(candidate.startLine()).append("-")
+                        .append(candidate.endLine()).append(" | roles=").append(candidate.roles())
+                        .append(" | purposes=").append(candidate.purposes())
+                        .append(" | scope=").append(candidate.analysisScope()).append('\n');
+            }
+            result.append("<UNTRUSTED_CODE>\n")
+                    .append(formatLocationSource(chunk, entry.getValue()))
+                    .append("\n</UNTRUSTED_CODE>");
+        }
+        return result.toString();
+    }
+
+    private static String formatLocationSource(
+            CodeChunk chunk, List<LlmGateway.LocationCandidate> candidates) {
+        String[] lines = contentLines(chunk);
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        int chunkEnd = chunkStart + Math.max(0, lines.length - 1);
+        TreeSet<Integer> visibleLines = new TreeSet<>();
+        for (LlmGateway.LocationCandidate candidate : candidates) {
+            int rangeLines = candidate.endLine() - candidate.startLine() + 1;
+            if (rangeLines <= CRITIC_LOCATION_MAX_RANGE_LINES) {
+                addLineRange(visibleLines,
+                        Math.max(chunkStart, candidate.startLine() - CRITIC_LOCATION_CONTEXT_LINES),
+                        Math.min(chunkEnd, candidate.endLine() + CRITIC_LOCATION_CONTEXT_LINES));
+            } else {
+                addLineRange(visibleLines, Math.max(chunkStart, candidate.startLine() - 2),
+                        Math.min(chunkEnd, candidate.startLine() + 5));
+                addLineRange(visibleLines, Math.max(chunkStart, candidate.endLine() - 5),
+                        Math.min(chunkEnd, candidate.endLine() + 2));
+            }
+        }
+        StringBuilder result = new StringBuilder();
+        Integer previous = null;
+        for (Integer lineNumber : visibleLines) {
+            if (previous != null && lineNumber > previous + 1) {
+                result.append("    ... [SOURCE_LINES_OMITTED] ...\n");
+            }
+            int index = lineNumber - chunkStart;
+            if (index < 0 || index >= lines.length) continue;
+            String sourceLine = lines[index];
+            if (sourceLine.length() > CRITIC_LOCATION_MAX_LINE_CHARS) {
+                sourceLine = sourceLine.substring(0, CRITIC_LOCATION_MAX_LINE_CHARS)
+                        + " ... [LINE_TRUNCATED]";
+            }
+            boolean candidateLine = candidates.stream().anyMatch(candidate ->
+                    lineNumber >= candidate.startLine() && lineNumber <= candidate.endLine());
+            result.append(candidateLine ? ">>> " : "    ")
+                    .append(String.format(Locale.ROOT, "%5d | ", lineNumber))
+                    .append(sourceLine).append('\n');
+            previous = lineNumber;
+        }
+        return result.toString().stripTrailing();
+    }
+
+    private static void addLineRange(Set<Integer> target, int start, int end) {
+        for (int line = start; line <= end; line++) target.add(line);
+    }
+
     private static String formatCriticContext(CodeChunk chunk, Location location,
                                               int contextLines, int maxChars) {
         String[] lines = contentLines(chunk);
@@ -994,6 +1107,15 @@ public final class FindingLocationResolver {
     }
 
     public record Location(int startLine, int endLine) {
+    }
+
+    public record CriticEvidencePackage(String text, List<LlmGateway.LocationCandidate> candidates,
+                                        Set<Long> chunkIds) {
+        public CriticEvidencePackage {
+            text = text == null ? "" : text;
+            candidates = candidates == null ? List.of() : List.copyOf(candidates);
+            chunkIds = chunkIds == null ? Set.of() : Set.copyOf(chunkIds);
+        }
     }
 
     // 保存通过根因和代码角色双重校验后的最终主位置。

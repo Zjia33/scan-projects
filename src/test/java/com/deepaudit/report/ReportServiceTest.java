@@ -92,7 +92,7 @@ class ReportServiceTest {
     }
 
     @Test
-    void rendersConfirmedButUnlocatedHypothesisWithoutInventingRedLine() {
+    void doesNotRenderHistoricalUnlocatedHypothesisAsVulnerability() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         AuditTaskMapper taskMapper = mock(AuditTaskMapper.class);
@@ -121,9 +121,9 @@ class ReportServiceTest {
 
         String html = service.html(taskId);
 
-        assertThat(html).contains("已确认但定位待复核", "未验证指令可以执行",
-                        "报告不标红任意代码行", "定位待复核</small><strong>1")
-                .doesNotContain("实际漏洞位置</b><span>2100");
+        assertThat(html).contains("本轮审计没有产生已完成精确定位的问题")
+                .doesNotContain("已确认但定位待复核", "未验证指令可以执行",
+                        "报告不标红任意代码行", "定位待复核");
     }
 
     private Finding finding(UUID taskId, FindingDeltaStatus status) {

@@ -101,7 +101,7 @@ public interface LlmGateway {
     record CriticRequest(UUID taskId, AgentType sourceAgent, FindingProposal proposal,
                          String evidence, String independentSemanticEvidence, ReconInsight recon,
                          String changeType, String analysisScope, String changeContext,
-                         List<LocationCandidate> locationCandidates) {
+                         List<LocationCandidateRef> locationCandidates) {
         public CriticRequest {
             locationCandidates = locationCandidates == null ? List.of() : List.copyOf(locationCandidates);
         }
@@ -128,6 +128,15 @@ public interface LlmGateway {
                              int startLine, int endLine, String source, List<String> roles,
                              List<String> purposes, String analysisScope) {
         public LocationCandidate {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+            purposes = purposes == null ? List.of() : List.copyOf(purposes);
+        }
+    }
+
+    // Critic 请求只携带定位索引；文件、符号和源码统一由 evidence 提供，避免重复序列化。
+    record LocationCandidateRef(String candidateId, long chunkId, int startLine, int endLine,
+                                List<String> roles, List<String> purposes, String analysisScope) {
+        public LocationCandidateRef {
             roles = roles == null ? List.of() : List.copyOf(roles);
             purposes = purposes == null ? List.of() : List.copyOf(purposes);
         }

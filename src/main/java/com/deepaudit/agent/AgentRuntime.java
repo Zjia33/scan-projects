@@ -31,6 +31,11 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class AgentRuntime {
+    private static final int MAX_LEDGER_CHARS = 6_000;
+    private static final int MAX_LEDGER_ENTRY_CHARS = 700;
+    private static final int MAX_LEDGER_SOURCE_LINES = 3;
+    private static final int MAX_LEDGER_LINE_CHARS = 160;
+
     private final LlmGateway llmGateway;
     private final AiProperties properties;
     private final AuditToolService toolService;
@@ -233,7 +238,190 @@ public class AgentRuntime {
             result.add(new LlmGateway.Observation(
                     observation.tool(), observation.arguments(), text));
         }
+        String ledger = evidenceLedger(observations);
+        if (!ledger.isBlank()) {
+            result.add(new LlmGateway.Observation("evidence_ledger", Map.of(), ledger));
+        }
         return List.copyOf(result);
+    }
+
+    // 从完整运行时观察中重建有界账本，帮助模型记住旧证据；账本本身不改变证据资格。
+    private String evidenceLedger(List<RuntimeObservation> observations) {
+        if (observations.isEmpty()) return "";
+        StringBuilder ledger = new StringBuilder("[EVIDENCE_LEDGER]\n"
+                + "账本只用于保持调查记忆，不改变 evidenceChunkIds/candidateChunkIds 的证据资格。");
+        for (int index = 0; index < observations.size(); index++) {
+            RuntimeObservation observation = observations.get(index);
+            String detail = limitLedgerDetail(ledgerDetail(observation));
+            if (detail.isBlank()) continue;
+            String entry = "\n\n[LEDGER_ENTRY step=" + (index + 1)
+                    + " tool=" + observation.tool()
+                    + " status=" + observation.status()
+                    + " evidenceChunkIds=" + observation.evidenceChunkIds()
+                    + " candidateChunkIds=" + observation.candidateChunkIds() + "]\n" + detail;
+            if (ledger.length() + entry.length() > MAX_LEDGER_CHARS) {
+                ledger.append("\n\n[LEDGER_TRUNCATED action=consult_recent_observations_or_repeat_precise_tool]");
+                break;
+            }
+            ledger.append(entry);
+        }
+        return ledger.toString();
+    }
+
+    private String limitLedgerDetail(String value) {
+        if (value == null || value.length() <= MAX_LEDGER_ENTRY_CHARS) return value == null ? "" : value;
+        String openTag = "<UNTRUSTED_CODE>";
+        String closeTag = "</UNTRUSTED_CODE>";
+        String marker = "\n... [LEDGER_ENTRY_TRUNCATED] ...\n";
+        int open = value.indexOf(openTag);
+        int close = value.indexOf(closeTag, Math.max(0, open));
+        if (open >= 0 && close >= 0 && open < MAX_LEDGER_ENTRY_CHARS && close >= MAX_LEDGER_ENTRY_CHARS) {
+            int retained = MAX_LEDGER_ENTRY_CHARS - marker.length() - closeTag.length();
+            if (retained <= open + openTag.length()) {
+                return value.substring(0, open).stripTrailing() + marker.stripTrailing();
+            }
+            return value.substring(0, retained).stripTrailing() + marker + closeTag;
+        }
+        return truncate(value, MAX_LEDGER_ENTRY_CHARS);
+    }
+
+    private String ledgerDetail(RuntimeObservation observation) {
+        String tool = observation.tool();
+        if (tool == null || tool.isBlank()) return "";
+        return switch (tool) {
+            case AgentToolCatalog.READ_SOURCE -> sourceLedgerDetail(observation.result());
+            case AgentToolCatalog.VERIFY_RELATION -> selectLedgerLines(observation.result(), 5,
+                    "[VERIFIED_EVIDENCE]", "[RELATION_REJECTED]", "CHUNK_ID=", "[SOURCE_NOT_INCLUDED]");
+            case AgentToolCatalog.SEARCH_SYMBOLS, AgentToolCatalog.SEARCH_CODE ->
+                    "[DISCOVERY_ONLY] arguments=" + truncate(String.valueOf(observation.arguments()), 300)
+                            + "；搜索命中仍按 candidateChunkIds 处理。";
+            case AgentToolCatalog.EXPLORE_CALL_GRAPH -> callGraphLedgerDetail(observation.result());
+            case AgentToolCatalog.GET_CHANGE_CONTEXT -> selectLedgerLines(observation.result(), 6,
+                    "[CURRENT_CHANGE_SUMMARY]", "[CURRENT_FILE_CHANGE_SUMMARY]",
+                    "[RELATED_METHOD_CHANGE]", "[FILE_CHANGE]", "[NO_TEXTUAL_CHANGE]");
+            case AgentToolCatalog.RESOLVE_DATA_ACCESS -> dataAccessLedgerDetail(
+                    observation.result(), observation.candidateChunkIds());
+            case AgentToolCatalog.INSPECT_SECURITY_POLICY -> securityPolicyLedgerDetail(observation.result());
+            case AgentToolCatalog.TRACE_VALUE -> selectLedgerLines(observation.result(), 10,
+                    "[VALUE_TRACE]", "[FLOW ", "source=", "sink=", "guards=", "path=",
+                    "[ARGUMENT_MAPPING]");
+            case "evidence_validator" -> selectLedgerLines(observation.result(), 2,
+                    "[EVIDENCE_REJECTED]");
+            default -> "";
+        };
+    }
+
+    private String sourceLedgerDetail(String result) {
+        List<String> metadata = matchingLedgerLines(result,
+                line -> line.startsWith("[SOURCE]"), 1);
+        List<String> selected = matchingLedgerLines(result,
+                line -> line.startsWith(">>> "), MAX_LEDGER_SOURCE_LINES);
+        if (metadata.isEmpty() && selected.isEmpty()) return "";
+        StringBuilder detail = new StringBuilder(String.join("\n", metadata));
+        if (!selected.isEmpty()) {
+            if (!detail.isEmpty()) detail.append('\n');
+            detail.append("<UNTRUSTED_CODE>\n")
+                    .append(String.join("\n", selected))
+                    .append("\n</UNTRUSTED_CODE>");
+        }
+        return detail.toString();
+    }
+
+    private String callGraphLedgerDetail(String result) {
+        if (result == null || result.isBlank()) return "";
+        List<String> selected = new ArrayList<>();
+        boolean verifiedPath = false;
+        for (String rawLine : result.lines().toList()) {
+            String line = rawLine.strip();
+            if (line.startsWith("[CALL_GRAPH")) {
+                addLedgerLine(selected, line, 1);
+                continue;
+            }
+            if (line.startsWith("PATH ")) {
+                verifiedPath = line.contains("verified=true");
+                if (verifiedPath) addLedgerLine(selected, line, 8);
+                continue;
+            }
+            if (verifiedPath && line.contains("[VERIFIED")) {
+                addLedgerLine(selected, withoutUntrustedExpression(line), 8);
+            }
+        }
+        return String.join("\n", selected);
+    }
+
+    private String dataAccessLedgerDetail(String result, Set<Long> candidateChunkIds) {
+        if (result == null || result.isBlank()) return "";
+        if (!result.contains("[SEMANTIC_EVIDENCE]")) {
+            return "[CANDIDATE_ONLY] 数据访问回退结果尚未验证，candidateChunkIds="
+                    + candidateChunkIds;
+        }
+        String metadata = selectLedgerLines(result, 5,
+                "[DATA_ACCESS_ANALYSIS]", "CHUNK_ID=", "indicators=");
+        return appendUntrustedLines(metadata, matchingLedgerLines(result,
+                line -> line.startsWith(">>> "), MAX_LEDGER_SOURCE_LINES));
+    }
+
+    private String securityPolicyLedgerDetail(String result) {
+        if (result == null || result.isBlank()) return "";
+        List<String> selected = new ArrayList<>();
+        List<String> sourceLines = new ArrayList<>();
+        boolean verifiedPolicy = false;
+        for (String rawLine : result.lines().toList()) {
+            String line = rawLine.strip();
+            if (line.startsWith("[SECURITY_POLICY]")) {
+                addLedgerLine(selected, line, 8);
+                continue;
+            }
+            if (line.startsWith("[VERIFIED_POLICY_RELATION]")) {
+                verifiedPolicy = true;
+                addLedgerLine(selected, line, 8);
+                continue;
+            }
+            if (line.startsWith("[UNVERIFIED_CANDIDATE]")) {
+                verifiedPolicy = false;
+                continue;
+            }
+            if (verifiedPolicy && line.startsWith("CHUNK_ID=")) {
+                addLedgerLine(selected, line, 8);
+            } else if (verifiedPolicy && line.startsWith(">>> ")) {
+                addLedgerLine(sourceLines, line, MAX_LEDGER_SOURCE_LINES);
+            }
+        }
+        return appendUntrustedLines(String.join("\n", selected), sourceLines);
+    }
+
+    private String appendUntrustedLines(String metadata, List<String> sourceLines) {
+        if (sourceLines.isEmpty()) return metadata;
+        return metadata + (metadata.isBlank() ? "" : "\n")
+                + "<UNTRUSTED_CODE>\n" + String.join("\n", sourceLines)
+                + "\n</UNTRUSTED_CODE>";
+    }
+
+    private String withoutUntrustedExpression(String line) {
+        String marker = ",expression=<UNTRUSTED_CODE>";
+        int start = line.indexOf(marker);
+        if (start < 0) return line;
+        int end = line.indexOf("</UNTRUSTED_CODE>", start + marker.length());
+        if (end < 0) return line.substring(0, start);
+        return line.substring(0, start) + line.substring(end + "</UNTRUSTED_CODE>".length());
+    }
+
+    private String selectLedgerLines(String result, int limit, String... markers) {
+        return String.join("\n", matchingLedgerLines(result, line ->
+                java.util.Arrays.stream(markers).anyMatch(line::contains), limit));
+    }
+
+    private List<String> matchingLedgerLines(String result,
+                                              java.util.function.Predicate<String> predicate,
+                                              int limit) {
+        if (result == null || result.isBlank()) return List.of();
+        return result.lines().map(String::strip).filter(predicate)
+                .map(line -> truncate(line, MAX_LEDGER_LINE_CHARS))
+                .limit(limit).toList();
+    }
+
+    private void addLedgerLine(List<String> selected, String line, int limit) {
+        if (selected.size() < limit) selected.add(truncate(line, MAX_LEDGER_LINE_CHARS));
     }
 
     private String compactObservation(RuntimeObservation observation) {

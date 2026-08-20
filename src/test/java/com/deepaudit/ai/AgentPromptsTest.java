@@ -103,6 +103,7 @@ class AgentPromptsTest {
                 .contains("CONFIRMED", "REJECTED", "INSUFFICIENT_EVIDENCE")
                 .contains("counterEvidenceChunkIds 只引用输入中的真实反证 CHUNK_ID")
                 .contains("非 REJECTED 时 counterEvidenceChunkIds=[]")
+                .contains("locationCandidates 是轻量定位引用", "在 evidence 的同名 LOCATION_REF")
                 .contains("从 locationCandidates 选择 locationCandidateId")
                 .contains("原样复制其 chunkId/startLine/endLine")
                 .contains("deltaStatus、rootCauseKind、locationRole")

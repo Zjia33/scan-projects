@@ -161,6 +161,38 @@ class FindingLocationResolverTest {
     }
 
     @Test
+    void packagesLocationReferencesWithoutRepeatingOverlappingSourceLines() {
+        CodeChunk chunk = chunk(70, 74, """
+                public void transfer(Command command) {
+                    authorization.check(command);
+                    accountRepository.debit(command.accountNo(), command.amount());
+                    audit.record(command);
+                }
+                """);
+        chunk.setId(901L);
+        LlmGateway.LocationCandidate first = new LlmGateway.LocationCandidate(
+                "901:71-72", 901L, chunk.getFilePath(), chunk.getSymbolName(), 71, 72,
+                "authorization.check(command);", List.of("SECURITY_BOUNDARY"),
+                List.of("ROOT_CAUSE"), "CHANGED");
+        LlmGateway.LocationCandidate second = new LlmGateway.LocationCandidate(
+                "901:72-73", 901L, chunk.getFilePath(), chunk.getSymbolName(), 72, 73,
+                "accountRepository.debit(command.accountNo(), command.amount());",
+                List.of("DANGEROUS_OPERATION"), List.of("IMPACT"), "CHANGED");
+
+        FindingLocationResolver.CriticEvidencePackage evidence =
+                FindingLocationResolver.formatCriticEvidencePackage(
+                        Map.of(chunk.getId(), chunk), List.of(first, second));
+
+        assertThat(evidence.candidates()).containsExactly(first, second);
+        assertThat(evidence.text()).contains(first.candidateId(), second.candidateId())
+                .contains("<UNTRUSTED_CODE>", "</UNTRUSTED_CODE>")
+                .contains("accountRepository.debit");
+        assertThat(evidence.text().indexOf("accountRepository.debit"))
+                .isEqualTo(evidence.text().lastIndexOf("accountRepository.debit"));
+        assertThat(evidence.text().length()).isLessThanOrEqualTo(20_000);
+    }
+
+    @Test
     void relocatesSqlInjectionFromExecutionSinkToUnsafeQueryConstruction() {
         CodeChunk chunk = chunk(70, 74, """
                 public List<User> search(String name) {
