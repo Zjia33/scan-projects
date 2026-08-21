@@ -7,9 +7,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
 
+// 配置 AsyncConfig 所需的应用组件。
 @Configuration
 public class AsyncConfig {
 
+    // 创建并注册 auditExecutor 对应的 Spring Bean。
     @Bean(name = "auditExecutor")
     public Executor auditExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
@@ -22,6 +24,7 @@ public class AsyncConfig {
         return executor;
     }
 
+    // 创建并注册 professionalAgentExecutor 对应的 Spring Bean。
     @Bean(name = "professionalAgentExecutor")
     public Executor professionalAgentExecutor(AiProperties properties) {
         int parallelism = Math.max(1, Math.min(properties.getProfessionalAgentParallelism(), 16));

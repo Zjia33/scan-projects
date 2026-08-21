@@ -1,8 +1,9 @@
 package com.deepaudit.git;
 
 import com.deepaudit.domain.GitFileChange;
+import com.deepaudit.source.AuditFileRole;
 import com.deepaudit.source.AuditSourceFilter;
-import lombok.extern.slf4j.Slf4j;
+import com.deepaudit.util.TimingDetailLog;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.diff.RawText;
@@ -23,19 +24,18 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
-@Slf4j
 @Service
 public class GitDiffService {
-    private static final int MAX_CONTEXT_CHARS = 12_000;
+    private static final int MAX_CONTEXT_CHARS = 20_000;
+    private static final int DIFF_CONTEXT_LINES = 5;
     private static final long MAX_DIFF_BLOB_BYTES = 2L * 1024L * 1024L;
 
     public ChangeSet compare(Repository repository, UUID taskId,
                              String baseCommitSha, String targetCommitSha) throws IOException {
         long startedAt = System.nanoTime();
-        log.info("开始读取 Git 提交差异：taskId={}，base={}，target={}",
+        TimingDetailLog.info("开始读取 Git 提交差异：taskId={}，base={}，target={}",
                 taskId, shortSha(baseCommitSha), shortSha(targetCommitSha));
         List<GitFileChange> changes = new ArrayList<>();
         try (RevWalk walk = new RevWalk(repository);
@@ -53,8 +53,9 @@ public class GitDiffService {
             for (DiffEntry entry : formatter.scan(oldTree, newTree)) {
                 String oldPath = path(entry.getOldPath());
                 String newPath = path(entry.getNewPath());
-                if (!AuditSourceFilter.shouldAnalyze(oldPath)
-                        && !AuditSourceFilter.shouldAnalyze(newPath)) {
+                AuditFileRole oldRole = AuditSourceFilter.classify(oldPath);
+                AuditFileRole newRole = AuditSourceFilter.classify(newPath);
+                if (!oldRole.trackChange() && !newRole.trackChange()) {
                     continue;
                 }
                 FileHeader header = formatter.toFileHeader(entry);
@@ -64,18 +65,19 @@ public class GitDiffService {
                 List<String> newRanges = new ArrayList<>();
                 String oldText = readText(repository, entry.getOldId());
                 String newText = readText(repository, entry.getNewId());
-                StringBuilder context = new StringBuilder();
-                for (Edit edit : header.toEditList()) {
+                List<Edit> edits = header.toEditList();
+                for (Edit edit : edits) {
                     additions += edit.getLengthB();
                     deletions += edit.getLengthA();
                     if (edit.getLengthA() > 0) oldRanges.add(range(edit.getBeginA(), edit.getEndA()));
                     if (edit.getLengthB() > 0) newRanges.add(range(edit.getBeginB(), edit.getEndB()));
-                    appendEditContext(context, edit, oldText, newText);
                 }
-                String effectivePath = newPath == null ? oldPath : newPath;
+                String context = UnifiedChangeContext.render(oldText, newText, edits, 1, 1,
+                        DIFF_CONTEXT_LINES, MAX_CONTEXT_CHARS, false);
+                AuditFileRole effectiveRole = newRole == AuditFileRole.IGNORE ? oldRole : newRole;
                 changes.add(new GitFileChange(taskId, oldPath, newPath, entry.getChangeType().name(),
                         additions, deletions, String.join(",", oldRanges), String.join(",", newRanges),
-                        truncate(context.toString()), isConfiguration(effectivePath)));
+                        context, effectiveRole.configurationOrDependency()));
             }
         }
         int additions = changes.stream().mapToInt(GitFileChange::getAdditions).sum();
@@ -83,7 +85,7 @@ public class GitDiffService {
         long configurations = changes.stream().filter(GitFileChange::isConfigurationChange).count();
         String summary = changes.size() + " 个文件发生变化，新增 " + additions + " 行、删除 "
                 + deletions + " 行，其中 " + configurations + " 个配置或依赖文件";
-        log.info("Git 提交差异读取完成：taskId={}，changedFiles={}，additions={}，deletions={}，"
+        TimingDetailLog.info("Git 提交差异读取完成：taskId={}，changedFiles={}，additions={}，deletions={}，"
                         + "configurationFiles={}，elapsedMs={}",
                 taskId, changes.size(), additions, deletions, configurations, elapsedMillis(startedAt));
         return new ChangeSet(List.copyOf(changes), summary, additions, deletions);
@@ -108,43 +110,12 @@ public class GitDiffService {
         }
     }
 
-    private void appendEditContext(StringBuilder target, Edit edit, String oldText, String newText) {
-        if (target.length() >= MAX_CONTEXT_CHARS) return;
-        String[] oldLines = oldText.split("\\R", -1);
-        String[] newLines = newText.split("\\R", -1);
-        target.append("@@ base ").append(edit.getBeginA() + 1).append("-").append(edit.getEndA())
-                .append(" target ").append(edit.getBeginB() + 1).append("-").append(edit.getEndB())
-                .append(" @@\n");
-        for (int index = edit.getBeginA(); index < edit.getEndA() && index < oldLines.length; index++) {
-            target.append("- ").append(oldLines[index]).append('\n');
-            if (target.length() >= MAX_CONTEXT_CHARS) return;
-        }
-        for (int index = edit.getBeginB(); index < edit.getEndB() && index < newLines.length; index++) {
-            target.append("+ ").append(newLines[index]).append('\n');
-            if (target.length() >= MAX_CONTEXT_CHARS) return;
-        }
-    }
-
     private String range(int zeroBasedBegin, int zeroBasedEndExclusive) {
         return (zeroBasedBegin + 1) + ":" + Math.max(zeroBasedBegin + 1, zeroBasedEndExclusive);
     }
 
     private String path(String value) {
         return value == null || DiffEntry.DEV_NULL.equals(value) ? null : value.replace('\\', '/');
-    }
-
-    private boolean isConfiguration(String path) {
-        if (path == null) return false;
-        String normalized = path.toLowerCase(Locale.ROOT);
-        String name = normalized.substring(normalized.lastIndexOf('/') + 1);
-        return name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle")
-                || name.equals("application.yml") || name.equals("application.yaml")
-                || normalized.endsWith(".xml") || normalized.endsWith(".yml") || normalized.endsWith(".yaml")
-                || normalized.endsWith(".properties") || normalized.endsWith(".sql");
-    }
-
-    private String truncate(String value) {
-        return value.substring(0, Math.min(value.length(), MAX_CONTEXT_CHARS));
     }
 
     private String shortSha(String sha) {

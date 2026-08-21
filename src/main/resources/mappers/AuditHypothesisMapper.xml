@@ -25,6 +25,7 @@
     </insert>
     <update id="update" parameterType="com.deepaudit.domain.AuditHypothesis">
         UPDATE audit_hypothesis SET status=#{status}, confidence=#{confidence},
+            primary_chunk_id=#{primaryChunkId}, evidence_chunk_ids=#{evidenceChunkIds},
             critic_reason=#{criticReason}, updated_at=#{updatedAt} WHERE id=#{id}
     </update>
     <select id="findByTaskId" resultMap="HypothesisResultMap">

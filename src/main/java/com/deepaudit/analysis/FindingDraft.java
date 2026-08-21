@@ -1,11 +1,8 @@
 package com.deepaudit.analysis;
 
 import com.deepaudit.domain.Confidence;
-import com.deepaudit.domain.Finding;
 import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
-
-import java.util.UUID;
 
 public record FindingDraft(
         VulnerabilityType type,
@@ -20,8 +17,4 @@ public record FindingDraft(
         String evidence,
         String remediation
 ) {
-    public Finding toEntity(UUID taskId) {
-        return new Finding(taskId, type, severity, confidence, title, filePath, startLine, endLine,
-                endpoint, description, evidence, remediation);
-    }
 }

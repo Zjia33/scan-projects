@@ -1,9 +1,9 @@
 server:
-  port: ${DEEPAUDIT_SERVER_PORT:8080}
+  port: ${DEEPAUDIT_SERVER_PORT:}
 
 spring:
   application:
-    name: deepaudit-java
+    name: java-audit
   config:
     # 将项目根目录的 .env 作为 Properties 文件加载；文件不存在时仍允许启动。
     import: optional:file:./.env[.properties]
@@ -13,58 +13,70 @@ spring:
       accept-case-insensitive-enums: true
   datasource:
     # 数据库连接通过环境变量注入，本地默认连接 localhost 且不提供默认密码。
-    url: ${DEEPAUDIT_DATASOURCE_URL:jdbc:postgresql://localhost:5432/deepaudit}
-    username: ${DEEPAUDIT_DATASOURCE_USERNAME:deepaudit}
+    url: ${DEEPAUDIT_DATASOURCE_URL:}
+    username: ${DEEPAUDIT_DATASOURCE_USERNAME:}
     password: ${DEEPAUDIT_DATASOURCE_PASSWORD:}
-    driver-class-name: ${DEEPAUDIT_DATASOURCE_DRIVER:org.postgresql.Driver}
+    driver-class-name: ${DEEPAUDIT_DATASOURCE_DRIVER:}
   flyway:
     enabled: true
     locations:
       - classpath:db/migration/common
-      - classpath:db/migration/postgresql
-    placeholders:
-      embeddingDimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
 
 deepaudit:
-  storage-root: ${DEEPAUDIT_STORAGE_ROOT:./data}
+  storage-root: ${DEEPAUDIT_STORAGE_ROOT:}
+  logging:
+    # 高频的模型、CodeGraph、单位置 Agent 耗时仅写入此滚动文件，不输出到控制台。
+    timing-detail-file: ${DEEPAUDIT_TIMING_DETAIL_FILE:logs/deepaudit-timing-detail.log}
   git:
-    allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:github.com,gitlab.com,gitee.com}
-    allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:false}
-    transport-timeout-seconds: ${DEEPAUDIT_GIT_TIMEOUT_SECONDS:60}
-    max-commits: ${DEEPAUDIT_GIT_MAX_COMMITS:200}
-    max-files-per-snapshot: ${DEEPAUDIT_GIT_MAX_FILES:100000}
-    max-file-bytes: ${DEEPAUDIT_GIT_MAX_FILE_BYTES:10485760}
-    max-snapshot-bytes: ${DEEPAUDIT_GIT_MAX_SNAPSHOT_BYTES:536870912}
+    allowed-hosts: ${DEEPAUDIT_GIT_ALLOWED_HOSTS:}
+    # HTTP 只对同时位于 allowed-hosts 中的精确内网主机开放；其他主机仍强制 HTTPS。
+    allowed-http-hosts: ${DEEPAUDIT_GIT_ALLOWED_HTTP_HOSTS:}
+    allow-local-repositories: ${DEEPAUDIT_GIT_ALLOW_LOCAL_REPOSITORIES:}
+    transport-timeout-seconds: ${DEEPAUDIT_GIT_TIMEOUT_SECONDS:}
+    max-commits: ${DEEPAUDIT_GIT_MAX_COMMITS:}
+    max-files-per-snapshot: ${DEEPAUDIT_GIT_MAX_FILES:}
+    max-file-bytes: ${DEEPAUDIT_GIT_MAX_FILE_BYTES:}
+    max-snapshot-bytes: ${DEEPAUDIT_GIT_MAX_SNAPSHOT_BYTES:}
+    # Base/Target 提交快照与 CodeGraph 索引按提交复用，超出数量后清理最旧缓存。
+    max-cached-snapshots: ${DEEPAUDIT_GIT_MAX_CACHED_SNAPSHOTS:}
   ai:
-    required: true
-    base-url: ${DEEPAUDIT_AI_BASE_URL:https://api.deepseek.com}
+    base-url: ${DEEPAUDIT_AI_BASE_URL:}
     api-key: ${DEEPAUDIT_AI_API_KEY:}
-    model: ${DEEPAUDIT_AI_MODEL:deepseek-v4-flash}
+    model: ${DEEPAUDIT_AI_MODEL:}
     connect-timeout-seconds: 10
-    read-timeout-seconds: 120
+    read-timeout-seconds: 180
     # 模型偶尔会返回语法不合法的 JSON；最多追加两次格式纠正请求。
     json-repair-attempts: 2
-    max-iterations-per-agent: 6
-    max-tool-calls-per-agent: 10
-    # 同一项目内并行执行专业 Agent；Recon、Orchestrator、Critic 和 Report 仍按阶段顺序执行。
+    max-iterations-per-agent: 10
+    max-tool-calls-per-agent: 8
+    # 仅保留最近工具观察的详细正文，较早观察压缩为状态和证据 ID。
+    max-detailed-observations: 4
+    max-observation-chars: 4000
+    # 同一项目内并行执行专业 Agent；Recon、Orchestrator 和 Report 仍按阶段顺序执行。
     professional-agent-parallelism: 4
     professional-agent-queue-capacity: 1000
-    # 轻量编排只传输审计单元摘要；该值控制单次请求大小，不限制项目总覆盖范围。
-    triage-batch-size: 40
-  embedding:
-    provider: ${DEEPAUDIT_EMBEDDING_PROVIDER:remote}
-    base-url: ${DEEPAUDIT_EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
-    api-key: ${DEEPAUDIT_EMBEDDING_API_KEY:}
-    model: ${DEEPAUDIT_EMBEDDING_MODEL:BAAI/bge-m3}
-    dimensions: ${DEEPAUDIT_EMBEDDING_DIMENSIONS:1024}
-  vector-store:
-    provider: ${DEEPAUDIT_VECTOR_STORE_PROVIDER:pgvector}
-    hnsw-ef-search: ${DEEPAUDIT_VECTOR_HNSW_EF_SEARCH:100}
+    # 控制增量真实差异的单批最大数量，不限制项目总覆盖范围；请求另有字符预算。
+    triage-batch-size: 10
   semantic:
     enabled: true
     max-call-depth: 10
     max-paths-per-entry: 20
     max-states-per-entry: 1000
+  codegraph:
+    # CodeGraph 是生产环境唯一的全局调用拓扑与影响范围来源。
+    enabled: ${DEEPAUDIT_CODEGRAPH_ENABLED:}
+    executable: ${DEEPAUDIT_CODEGRAPH_EXECUTABLE:}
+    # Windows/Linux 绿色发行包可直接填写解压根目录；设置后优先于 executable，且不经过 Shell。
+    # 根目录需保持 node.exe（Windows）或 node（Linux）与 lib/dist/bin/codegraph.js 的原始布局。
+    bundle-root: ${DEEPAUDIT_CODEGRAPH_BUNDLE_ROOT:}
+    expected-version: ${DEEPAUDIT_CODEGRAPH_EXPECTED_VERSION:}
+    timeout-seconds: ${DEEPAUDIT_CODEGRAPH_TIMEOUT_SECONDS:}
+    max-output-bytes: ${DEEPAUDIT_CODEGRAPH_MAX_OUTPUT_BYTES:}
+    impact-depth: ${DEEPAUDIT_CODEGRAPH_IMPACT_DEPTH:}
+    relation-limit: ${DEEPAUDIT_CODEGRAPH_RELATION_LIMIT:}
+    agent-context-limit: ${DEEPAUDIT_CODEGRAPH_AGENT_CONTEXT_LIMIT:}
+    # 索引保存在提交级快照缓存中，同一提交可被后续任务复用。
+    index-directory: ${DEEPAUDIT_CODEGRAPH_INDEX_DIRECTORY:}
 
 mybatis:
   mapper-locations: classpath*:mappers/*.xml

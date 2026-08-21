@@ -17,11 +17,26 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class ReportService {
+
+    private static final String INTERNAL_LOCATION_TOKEN =
+            "(?:chunk(?:\\s*块|[_\\s-]?id)?|代码块|primaryChunkId|evidenceChunkIds?|candidateChunkIds?)";
+    private static final Pattern INTERNAL_REFERENCE_GROUP = Pattern.compile(
+            "(?iu)[（(]\\s*" + INTERNAL_LOCATION_TOKEN
+                    + "\\s*(?:[:=#]|为|是)?\\s*(?:\\[[\\d\\s,，]+]|\\d+)"
+                    + "(?:\\s*第?\\s*\\d+(?:\\s*[-–—至到]\\s*\\d+)?\\s*行)?\\s*[）)]");
+    private static final Pattern INTERNAL_REFERENCE = Pattern.compile(
+            "(?iu)(?:\\[|【)?\\s*" + INTERNAL_LOCATION_TOKEN
+                    + "\\s*(?:[:=#]|为|是)?\\s*(?:\\[[\\d\\s,，]+]|\\d+)\\s*(?:]|】)?");
+    private static final Pattern ORDINAL_CODE_BLOCK = Pattern.compile(
+            "(?iu)第\\s*\\d+\\s*(?:个|号)?\\s*(?:chunk\\s*块?|代码块)");
 
     private final AuditTaskMapper taskMapper;
     private final ProjectMapper projectMapper;
@@ -37,7 +52,12 @@ public class ReportService {
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         Project project = projectMapper.findById(task.getProjectId());
         if (project == null) throw new java.util.NoSuchElementException("项目不存在: " + task.getProjectId());
-        return new AuditReport(project, task, summaryMapper.findByTaskId(taskId),
+        AiReportSummary aiSummary = summaryMapper.findByTaskId(taskId);
+        if (aiSummary != null) {
+            // 只清理返回给报告和 JSON 前端的展示值，不回写历史数据库记录。
+            aiSummary.setExecutiveSummary(readerFacingReportText(aiSummary.getExecutiveSummary()));
+        }
+        return new AuditReport(project, task, aiSummary,
                 findings(taskId), agentRunMapper.findByTaskId(taskId),
                 hypothesisMapper.findByTaskId(taskId), changeMapper.findByTaskId(taskId));
     }
@@ -45,7 +65,9 @@ public class ReportService {
     // 查询风险排序后的发现，并移除不面向用户展示的内部证据段。
     public List<Finding> findings(UUID taskId) {
         List<Finding> findings = findingMapper.findByTaskIdOrderByRisk(taskId);
-        findings.forEach(finding -> finding.setEvidence(evidenceForDisplay(finding.getEvidence())));
+        findings.forEach(finding -> {
+            finding.setEvidence(evidenceForDisplay(finding.getEvidence()));
+        });
         return findings;
     }
 
@@ -53,38 +75,53 @@ public class ReportService {
     public String html(UUID taskId) {
         AuditReport report = report(taskId);
         StringBuilder rows = new StringBuilder();
+        int findingNumber = 0;
         for (Finding finding : report.findings()) {
-            rows.append("<section><h2>").append(escape(finding.getTitle())).append("</h2>")
-                    .append("<p><b>").append(escape(finding.getType().getDisplayName())).append(" · ")
-                    .append(severityLabel(finding.getSeverity())).append(" · 可信度 ")
-                    .append(confidenceLabel(finding.getConfidence())).append(" · ")
-                    .append(deltaLabel(finding.getDeltaStatus())).append("</b></p>")
-                    .append("<p>").append(escape(finding.getFilePath())).append(":").append(finding.getStartLine()).append("</p>")
+            findingNumber++;
+            rows.append("<article class='finding-card'><header class='finding-head'>")
+                    .append("<span class='finding-number'>")
+                    .append(String.format(java.util.Locale.ROOT, "%02d", findingNumber)).append("</span>")
+                    .append("<div><h2>").append(escape(readerFacingReportText(finding.getTitle())))
+                    .append("</h2><p class='badges'>")
+                    .append("<span>").append(escape(finding.getType().getDisplayName())).append("</span>")
+                    .append("<span>").append(severityLabel(finding.getSeverity())).append("</span>")
+                    .append("<span>可信度 ").append(confidenceLabel(finding.getConfidence())).append("</span>")
+                    .append("<span>").append(deltaLabel(finding.getDeltaStatus())).append("</span>")
+                    .append("</p></div></header><div class='finding-body'>")
+                    .append("<p class='vulnerability-location'><b>实际漏洞位置</b><span>")
+                    .append(escape(finding.getFilePath())).append(":").append(finding.getStartLine())
+                    .append(finding.getEndLine() == finding.getStartLine()
+                            ? "" : "-" + finding.getEndLine()).append("</span></p>")
                     .append(descriptionHtml(finding.getDescription()))
-                    .append("<pre>").append(escape(finding.getEvidence())).append("</pre>")
-                    .append("<p><b>修复建议：</b>").append(escape(finding.getRemediation())).append("</p></section>");
+                    .append(evidenceHtml(finding.getEvidence()))
+                    .append("<section class='content-block remediation'><h3>修复建议</h3><p>")
+                    .append(escape(readerFacingReportText(finding.getRemediation())))
+                    .append("</p></section></div></article>");
         }
         return "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>安全审计报告</title>"
-                + "<style>body{max-width:980px;margin:40px auto;font:15px/1.7 sans-serif;color:#172033}"
-                + "h1{border-bottom:3px solid #5b5cf0}section{margin:28px 0;padding:20px;border:1px solid #ddd;border-radius:12px}"
-                + ".finding-description{margin-bottom:0}.critic-review{margin-top:1.2em;padding-top:1.2em;border-top:1px dashed #d7dce5}"
-                + "pre{white-space:pre-wrap;background:#101727;color:#d8e3ff;padding:16px;border-radius:8px}</style></head><body>"
-                + "<h1>DeepAudit Java 安全审计报告</h1><p>项目：" + escape(report.project().getName()) + "</p>"
-                + "<p>范围：" + escape(report.task().getScanMode().name()) + "　Target："
+                + "<meta name='viewport' content='width=device-width,initial-scale=1'><style>" + reportStyles()
+                + "</style></head><body><main class='report-shell'>"
+                + "<header class='report-hero'><p class='eyebrow'>DEEPAUDIT · SECURITY REVIEW</p>"
+                + "<h1>代码安全审计报告</h1>"
+                + "<div class='report-meta'><article><small>项目</small><strong>" + escape(report.project().getName()) + "</strong></article>"
+                + "<article><small>扫描范围</small><strong>BASE → TARGET 增量审计</strong></article>"
+                + "<article><small>目标提交</small><strong>" + escape(shortSha(report.task().getTargetCommitSha())) + "</strong></article>"
+                + "<article><small>定位问题</small><strong>" + report.findings().size() + "</strong></article></div></header>"
+                + "<section class='context-card'><div><small>版本范围</small><p>Target："
                 + escape(shortSha(report.task().getTargetCommitSha()))
                 + (report.task().getBaseCommitSha() == null ? "" : "　Base：" + escape(shortSha(report.task().getBaseCommitSha())))
-                + "</p>"
-                + "<p>变更摘要：" + escape(report.task().getChangeSummary()) + "</p>"
-                + "<p>任务状态：" + statusLabel(report.task().getStatus()) + "　问题数量："
-                + report.findings().size() + "</p>"
-                + "<section><h2>摘要</h2><p>" + escape(report.aiSummary() == null ? "暂无摘要"
-                : report.aiSummary().getExecutiveSummary()) + "</p><p><b>审计覆盖：</b>"
-                + escape(report.aiSummary() == null ? "暂无覆盖说明" : report.aiSummary().getCoverageSummary())
-                // + "</p><p>Agent 运行数：" + report.agentRuns().size() + "　调查假设："
-                // + report.hypotheses().size()
-                + "</p>" + "</section>"
-                + "<p>说明：本报告基于静态代码事实生成；所有结果仍建议人工复核。</p>"
-                + rows + "</body></html>";
+                + (report.task().getMergeBaseSha() == null
+                || report.task().getMergeBaseSha().equals(report.task().getBaseCommitSha()) ? ""
+                : "　实际比较基线：" + escape(shortSha(report.task().getMergeBaseSha())))
+                + "</p></div><div><small>任务状态</small><p>" + statusLabel(report.task().getStatus()) + "</p></div>"
+                + "<div class='wide'><small>变更摘要</small><p>" + escape(report.task().getChangeSummary()) + "</p></div></section>"
+                + "<section class='summary-card'><p class='section-label'>EXECUTIVE SUMMARY</p><h2>审计摘要</h2><p>"
+                + escape(report.aiSummary() == null ? "暂无摘要" : report.aiSummary().getExecutiveSummary())
+                + "</p></section><div class='findings-heading'><div><p class='section-label'>CONFIRMED FINDINGS</p>"
+                + "<h2>确认漏洞</h2></div><span>" + report.findings().size() + "</span></div>"
+                + (report.findings().isEmpty() ? "<div class='empty-report'>本轮审计没有产生已完成精确定位的问题。</div>" : rows)
+                + "<footer>本报告基于静态代码事实生成，所有结果仍建议结合业务场景进行人工复核。</footer>"
+                + "</main></body></html>";
     }
 
     // 隐藏 SEMANTIC_FLOW 和 CRITIC 内部段，防止实现细节泄露到报告证据。
@@ -102,16 +139,129 @@ public class ReportService {
         return value.startsWith(marker) ? 0 : -1;
     }
 
-    // 将漏洞描述与 Critic 复核意见拆成视觉上独立的报告段落。
+    // 面向报告读者只保留一份漏洞说明；Critic 仍参与确认，但不重复展示相近内容。
     private String descriptionHtml(String value) {
         String description = value == null ? "" : value.strip();
         String marker = "Critic Agent 复核：";
         int critic = description.indexOf(marker);
-        if (critic < 0) return "<p class='finding-description'>" + escape(description) + "</p>";
+        if (critic < 0) {
+            return contentBlock("漏洞说明", readerFacingReportText(description), "finding-description");
+        }
         String findingDescription = description.substring(0, critic).strip();
         String review = description.substring(critic + marker.length()).strip();
-        return "<p class='finding-description'>" + escape(findingDescription) + "</p>"
-                + "<p class='critic-review'><b>" + marker + "</b>" + escape(review) + "</p>";
+        String readerDescription = readerFacingReportText(findingDescription);
+        return contentBlock("漏洞说明", readerDescription.isBlank()
+                ? readerFacingReportText(review) : readerDescription, "finding-description");
+    }
+
+    // 兼容历史报告：只清理面向读者文本中的内部块号，不修改数据库内容或代码证据。
+    private String readerFacingReportText(String value) {
+        String sanitized = value == null ? "" : value;
+        sanitized = ORDINAL_CODE_BLOCK.matcher(sanitized).replaceAll("");
+        sanitized = INTERNAL_REFERENCE_GROUP.matcher(sanitized).replaceAll("");
+        sanitized = INTERNAL_REFERENCE.matcher(sanitized).replaceAll("");
+        return sanitized.replaceAll("[（(]\\s*[）)]", "")
+                .replaceAll("[ \\t]+([，。；：、,.!?！？])", "$1")
+                .replaceAll("[ \\t]{2,}", " ")
+                .replaceAll("(?m)^[ \\t]+|[ \\t]+$", "")
+                .strip();
+    }
+
+    // 按内部代码块边界拆分证据，报告只展示位置和源码，不暴露块号或证据序号。
+    private String evidenceHtml(String value) {
+        StringBuilder html = new StringBuilder("<section class='content-block'><h3>代码证据</h3>"
+                + "<div class='evidence-list'>");
+        List<EvidenceChunk> chunks = evidenceChunks(value);
+        for (int index = 0; index < chunks.size(); index++) {
+            EvidenceChunk chunk = chunks.get(index);
+            html.append("<article class='evidence-chunk'><header><span>")
+                    .append(escape(chunk.location().isBlank() ? "代码上下文" : chunk.location()))
+                    .append("</span></header>").append(codeLinesHtml(chunk.code())).append("</article>");
+        }
+        return html.append("</div></section>").toString();
+    }
+
+    private List<EvidenceChunk> evidenceChunks(String value) {
+        String evidence = value == null ? "" : value;
+        Pattern header = Pattern.compile("^\\[CHUNK\\s+(\\d+)]\\s*(.*)$");
+        List<EvidenceChunk> chunks = new ArrayList<>();
+        String id = "";
+        String location = "";
+        StringBuilder code = new StringBuilder();
+        for (String line : evidence.split("\\R", -1)) {
+            Matcher matcher = header.matcher(line);
+            if (matcher.matches()) {
+                addEvidenceChunk(chunks, id, location, code);
+                id = matcher.group(1);
+                location = matcher.group(2).strip();
+                code = new StringBuilder();
+            } else {
+                code.append(line).append('\n');
+            }
+        }
+        addEvidenceChunk(chunks, id, location, code);
+        if (chunks.isEmpty()) chunks.add(new EvidenceChunk("", "", "暂无代码证据"));
+        return List.copyOf(chunks);
+    }
+
+    private String codeLinesHtml(String value) {
+        String source = value == null || value.isBlank() ? "暂无代码证据" : value;
+        Pattern numberedLine = Pattern.compile("^(>>> |\\s{4})(\\s*\\d+)\\s*\\|\\s?(.*)$");
+        StringBuilder html = new StringBuilder("<div class='evidence-code'>");
+        for (String line : source.split("\\R", -1)) {
+            Matcher matcher = numberedLine.matcher(line);
+            boolean vulnerable = line.startsWith(">>> ");
+            html.append("<div class='evidence-code-line")
+                    .append(vulnerable ? " vulnerable" : line.strip().equals("…") ? " ellipsis" : "")
+                    .append("'>");
+            if (matcher.matches()) {
+                html.append("<span class='evidence-line-number'>").append(escape(matcher.group(2).strip()))
+                        .append("</span><code>").append(escape(matcher.group(3).isEmpty() ? " " : matcher.group(3)))
+                        .append("</code>");
+            } else if (line.strip().equals("…")) {
+                html.append("<span class='evidence-line-number'>…</span><code> </code>");
+            } else {
+                html.append("<span class='evidence-line-number'></span><code>")
+                        .append(escape(line.isEmpty() ? " " : line)).append("</code>");
+            }
+            html.append("</div>");
+        }
+        return html.append("</div>").toString();
+    }
+
+    private void addEvidenceChunk(List<EvidenceChunk> chunks, String id, String location, StringBuilder code) {
+        String content = code.toString().strip();
+        if (!id.isBlank() || !location.isBlank() || !content.isBlank()) {
+            chunks.add(new EvidenceChunk(id, location, content));
+        }
+    }
+
+    private String contentBlock(String title, String content, String className) {
+        if (content == null || content.isBlank()) return "";
+        return "<section class='content-block'><h3>" + escape(title) + "</h3><p class='" + className + "'>"
+                + escape(content) + "</p></section>";
+    }
+
+    private String reportStyles() {
+        return """
+                :root{color-scheme:light;--ink:#172033;--muted:#667187;--line:#dfe5ee;--soft:#f5f7fa;--blue:#356ae6;--nav:#111a2b;--cyan:#38b7a3}
+                *{box-sizing:border-box}body{margin:0;background:#eef2f7;color:var(--ink);font:14px/1.7 Inter,"Segoe UI","Microsoft YaHei",sans-serif}
+                .report-shell{width:min(1080px,calc(100% - 32px));margin:32px auto 56px}.report-hero{padding:34px 38px;color:white;background:linear-gradient(135deg,#111a2b 0%,#182846 70%,#204e75 100%);border-radius:18px;box-shadow:0 18px 42px rgba(18,33,59,.16)}
+                .eyebrow,.section-label{margin:0;color:#7de2d1;font-size:10px;font-weight:800;letter-spacing:.14em}.report-hero h1{margin:8px 0 4px;font-size:34px;line-height:1.2}.hero-copy{margin:0;color:#b8c4d7}
+                .report-meta{margin-top:28px;display:grid;grid-template-columns:1.6fr repeat(3,1fr);gap:10px}.report-meta article{min-width:0;padding:13px 15px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:10px}.report-meta small,.report-meta strong{display:block}.report-meta small{color:#91a0b7;font-size:9px}.report-meta strong{margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+                .context-card,.summary-card,.finding-card,.empty-report{margin-top:18px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 7px 24px rgba(22,35,57,.05)}.context-card{padding:19px 22px;display:grid;grid-template-columns:2fr 1fr;gap:14px 28px}.context-card .wide{grid-column:1/-1}.context-card small{color:var(--muted);font-size:9px;font-weight:700}.context-card p{margin:3px 0 0;overflow-wrap:anywhere}
+                .summary-card{padding:26px 28px}.summary-card h2,.findings-heading h2{margin:5px 0 8px;font-size:23px}.summary-card>p:not(.section-label){margin:0;white-space:pre-wrap}
+                .findings-heading{margin:32px 2px 10px;display:flex;justify-content:space-between;align-items:end}.findings-heading>span{min-width:34px;height:34px;padding:0 10px;display:grid;place-items:center;color:var(--blue);background:#eaf0ff;border-radius:9px;font-weight:800}.finding-card{overflow:hidden}.finding-head{padding:18px 22px;display:grid;grid-template-columns:38px 1fr;gap:14px;align-items:start}.finding-number{width:36px;height:36px;display:grid;place-items:center;color:white;background:var(--nav);border-radius:9px;font:800 10px monospace}.finding-head h2{margin:0;font-size:17px;line-height:1.4}.badges{margin:7px 0 0;display:flex;flex-wrap:wrap;gap:6px}.badges span{padding:3px 7px;color:#536075;background:var(--soft);border:1px solid var(--line);border-radius:5px;font-size:9px;font-weight:700}
+                .finding-body{padding:20px 24px 24px 74px;border-top:1px solid var(--line)}.vulnerability-location{margin:0;padding:10px 12px;display:flex;gap:14px;align-items:baseline;color:#2557be;background:#edf3ff;border:1px solid #cbd9fb;border-radius:8px;font:700 12px/1.6 monospace}.vulnerability-location b{flex:0 0 auto;color:#234b9e;font:700 10px/1.6 Inter,"Segoe UI",sans-serif}.vulnerability-location span{overflow-wrap:anywhere}
+                .content-block{margin-top:18px}.content-block h3{margin:0 0 8px;font-size:12px}.finding-description,.remediation p{margin:0;white-space:pre-wrap}.finding-description{padding:14px 16px;background:#f8fafd;border-left:3px solid var(--blue);border-radius:0 9px 9px 0}.remediation{padding:14px 16px;background:#eef9f7;border:1px solid #ccebe5;border-radius:9px}.remediation h3{color:#197d70}
+                .evidence-list{display:grid;gap:11px}.evidence-chunk{min-width:0;overflow:hidden;background:var(--nav);border:1px solid #2a3750;border-radius:10px}.evidence-chunk header{min-height:40px;padding:9px 13px;display:flex;align-items:center;border-bottom:1px solid #2a3750}.evidence-chunk header span{min-width:0;overflow:hidden;color:#93a0b5;text-overflow:ellipsis;white-space:nowrap;font:10px monospace}.evidence-code{max-height:380px;padding:11px 0;overflow:auto;color:#dbe3ef;font:11px/1.7 "SFMono-Regular",Consolas,monospace}.evidence-code-line{min-width:max-content;display:grid;grid-template-columns:62px minmax(620px,1fr)}.evidence-line-number{padding:0 13px 0 8px;color:#728097;border-right:1px solid #2a3750;text-align:right;user-select:none}.evidence-code-line code{padding:0 16px;color:inherit;white-space:pre;font:inherit}.evidence-code-line.vulnerable{color:#dffaf5;background:rgba(56,183,163,.16);box-shadow:inset 3px 0 var(--cyan)}.evidence-code-line.vulnerable .evidence-line-number{color:#7de2d1;font-weight:800}.evidence-code-line.ellipsis{color:#65748b}
+                .empty-report{padding:42px;text-align:center;color:var(--muted)}footer{padding:24px 4px 0;color:#7b8799;text-align:center;font-size:11px}
+                @media(max-width:700px){.report-shell{width:min(100% - 18px,1080px);margin-top:9px}.report-hero{padding:25px 22px}.report-meta{grid-template-columns:1fr 1fr}.context-card{grid-template-columns:1fr}.context-card .wide{grid-column:auto}.finding-body{padding:17px}.finding-head{padding:16px}.vulnerability-location{display:block}.vulnerability-location span{display:block;margin-top:4px}.evidence-chunk header{align-items:flex-start;flex-direction:column;gap:3px}.evidence-chunk header span{width:100%}}
+                @media print{body{background:white}.report-shell{width:100%;margin:0}.report-hero,.context-card,.summary-card,.finding-card{box-shadow:none}.finding-card{break-inside:avoid}.evidence-code{max-height:none}}
+                """;
+    }
+
+    private record EvidenceChunk(String id, String location, String code) {
     }
 
     private String severityLabel(com.deepaudit.domain.Severity severity) {
@@ -135,19 +285,16 @@ public class ReportService {
         return switch (status) {
             case COMPLETED -> "已完成";
             case FAILED -> "失败";
-            case CANCELLED -> "已取消";
+            case CANCELLED -> "已中断";
             default -> "进行中";
         };
     }
 
     private String deltaLabel(com.deepaudit.domain.FindingDeltaStatus status) {
-        if (status == null) return "全量基线";
+        if (status == null) return "变更新增";
         return switch (status) {
-            case BASELINE -> "全量基线";
             case NEW -> "变更新增";
-            case REGRESSED -> "安全回归";
             case PERSISTING -> "持续存在";
-            case AFFECTED -> "变更影响";
         };
     }
 

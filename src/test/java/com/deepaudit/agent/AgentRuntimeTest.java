@@ -1,0 +1,210 @@
+package com.deepaudit.agent;
+
+import com.deepaudit.ai.AiProperties;
+import com.deepaudit.ai.LlmGateway;
+import com.deepaudit.domain.AnalysisScope;
+import com.deepaudit.domain.AgentEventType;
+import com.deepaudit.domain.AgentRun;
+import com.deepaudit.domain.AgentType;
+import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.Confidence;
+import com.deepaudit.domain.Severity;
+import com.deepaudit.domain.VulnerabilityType;
+import com.deepaudit.mapper.AuditHypothesisMapper;
+import com.deepaudit.orchestrator.AuditCancellationService;
+import com.deepaudit.semantic.SemanticEvidenceService;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class AgentRuntimeTest {
+
+    @Test
+    void executesEachToolCallAndCompactsOlderObservations() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        properties.setMaxIterationsPerAgent(5);
+        properties.setMaxToolCallsPerAgent(5);
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = chunk(taskId, 1L, "Controller#entry", "service.load(input);");
+        CodeChunk candidate = chunk(taskId, 2L, "OrderService#load", "return repository.find(input);");
+        List<CodeChunk> chunks = List.of(target, candidate);
+        AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
+                VulnerabilityType.AUTHORIZATION, "检查授权", "规则线索");
+
+        when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "entry"));
+        when(semanticEvidenceService.query(taskId, 1L, 10,
+                VulnerabilityType.AUTHORIZATION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(gateway.decide(any())).thenReturn(
+                tool("search_code", Map.of("query", "load"), "搜索调用"),
+                tool("read_source", Map.of("chunkId", 2L, "startLine", 1, "endLine", 2),
+                        "读取候选"),
+                tool("read_source", Map.of("chunkId", 2L, "startLine", 1, "endLine", 2),
+                        "重复读取"),
+                tool("verify_relation", Map.of("candidateChunkId", 2L), "验证候选关系"),
+                new LlmGateway.AgentDecision("REJECT", null, Map.of(), "证据不足", null));
+        when(toolService.execute(anyString(), anyMap(), eq(target), eq(chunks),
+                eq(VulnerabilityType.AUTHORIZATION),
+                any(ToolSessionContext.class))).thenReturn(
+                new ToolResult("[CODE_SEARCH][UNVERIFIED_CANDIDATE]\n" + "x".repeat(5_000),
+                        Set.of(1L), Set.of(2L)),
+                new ToolResult("[SOURCE] CHUNK_ID=2 | demo/Source.java:1-2 | OrderService#load\n"
+                        + "<UNTRUSTED_CODE>\n>>>     1 | return repository.find(input);\n"
+                        + "</UNTRUSTED_CODE>", Set.of(), Set.of(2L)),
+                new ToolResult("[SOURCE] CHUNK_ID=2 | demo/Source.java:1-2 | OrderService#load\n"
+                        + "<UNTRUSTED_CODE>\n>>>     1 | return repository.find(input);\n"
+                        + "</UNTRUSTED_CODE>\n" + "z".repeat(10_000) + "\nTAIL_MARKER",
+                        Set.of(), Set.of(2L)),
+                new ToolResult("[VERIFIED_EVIDENCE][CALL_EDGE_VERIFIED] 存在唯一调用关系\n"
+                        + "CHUNK_ID=2 | demo/Source.java:1 | OrderService#load\n"
+                        + "[SOURCE_NOT_INCLUDED] 请使用 read_source 精读该代码块。", Set.of(2L), Set.of()));
+
+        runtime.investigate(taskId, task, null, chunks);
+
+        verify(toolService, times(4)).execute(anyString(), anyMap(), eq(target), eq(chunks),
+                eq(VulnerabilityType.AUTHORIZATION),
+                any(ToolSessionContext.class));
+        ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
+        verify(gateway, times(5)).decide(turns.capture());
+        LlmGateway.AgentTurn finalTurn = turns.getAllValues().get(4);
+        assertThat(finalTurn.observations()).hasSize(5);
+        assertThat(finalTurn.observations().get(0).result()).contains("COMPACT_OBSERVATION");
+        assertThat(finalTurn.observations().get(2).result())
+                .contains("OBSERVATION_TRUNCATED", "TAIL_MARKER", "TOOL_BUDGET", "candidateChunkIds=[2]")
+                .doesNotContain("CACHE_HIT");
+        LlmGateway.Observation ledger = finalTurn.observations().get(4);
+        assertThat(ledger.tool()).isEqualTo("evidence_ledger");
+        assertThat(ledger.result())
+                .contains("[EVIDENCE_LEDGER]", "tool=search_code", "[DISCOVERY_ONLY]",
+                        "tool=read_source", "[SOURCE] CHUNK_ID=2", "<UNTRUSTED_CODE>",
+                        "</UNTRUSTED_CODE>", "return repository.find(input);", "tool=verify_relation",
+                        "[VERIFIED_EVIDENCE]", "evidenceChunkIds=[2]")
+                .doesNotContain("x".repeat(1_000));
+        assertThat(ledger.result()).hasSizeLessThanOrEqualTo(6_000);
+
+        ArgumentCaptor<AgentEventType> eventTypes = ArgumentCaptor.forClass(AgentEventType.class);
+        ArgumentCaptor<String> eventMessages = ArgumentCaptor.forClass(String.class);
+        verify(traceService, atLeastOnce()).event(eq(taskId), any(UUID.class), eq(AgentType.AUTHORIZATION),
+                eventTypes.capture(), eventMessages.capture());
+        List<String> modelCallMessages = new ArrayList<>();
+        List<AgentEventType> rejectionSummaryEventTypes = new ArrayList<>();
+        for (int index = 0; index < eventTypes.getAllValues().size(); index++) {
+            if (eventTypes.getAllValues().get(index) == AgentEventType.MODEL_CALL) {
+                modelCallMessages.add(eventMessages.getAllValues().get(index));
+            }
+            if (eventMessages.getAllValues().get(index).contains("证据不足")) {
+                rejectionSummaryEventTypes.add(eventTypes.getAllValues().get(index));
+            }
+        }
+        assertThat(modelCallMessages).containsExactly(
+                "开始专业调查：结合 Recon 架构事实、CodeGraph 调用关系和局部安全语义进行判断");
+        assertThat(rejectionSummaryEventTypes).containsExactly(AgentEventType.REJECTED);
+    }
+
+    @Test
+    void rejectsInvalidExplicitLocationsThenAcceptsRangeLongerThanFiveLines() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        properties.setMaxIterationsPerAgent(4);
+        properties.setMaxToolCallsPerAgent(1);
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = new CodeChunk(taskId, "demo/OrderService.java", "OrderService#remove", "/orders",
+                10, 19, """
+                public void remove(String id) {
+                    // only a comment
+                    audit(id);
+                    load(id);
+                    validate(id);
+                    authorize(id);
+                    repository.delete(id);
+                    publish(id);
+                    return;
+                }
+                """, "JAVA_METHOD", "String id", "", "delete,publish");
+        target.setId(1L);
+        target.setAnalysisScope(AnalysisScope.CHANGED);
+        AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
+                VulnerabilityType.AUTHORIZATION, "检查授权", "规则线索");
+
+        when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "remove"));
+        when(semanticEvidenceService.query(taskId, 1L, 10, VulnerabilityType.AUTHORIZATION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(semanticEvidenceService.callSiteLines(eq(taskId), eq(1L), any()))
+                .thenReturn(Map.of());
+        when(gateway.decide(any())).thenReturn(
+                finding(1L, null, null),
+                finding(1L, 99, 99),
+                finding(1L, 11, 11),
+                finding(1L, 10, 19));
+
+        var result = runtime.investigate(taskId, task, null, List.of(target));
+
+        assertThat(result).isPresent();
+        assertThat(result.orElseThrow().proposal().vulnerabilityStartLine()).isEqualTo(10);
+        assertThat(result.orElseThrow().proposal().vulnerabilityEndLine()).isEqualTo(19);
+        ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
+        verify(gateway, times(4)).decide(turns.capture());
+        List<String> feedback = turns.getAllValues().stream()
+                .flatMap(turn -> turn.observations().stream())
+                .filter(observation -> "evidence_validator".equals(observation.tool()))
+                .map(LlmGateway.Observation::result)
+                .toList();
+        assertThat(feedback)
+                .anyMatch(text -> text.contains("vulnerabilityStartLine 和 vulnerabilityEndLine 不能为空"))
+                .anyMatch(text -> text.contains("超出 primary 代码块范围"))
+                .anyMatch(text -> text.contains("没有有效可执行代码"))
+                .allMatch(text -> text.contains("系统不会自动改到其他行"));
+    }
+
+    private LlmGateway.AgentDecision tool(String tool, Map<String, Object> arguments, String summary) {
+        return new LlmGateway.AgentDecision("TOOL", tool, arguments, summary, null);
+    }
+
+    private LlmGateway.AgentDecision finding(long primaryChunkId, Integer startLine, Integer endLine) {
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.AUTHORIZATION, Severity.HIGH, Confidence.HIGH,
+                "删除订单前缺少授权", "删除操作没有验证当前用户是否拥有目标订单", "增加资源所有权校验",
+                primaryChunkId, List.of(primaryChunkId), startLine, endLine);
+        return new LlmGateway.AgentDecision("FINDING", null, Map.of(), "提交漏洞", proposal);
+    }
+
+    private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {
+        CodeChunk chunk = new CodeChunk(taskId, "demo/Source.java", symbol, "/orders",
+                1, 5, content, "JAVA_METHOD", "String input", "", "load,find");
+        chunk.setId(id);
+        return chunk;
+    }
+}

@@ -8,7 +8,9 @@ import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.AiReportSummary;
 import com.deepaudit.domain.Finding;
 import com.deepaudit.mapper.AiReportSummaryMapper;
+import com.deepaudit.util.ExecutionTiming;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -16,15 +18,16 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ReportAgentService {
     private final LlmGateway llmGateway;
     private final AgentTraceService traceService;
     private final AiReportSummaryMapper summaryMapper;
 
-    // 仅基于 Critic 已确认的发现生成管理摘要和覆盖说明。
+    // 仅基于已通过专业 Agent 证据与显式位置门禁的发现生成管理摘要。
     public AiReportSummary generate(UUID taskId, String projectName, LlmGateway.ReconInsight recon,
-                                    List<Finding> findings, int completedAgents, int rejectedHypotheses,
-                                    String auditContext) {
+                                    List<Finding> findings) {
+        long reportStarted = ExecutionTiming.start();
         AgentRun run = traceService.start(taskId, AgentType.REPORT, null, "AI 审计报告");
         try {
             // 将最终发现压缩为报告模型所需的只读事实，禁止引入新漏洞。
@@ -33,27 +36,35 @@ public class ReportAgentService {
                     finding.getFilePath() + ":" + finding.getStartLine(), finding.getDescription())).toList();
             run.setModelCallCount(1);
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.MODEL_CALL,
-                    "正在将已通过 Critic 的发现整理为中文安全审计报告");
+                    "正在将已通过专业证据门禁的发现整理为中文安全审计报告");
+            long modelStarted = ExecutionTiming.start();
             LlmGateway.ReportNarrative narrative = llmGateway.writeReport(new LlmGateway.ReportRequest(
-                    taskId, projectName, recon, facts, completedAgents, rejectedHypotheses, auditContext));
-            AiReportSummary summary = persist(taskId, narrative.executiveSummary(), narrative.coverageSummary());
+                    taskId, projectName, recon, facts));
+            long modelElapsedMs = ExecutionTiming.elapsedMillis(modelStarted);
+            AiReportSummary summary = persist(taskId, narrative.executiveSummary());
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.COMPLETED,
-                    "Report Agent 已基于 " + findings.size() + " 个确认问题生成报告摘要");
+                    "Report Agent 已基于 " + findings.size() + " 个确认问题生成报告摘要；模型耗时 "
+                            + modelElapsedMs + " ms，总耗时 " + ExecutionTiming.elapsedMillis(reportStarted) + " ms");
+            log.info("阶段耗时：taskId={}，阶段=审计报告生成，耗时={}ms，说明=整理专业 Agent 证据门禁结果并生成中文报告，模型耗时={}ms，漏洞数={}",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted), modelElapsedMs, findings.size());
             run.complete("AI 审计报告已生成");
             traceService.update(run);
             return summary;
         } catch (AiResponseFormatException exception) {
             // 报告模型格式异常时使用确定性摘要，保留已确认结果而不伪造内容。
             AiReportSummary summary = persist(taskId,
-                    "本次代码安全审计共确认 " + findings.size() + " 个问题，所有问题均已通过独立 Critic 证据复核。",
-                    auditContext + "。已完成项目侦察、智能规划、" + completedAgents + " 个专业 Agent 调查任务和反证检查；"
-                            + rejectedHypotheses + " 个候选未进入最终报告。");
+                    "本次代码安全审计共确认 " + findings.size() + " 个问题，所有问题均已通过专业 Agent 证据与显式位置门禁。");
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.ERROR,
-                    "Report Agent 返回格式异常，已使用确定性中文摘要完成报告");
+                    "Report Agent 返回格式异常，已使用确定性中文摘要完成报告；耗时 "
+                            + ExecutionTiming.elapsedMillis(reportStarted) + " ms");
+            log.warn("执行耗时：taskId={}，stage=REPORT_AGENT，elapsedMs={}，status=FORMAT_FALLBACK",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted));
             run.complete("已使用确定性中文摘要完成报告");
             traceService.update(run);
             return summary;
         } catch (RuntimeException exception) {
+            log.error("执行耗时：taskId={}，stage=REPORT_AGENT，elapsedMs={}，status=FAILED，error={}",
+                    taskId, ExecutionTiming.elapsedMillis(reportStarted), exception.getClass().getSimpleName());
             run.fail(exception.getMessage());
             traceService.update(run);
             traceService.event(taskId, run.getId(), AgentType.REPORT, AgentEventType.ERROR, exception.getMessage());
@@ -62,9 +73,9 @@ public class ReportAgentService {
     }
 
     // 以任务为粒度替换报告摘要，保证重新生成时只保留最新版本。
-    private AiReportSummary persist(UUID taskId, String executiveSummary, String coverageSummary) {
+    private AiReportSummary persist(UUID taskId, String executiveSummary) {
         summaryMapper.deleteByTaskId(taskId);
-        AiReportSummary summary = new AiReportSummary(taskId, safe(executiveSummary), safe(coverageSummary));
+        AiReportSummary summary = new AiReportSummary(taskId, safe(executiveSummary));
         summaryMapper.insert(summary);
         return summary;
     }

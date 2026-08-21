@@ -7,7 +7,7 @@ import com.deepaudit.domain.AgentEvent;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AuditHypothesis;
 import com.deepaudit.domain.GitFileChange;
-import com.deepaudit.domain.ScanMode;
+import com.deepaudit.domain.SemanticMethodChange;
 import com.deepaudit.report.ReportService;
 import com.deepaudit.mapper.AuditTaskMapper;
 import com.deepaudit.mapper.FindingMapper;
@@ -16,9 +16,11 @@ import com.deepaudit.mapper.AgentEventMapper;
 import com.deepaudit.mapper.AgentRunMapper;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.mapper.GitFileChangeMapper;
+import com.deepaudit.mapper.SemanticMethodChangeMapper;
 import com.deepaudit.service.ProjectService;
 import com.deepaudit.git.GitRepositoryService;
 import com.deepaudit.agent.AgentEventStreamService;
+import com.deepaudit.orchestrator.AuditCancellationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -39,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
 
+// 提供 AuditController 对应的 HTTP 接口。
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
@@ -54,6 +57,8 @@ public class AuditController {
     private final AuditHypothesisMapper hypothesisMapper;
     private final AgentEventStreamService eventStreamService;
     private final GitFileChangeMapper changeMapper;
+    private final SemanticMethodChangeMapper semanticMethodChangeMapper;
+    private final AuditCancellationService cancellationService;
 
     // 只读导入 Git 裸仓库；访问令牌不会持久化或返回。
     @PostMapping(value = "/projects/git", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -65,44 +70,52 @@ public class AuditController {
                 repository(imported.project()), imported.commits(), "Git 仓库已导入，请选择审计提交"));
     }
 
+    // 处理 projects 对应的 HTTP 请求。
     @GetMapping("/projects")
     public List<RepositoryResponse> projects(
             @RequestParam(defaultValue = "false") boolean includeArchived) {
         return projectService.projects(includeArchived).stream().map(this::repository).toList();
     }
 
+    // 处理 project 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}")
     public RepositoryResponse project(@PathVariable UUID projectId) {
         return repository(projectService.project(projectId));
     }
 
+    // 处理 updateProject 对应的 HTTP 请求。
     @PatchMapping(value = "/projects/{projectId}", consumes = MediaType.APPLICATION_JSON_VALUE)
     public RepositoryResponse updateProject(@PathVariable UUID projectId,
                                             @RequestBody UpdateProjectRequest request) {
         return repository(projectService.updateProject(projectId, request.name(), request.description()));
     }
 
+    // 处理 archiveProject 对应的 HTTP 请求。
     @PostMapping("/projects/{projectId}/archive")
     public RepositoryResponse archiveProject(@PathVariable UUID projectId) {
         return repository(projectService.archive(projectId));
     }
 
+    // 处理 restoreProject 对应的 HTTP 请求。
     @PostMapping("/projects/{projectId}/restore")
     public RepositoryResponse restoreProject(@PathVariable UUID projectId) {
         return repository(projectService.restore(projectId));
     }
 
+    // 处理 projectAudits 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}/audits")
     public List<TaskResponse> projectAudits(@PathVariable UUID projectId) {
         return projectService.auditHistory(projectId).stream().map(this::toResponse).toList();
     }
 
+    // 处理 cleanupProject 对应的 HTTP 请求。
     @PostMapping(value = "/projects/{projectId}/cleanup", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ProjectService.CleanupResult cleanupProject(@PathVariable UUID projectId,
                                                        @RequestBody CleanupProjectRequest request) {
         return projectService.cleanupAuditData(projectId, request.confirmation());
     }
 
+    // 处理 commits 对应的 HTTP 请求。
     @GetMapping("/projects/{projectId}/commits")
     public List<GitRepositoryService.CommitInfo> commits(@PathVariable UUID projectId,
                                                          @RequestParam(defaultValue = "100") int limit)
@@ -110,6 +123,7 @@ public class AuditController {
         return projectService.commits(projectId, limit);
     }
 
+    // 处理 refresh 对应的 HTTP 请求。
     @PostMapping(value = "/projects/{projectId}/refresh", consumes = MediaType.APPLICATION_JSON_VALUE)
     public List<GitRepositoryService.CommitInfo> refresh(@PathVariable UUID projectId,
                                                          @RequestBody(required = false) RefreshRepositoryRequest request)
@@ -118,17 +132,19 @@ public class AuditController {
                 request == null ? null : request.accessToken());
     }
 
-    // 对单个 Target 提交创建全量任务，或对 Base/Target 创建增量任务。
+    // 对必填的 Base/Target 提交创建增量任务。
     @PostMapping(value = "/projects/{projectId}/audits", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<AuditSubmissionResponse> createAudit(@PathVariable UUID projectId,
                                                                @RequestBody CreateAuditRequest request)
             throws IOException {
-        ProjectService.Submission submission = projectService.submitAudit(projectId, request.scanMode(),
+        ProjectService.Submission submission = projectService.submitAudit(projectId,
                 request.baseCommit(), request.targetCommit());
         AuditTask task = submission.task();
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new AuditSubmissionResponse(
                 submission.project().getId(), task.getId(), submission.project().getName(),
-                task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
+                task.getBaseCommitSha(), task.getTargetCommitSha(),
+                task.getMergeBaseSha(), task.getStatus().name(), task.getProgress(),
+                task.getCurrentStage(), task.getCreatedAt(),
                 "Git 审计任务已创建，正在后台执行"));
     }
 
@@ -144,6 +160,14 @@ public class AuditController {
         AuditTask task = taskMapper.findById(taskId);
         if (task == null) throw new java.util.NoSuchElementException("扫描任务不存在: " + taskId);
         return toResponse(task);
+    }
+
+    // 立即持久化取消终态，并通知正在运行或排队中的审计线程协作式停止。
+    @PostMapping("/tasks/{taskId}/cancel")
+    public TaskCancellationResponse cancelTask(@PathVariable UUID taskId) {
+        AuditCancellationService.CancellationResult result =
+                cancellationService.requestCancellation(taskId);
+        return new TaskCancellationResponse(toResponse(result.task()), result.changed(), result.message());
     }
 
     // 仅返回经过证据过滤后可展示的最终漏洞列表。
@@ -183,10 +207,18 @@ public class AuditController {
         return hypothesisMapper.findByTaskId(taskId);
     }
 
+    // 处理 changes 对应的 HTTP 请求。
     @GetMapping("/tasks/{taskId}/changes")
     public List<GitFileChange> changes(@PathVariable UUID taskId) {
         requireTask(taskId);
         return changeMapper.findByTaskId(taskId);
+    }
+
+    // 返回 Base/Target 方法索引生成的语义变化，便于解释增量深度范围。
+    @GetMapping("/tasks/{taskId}/method-changes")
+    public List<SemanticMethodChange> methodChanges(@PathVariable UUID taskId) {
+        requireTask(taskId);
+        return semanticMethodChangeMapper.findByTaskId(taskId);
     }
 
     // 聚合项目、任务、发现和 Agent 轨迹为结构化报告。
@@ -212,9 +244,9 @@ public class AuditController {
         List<AgentRun> runs = agentRunMapper.findByTaskId(task.getId());
         int modelCalls = runs.stream().mapToInt(AgentRun::getModelCallCount).sum();
         int toolCalls = runs.stream().mapToInt(AgentRun::getToolCallCount).sum();
-        return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getOriginalFilename(),
-                project.getRepositoryUrl(), task.getScanMode(), task.getBaseCommitSha(), task.getTargetCommitSha(),
-                task.getChangeSummary(),
+        return new TaskResponse(task.getId(), project.getId(), project.getName(), project.getRepositoryUrl(),
+                task.getBaseCommitSha(), task.getTargetCommitSha(),
+                task.getMergeBaseSha(), task.getChangeSummary(),
                 task.getStatus().name(), task.getProgress(), task.getCurrentStage(), task.getErrorMessage(),
                 findingMapper.countByTaskId(task.getId()), runs.size(), modelCalls, toolCalls,
                 task.getCreatedAt(), task.getCompletedAt());
@@ -246,7 +278,7 @@ public class AuditController {
     public record CleanupProjectRequest(String confirmation) {
     }
 
-    public record CreateAuditRequest(ScanMode scanMode, String baseCommit, String targetCommit) {
+    public record CreateAuditRequest(String baseCommit, String targetCommit) {
     }
 
     public record RepositoryResponse(UUID projectId, String name, String repositoryUrl,
@@ -260,15 +292,20 @@ public class AuditController {
     }
 
     public record AuditSubmissionResponse(UUID projectId, UUID taskId, String projectName,
-                                          ScanMode scanMode, String baseCommit, String targetCommit,
+                                          String baseCommit, String targetCommit,
+                                          String mergeBase, String status, int progress,
+                                          String currentStage, java.time.Instant createdAt,
                                           String message) {
     }
 
-    public record TaskResponse(UUID taskId, UUID projectId, String projectName, String originalFilename,
-                               String repositoryUrl, ScanMode scanMode, String baseCommit,
-                               String targetCommit, String changeSummary,
+    public record TaskResponse(UUID taskId, UUID projectId, String projectName,
+                               String repositoryUrl, String baseCommit,
+                               String targetCommit, String mergeBase, String changeSummary,
                                String status, int progress, String currentStage, String errorMessage,
                                long findingCount, int agentRunCount, int modelCallCount, int toolCallCount,
                                java.time.Instant createdAt, java.time.Instant completedAt) {
+    }
+
+    public record TaskCancellationResponse(TaskResponse task, boolean changed, String message) {
     }
 }

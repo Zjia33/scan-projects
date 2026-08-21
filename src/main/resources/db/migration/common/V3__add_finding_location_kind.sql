@@ -1,0 +1,4 @@
+ALTER TABLE finding ADD COLUMN location_kind VARCHAR(40) NOT NULL DEFAULT 'UNCLASSIFIED';
+
+ALTER TABLE finding ADD CONSTRAINT chk_finding_location_kind
+    CHECK (location_kind IN ('ROOT_CAUSE', 'RESPONSIBILITY_ANCHOR', 'UNCLASSIFIED'));

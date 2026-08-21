@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @SpringBootApplication
 public class DeepAuditApplication {
 
+    // 启动 DeepAudit Spring Boot 应用。
     public static void main(String[] args) {
         SpringApplication.run(DeepAuditApplication.class, args);
     }

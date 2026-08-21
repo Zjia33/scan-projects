@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -34,12 +35,72 @@ class DeepAuditApplicationTests {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     @Test
     void loadsMyBatisAndFlywayWithoutJpa() {
         assertThat(sqlSessionFactory).isNotNull();
         assertThat(applicationContext.containsBean("entityManagerFactory")).isFalse();
         assertThat(applicationContext.containsBean("projectMapper")).isTrue();
-        assertThat(flyway.info().applied()).hasSizeGreaterThanOrEqualTo(3);
+        assertThat(flyway.info().applied()).hasSize(3);
+        assertThat(flyway.info().applied()[0].getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().applied()[1].getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().applied()[2].getVersion().getVersion()).isEqualTo("3");
+    }
+
+    @Test
+    void currentSchemaDoesNotContainRemovedRetrievalStorage() {
+        Integer cacheTables = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE UPPER(TABLE_NAME) = 'EMBEDDING_CACHE'
+                """, Integer.class);
+        Integer vectorColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'CODE_CHUNK'
+                  AND UPPER(COLUMN_NAME) IN ('EMBEDDING', 'EMBEDDING_VECTOR')
+                """, Integer.class);
+
+        assertThat(cacheTables).isZero();
+        assertThat(vectorColumns).isZero();
+    }
+
+    @Test
+    void currentSchemaDoesNotContainRemovedProjectSourceColumns() {
+        Integer legacyColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'AUDIT_PROJECT'
+                  AND UPPER(COLUMN_NAME) IN ('ORIGINAL_FILENAME', 'SOURCE_TYPE')
+                """, Integer.class);
+
+        assertThat(legacyColumns).isZero();
+    }
+
+    @Test
+    void currentSchemaDoesNotContainRemovedReportCoverageSummary() {
+        Integer coverageColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'AI_REPORT_SUMMARY'
+                  AND UPPER(COLUMN_NAME) = 'COVERAGE_SUMMARY'
+                """, Integer.class);
+
+        assertThat(coverageColumns).isZero();
+    }
+
+    @Test
+    void findingSchemaStoresPrimaryLocationMeaning() {
+        Integer locationKindColumns = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE UPPER(TABLE_NAME) = 'FINDING'
+                  AND UPPER(COLUMN_NAME) = 'LOCATION_KIND'
+                """, Integer.class);
+
+        assertThat(locationKindColumns).isEqualTo(1);
     }
 
     @Test
@@ -72,15 +133,13 @@ class DeepAuditApplicationTests {
     void normalizesTriageEnumsAndKeepsUnknownValuesSkippable() throws Exception {
         String modelJson = """
                 {
-                  "summary": "权限审计分流",
+                  "summary": "敏感信息审计分流",
                   "decisions": [
                     {
                       "unitId": "chunk-10",
                       "primaryChunkId": 10,
                       "disposition": "investigate",
-                      "vulnerabilityTypes": ["UnauthorizedAccess"],
-                      "reasonCodes": ["EXTERNAL_ENTRY"],
-                      "requiredContext": [],
+                      "vulnerabilityTypes": ["敏感信息泄露"],
                       "reason": "未授权接口可能泄露敏感信息"
                     },
                     {
@@ -88,8 +147,6 @@ class DeepAuditApplicationTests {
                       "primaryChunkId": 11,
                       "disposition": "InventedDisposition",
                       "vulnerabilityTypes": ["InventedRisk"],
-                      "reasonCodes": [],
-                      "requiredContext": [],
                       "reason": "模型创造的未知类别"
                     }
                   ]
@@ -100,22 +157,14 @@ class DeepAuditApplicationTests {
 
         assertThat(plan.decisions().get(0).disposition()).isEqualTo(TriageDisposition.INVESTIGATE);
         assertThat(plan.decisions().get(0).vulnerabilityTypes())
-                .containsExactly(VulnerabilityType.UNAUTHORIZED_DISCLOSURE);
+                .containsExactly(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
         assertThat(plan.decisions().get(1).disposition()).isNull();
         assertThat(plan.decisions().get(1).vulnerabilityTypes()).isEmpty();
     }
 
     @Test
-    void mergesHorizontalAndVerticalAuthorizationAliasesIntoOneType() {
+    void recognizesCurrentAuthorizationType() {
         assertThat(VulnerabilityType.fromModelValue("AUTHORIZATION"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("HORIZONTAL_AUTHORIZATION"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("vertical_authorization"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("水平越权"))
-                .isEqualTo(VulnerabilityType.AUTHORIZATION);
-        assertThat(VulnerabilityType.fromModelValue("垂直越权"))
                 .isEqualTo(VulnerabilityType.AUTHORIZATION);
     }
 }

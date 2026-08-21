@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -16,22 +17,26 @@ import java.util.stream.Stream;
 final class ProjectTechnologyDetector {
     private static final long MAX_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_EVIDENCE = 80;
-    private static final Set<String> INSPECTED_EXTENSIONS = Set.of(
-            "java", "xml", "yml", "yaml", "properties", "gradle", "kts", "json",
-            "html", "jsp", "ftl", "vue", "jsx", "tsx", "js", "ts"
-    );
-
     // 从构建文件和源码标记中确定性识别框架、安全组件与持久化技术。
     TechnologyProfile detect(Path root) {
-        Detection detection = new Detection(root);
+        List<Path> files;
         try (Stream<Path> paths = Files.walk(root)) {
-            paths.filter(Files::isRegularFile)
-                    .filter(path -> AuditSourceFilter.shouldAnalyze(root, path))
+            files = paths.filter(Files::isRegularFile)
+                    .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
                     .filter(this::isInspectable)
-                    .forEach(detection::inspect);
+                    .toList();
         } catch (IOException exception) {
             log.warn("项目技术栈探测未完整执行: {}", root, exception);
+            files = List.of();
         }
+        return detect(root, files);
+    }
+
+    TechnologyProfile detect(Path root, List<Path> selectedFiles) {
+        Detection detection = new Detection(root);
+        selectedFiles.stream().filter(Files::isRegularFile)
+                .filter(path -> AuditSourceFilter.classify(root, path).inspectForRecon())
+                .filter(this::isInspectable).distinct().forEach(detection::inspect);
         return detection.profile();
     }
 
@@ -42,11 +47,7 @@ final class ProjectTechnologyDetector {
         } catch (IOException exception) {
             return false;
         }
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (name.equals("pom.xml") || name.equals("package.json") || name.startsWith("build.gradle")
-                || name.startsWith("settings.gradle")) return true;
-        int dot = name.lastIndexOf('.');
-        return dot > 0 && INSPECTED_EXTENSIONS.contains(name.substring(dot + 1));
+        return true;
     }
 
     private static final class Detection {
@@ -80,8 +81,6 @@ final class ProjectTechnologyDetector {
                         "webfluxconfigurer", "routerfunction<");
                 detect(content, relative, frameworks, "Jakarta Servlet", "jakarta.servlet", "javax.servlet");
                 detect(content, relative, frameworks, "Apache Struts", "struts2-core", "org.apache.struts");
-                detect(content, relative, frameworks, "Vue", "\"vue\"", ".vue");
-                detect(content, relative, frameworks, "React", "\"react\"", "react-dom");
                 detect(content, relative, frameworks, "Thymeleaf", "thymeleaf", "th:");
                 detect(content, relative, frameworks, "FreeMarker", "freemarker", ".ftl");
 
@@ -132,6 +131,7 @@ final class ProjectTechnologyDetector {
             }
         }
 
+        // 向当前结果添加 add 对应的数据。
         private void add(Set<String> target, String value, String relative, String marker) {
             target.add(value);
             if (evidence.size() < MAX_EVIDENCE) evidence.add(value + " <- " + relative + " [" + marker + "]");

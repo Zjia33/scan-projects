@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.deepaudit.mapper.SemanticMethodChangeMapper">
+    <resultMap id="SemanticMethodChangeResultMap" type="com.deepaudit.domain.SemanticMethodChange">
+        <id column="id" property="id"/>
+        <result column="task_id" property="taskId"/>
+        <result column="change_kind" property="changeKind" javaType="com.deepaudit.domain.SemanticChangeKind"/>
+        <result column="method_name" property="methodName"/>
+        <result column="base_path" property="basePath"/>
+        <result column="target_path" property="targetPath"/>
+        <result column="base_symbol" property="baseSymbol"/>
+        <result column="target_symbol" property="targetSymbol"/>
+        <result column="base_start_line" property="baseStartLine"/>
+        <result column="base_end_line" property="baseEndLine"/>
+        <result column="target_start_line" property="targetStartLine"/>
+        <result column="target_end_line" property="targetEndLine"/>
+        <result column="base_content" property="baseContent"/>
+        <result column="target_content" property="targetContent"/>
+        <result column="details" property="details"/>
+    </resultMap>
+
+    <delete id="deleteByTaskId">DELETE FROM semantic_method_change WHERE task_id = #{taskId}</delete>
+
+    <insert id="insertBatch">
+        INSERT INTO semantic_method_change
+            (id, task_id, change_kind, method_name, base_path, target_path, base_symbol,
+             target_symbol, base_start_line, base_end_line, target_start_line, target_end_line,
+             base_content, target_content, details)
+        VALUES
+        <foreach collection="changes" item="change" separator=",">
+            (#{change.id}, #{change.taskId}, #{change.changeKind}, #{change.methodName},
+             #{change.basePath}, #{change.targetPath}, #{change.baseSymbol}, #{change.targetSymbol},
+             #{change.baseStartLine}, #{change.baseEndLine}, #{change.targetStartLine},
+             #{change.targetEndLine}, #{change.baseContent}, #{change.targetContent}, #{change.details})
+        </foreach>
+    </insert>
+
+    <select id="findByTaskId" resultMap="SemanticMethodChangeResultMap">
+        SELECT id, task_id, change_kind, method_name, base_path, target_path, base_symbol,
+               target_symbol, base_start_line, base_end_line, target_start_line, target_end_line,
+               base_content, target_content, details
+        FROM semantic_method_change
+        WHERE task_id = #{taskId}
+        ORDER BY COALESCE(target_path, base_path), COALESCE(target_start_line, base_start_line), change_kind
+    </select>
+</mapper>

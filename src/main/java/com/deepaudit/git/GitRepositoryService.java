@@ -1,7 +1,6 @@
 package com.deepaudit.git;
 
 import com.deepaudit.domain.Project;
-import com.deepaudit.domain.ProjectSourceType;
 import com.deepaudit.mapper.ProjectMapper;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.Constants;
@@ -25,9 +24,11 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -73,8 +74,8 @@ public class GitRepositoryService {
                 String defaultBranch = defaultBranch(repository);
                 String name = sanitizeName(requestedName, normalizedUrl);
                 List<CommitInfo> commitInfos = commits(repository, properties.getMaxCommits());
-                Project project = new Project(projectId, name, normalizedUrl, bareRepository.toString(),
-                        ProjectSourceType.GIT, normalizedUrl, defaultBranch);
+                Project project = new Project(projectId, name, bareRepository.toString(),
+                        normalizedUrl, defaultBranch);
                 projectMapper.insert(project);
                 log.info("Git 仓库导入完成：projectId={}，defaultBranch={}，commitCount={}，elapsedMs={}",
                         projectId, defaultBranch, commitInfos.size(), elapsedMillis(startedAt));
@@ -98,9 +99,7 @@ public class GitRepositoryService {
         List<Project> projects = includeArchived
                 ? projectMapper.findAllIncludingArchivedOrderByCreatedAtDesc()
                 : projectMapper.findAllOrderByCreatedAtDesc();
-        return projects.stream()
-                .filter(project -> project.getSourceType() == ProjectSourceType.GIT)
-                .toList();
+        return projects;
     }
 
     public List<CommitInfo> commits(UUID projectId, int requestedLimit) throws IOException {
@@ -120,6 +119,7 @@ public class GitRepositoryService {
         }
     }
 
+    // 更新 refresh 对应的状态或数据。
     public List<CommitInfo> refresh(UUID projectId, String username, String accessToken) throws IOException {
         long startedAt = System.nanoTime();
         Project project = requireGitProject(projectId);
@@ -143,34 +143,25 @@ public class GitRepositoryService {
     }
 
     public ResolvedComparison resolveComparison(Project project, String baseRevision,
-                                                String targetRevision, boolean incremental) throws IOException {
-        log.info("开始解析审计提交：projectId={}，mode={}，base={}，target={}",
-                project.getId(), incremental ? "INCREMENTAL" : "FULL",
-                incremental ? shortSha(baseRevision) : "-", shortSha(targetRevision));
+                                                String targetRevision) throws IOException {
+        log.info("开始解析增量审计提交：projectId={}，base={}，target={}",
+                project.getId(), shortSha(baseRevision), shortSha(targetRevision));
         try (Repository repository = open(project); RevWalk walk = new RevWalk(repository)) {
             RevCommit target = resolveCommit(repository, walk, targetRevision);
-            if (!incremental) {
-                log.info("全量审计提交解析完成：projectId={}，target={}",
-                        project.getId(), shortSha(target.getId().name()));
-                return new ResolvedComparison(null, target.getId().name(), null);
-            }
             RevCommit base = resolveCommit(repository, walk, baseRevision);
             if (base.equals(target)) throw new IllegalArgumentException("Base 和 Target 不能是同一个提交");
             boolean ancestor = walk.isMergedInto(base, target);
             String mergeBase = ancestor ? base.getId().name() : mergeBase(repository, base, target);
-            if (!ancestor) {
-                throw new IllegalArgumentException("Base 必须是 Target 的祖先提交；共同祖先为 " + shortSha(mergeBase));
-            }
-            log.info("增量审计提交解析完成：projectId={}，base={}，target={}，mergeBase={}",
+            log.info("分支变更审计提交解析完成：projectId={}，selectedBase={}，target={}，comparisonBase={}，diverged={}",
                     project.getId(), shortSha(base.getId().name()), shortSha(target.getId().name()),
-                    shortSha(mergeBase));
+                    shortSha(mergeBase), !ancestor);
             return new ResolvedComparison(base.getId().name(), target.getId().name(), mergeBase);
         }
     }
 
     public Project requireGitProject(UUID projectId) {
         Project project = projectMapper.findById(projectId);
-        if (project == null || project.getSourceType() != ProjectSourceType.GIT) {
+        if (project == null) {
             throw new java.util.NoSuchElementException("Git 项目不存在: " + projectId);
         }
         return project;
@@ -182,6 +173,17 @@ public class GitRepositoryService {
         return new FileRepositoryBuilder().setGitDir(gitDirectory.toFile()).setBare().build();
     }
 
+    public void cleanupAuditCache(Project project) {
+        Path gitDirectory = Path.of(project.getStoragePath()).toAbsolutePath().normalize();
+        requireWithinStorage(gitDirectory);
+        Path projectDirectory = gitDirectory.getParent();
+        if (projectDirectory == null) throw new IllegalArgumentException("Git 项目存储路径非法");
+        Path cache = projectDirectory.resolve("commit-cache").normalize();
+        requireWithinStorage(cache);
+        deleteTree(cache);
+        log.info("项目审计提交与 CodeGraph 缓存已清理：projectId={}", project.getId());
+    }
+
     private List<CommitInfo> commits(Repository repository, int limit) throws Exception {
         List<CommitInfo> result = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -190,12 +192,55 @@ public class GitRepositoryService {
                 if (!seen.add(commit.getId().name())) continue;
                 result.add(new CommitInfo(commit.getId().name(), shortSha(commit.getId().name()),
                         commit.getShortMessage(), commit.getAuthorIdent().getName(),
-                        commit.getAuthorIdent().getWhenAsInstant()));
+                        commit.getAuthorIdent().getWhenAsInstant(), List.of()));
                 if (result.size() >= limit) break;
             }
         }
+        Map<String, List<String>> branchesByCommit = branchesByCommit(repository, seen);
+        result.replaceAll(commit -> new CommitInfo(commit.sha(), commit.shortSha(), commit.message(),
+                commit.author(), commit.committedAt(),
+                branchesByCommit.getOrDefault(commit.sha(), List.of())));
         result.sort(Comparator.comparing(CommitInfo::committedAt).reversed());
         return List.copyOf(result);
+    }
+
+    private Map<String, List<String>> branchesByCommit(Repository repository,
+                                                        Set<String> displayedCommitIds) throws IOException {
+        Map<String, LinkedHashSet<String>> memberships = new HashMap<>();
+        List<Ref> refs = new ArrayList<>();
+        refs.addAll(repository.getRefDatabase().getRefsByPrefix(Constants.R_HEADS));
+        refs.addAll(repository.getRefDatabase().getRefsByPrefix(Constants.R_REMOTES));
+        refs.sort(Comparator.comparing(Ref::getName));
+        for (Ref ref : refs) {
+            String branch = displayBranchName(ref.getName());
+            if (branch == null || ref.getObjectId() == null) continue;
+            try (RevWalk walk = new RevWalk(repository)) {
+                walk.markStart(walk.parseCommit(ref.getObjectId()));
+                for (RevCommit commit : walk) {
+                    String commitId = commit.getId().name();
+                    if (displayedCommitIds.contains(commitId)) {
+                        memberships.computeIfAbsent(commitId, ignored -> new LinkedHashSet<>()).add(branch);
+                    }
+                }
+            }
+        }
+        Map<String, List<String>> result = new HashMap<>();
+        memberships.forEach((commitId, branches) -> result.put(commitId, List.copyOf(branches)));
+        return result;
+    }
+
+    private String displayBranchName(String refName) {
+        if (refName == null) return null;
+        if (refName.startsWith(Constants.R_HEADS)) {
+            return refName.substring(Constants.R_HEADS.length());
+        }
+        if (refName.startsWith(Constants.R_REMOTES)) {
+            String remoteBranch = refName.substring(Constants.R_REMOTES.length());
+            if (remoteBranch.endsWith("/HEAD")) return null;
+            int separator = remoteBranch.indexOf('/');
+            return separator < 0 ? remoteBranch : remoteBranch.substring(separator + 1);
+        }
+        return null;
     }
 
     private RevCommit resolveCommit(Repository repository, RevWalk walk, String revision) throws IOException {
@@ -205,6 +250,7 @@ public class GitRepositoryService {
         return walk.parseCommit(objectId);
     }
 
+    // 合并 mergeBase 对应的结果。
     private String mergeBase(Repository repository, RevCommit left, RevCommit right) throws IOException {
         try (RevWalk mergeWalk = new RevWalk(repository)) {
             mergeWalk.setRevFilter(RevFilter.MERGE_BASE);
@@ -224,7 +270,8 @@ public class GitRepositoryService {
         return "main";
     }
 
-    private String validateRepositoryUrl(String value) {
+    // 默认仅允许 HTTPS；HTTP 主机必须同时命中通用白名单和专用 HTTP 白名单。
+    String validateRepositoryUrl(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Git 仓库地址不能为空");
         URI uri;
         try {
@@ -239,16 +286,27 @@ public class GitRepositoryService {
             }
             return uri.toString();
         }
-        if (!"https".equals(scheme) || uri.getHost() == null || uri.getUserInfo() != null
+        if (!("https".equals(scheme) || "http".equals(scheme))
+                || uri.getHost() == null || uri.getUserInfo() != null
                 || uri.getQuery() != null || uri.getFragment() != null) {
-            throw new IllegalArgumentException("只允许不含内嵌凭据的 HTTPS Git 仓库地址");
+            throw new IllegalArgumentException("只允许不含内嵌凭据的 HTTP/HTTPS Git 仓库地址");
         }
         String host = uri.getHost().toLowerCase(Locale.ROOT);
-        boolean allowed = properties.getAllowedHosts().stream()
-                .map(item -> item.toLowerCase(Locale.ROOT).strip())
-                .anyMatch(item -> host.equals(item));
-        if (!allowed) throw new IllegalArgumentException("Git 主机不在允许列表中: " + host);
+        if (!hostAllowed(properties.getAllowedHosts(), host)) {
+            throw new IllegalArgumentException("Git 主机不在允许列表中: " + host);
+        }
+        if ("http".equals(scheme) && !hostAllowed(properties.getAllowedHttpHosts(), host)) {
+            throw new IllegalArgumentException("Git 主机未获准使用 HTTP: " + host);
+        }
         return uri.toString();
+    }
+
+    private boolean hostAllowed(List<String> allowedHosts, String host) {
+        if (allowedHosts == null || host == null) return false;
+        return allowedHosts.stream()
+                .filter(item -> item != null && !item.isBlank())
+                .map(item -> item.toLowerCase(Locale.ROOT).strip())
+                .anyMatch(host::equals);
     }
 
     private CredentialsProvider credentials(String repositoryUrl, String username, String accessToken) {
@@ -331,6 +389,7 @@ public class GitRepositoryService {
         return details.toString();
     }
 
+    // 规范化 sanitizeName 对应的输入。
     private String sanitizeName(String requestedName, String repositoryUrl) {
         String value = requestedName == null || requestedName.isBlank()
                 ? repositoryUrl.substring(repositoryUrl.lastIndexOf('/') + 1).replaceFirst("\\.git$", "")
@@ -347,6 +406,7 @@ public class GitRepositoryService {
         if (!path.startsWith(storageRoot)) throw new IllegalArgumentException("Git 存储路径非法");
     }
 
+    // 清理或删除 deleteTree 对应的数据。
     private void deleteTree(Path root) {
         if (root == null || !root.startsWith(storageRoot) || !Files.exists(root)) return;
         try (var paths = Files.walk(root)) {
@@ -384,7 +444,12 @@ public class GitRepositoryService {
         return normalized.substring(0, Math.min(normalized.length(), 300));
     }
 
-    public record CommitInfo(String sha, String shortSha, String message, String author, Instant committedAt) {
+    public record CommitInfo(String sha, String shortSha, String message, String author,
+                             Instant committedAt, List<String> branches) {
+        // 校验并规范化 CommitInfo 的构造参数。
+        public CommitInfo {
+            branches = branches == null ? List.of() : List.copyOf(branches);
+        }
     }
 
     public record ImportedRepository(Project project, List<CommitInfo> commits) {

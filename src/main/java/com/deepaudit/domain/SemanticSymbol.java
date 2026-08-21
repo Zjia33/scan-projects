@@ -11,22 +11,22 @@ import java.util.UUID;
 @Setter
 @NoArgsConstructor
 public class SemanticSymbol {
-    private UUID id;
-    private UUID taskId;
-    private Long chunkId;
-    private String kind;
-    private String qualifiedName;
-    private String simpleName;
-    private String ownerName;
-    private String signature;
-    private String returnType;
-    private String parameterTypes;
-    private String filePath;
-    private int startLine;
-    private int endLine;
-    private String endpoint;
-    private String annotations;
-    private String details;
+    private UUID id; // 语义符号的唯一标识
+    private UUID taskId; // 符号所属的审计任务 ID
+    private Long chunkId; // 符号对应的代码块 ID，无对应块时为空
+    private String kind; // 符号种类，如 Java 方法或 MyBatis SQL
+    private String qualifiedName; // 包含所有者信息的符号限定名
+    private String simpleName; // 不含所有者信息的简单符号名
+    private String ownerName; // 声明该符号的类、接口或命名空间
+    private String signature; // 用于重载区分与匹配的完整签名
+    private String returnType; // 方法或语句结果的返回类型
+    private String parameterTypes; // 参数类型列表的序列化文本
+    private String filePath; // 符号所在的项目相对文件路径
+    private int startLine; // 符号定义的起始行号
+    private int endLine; // 符号定义的结束行号
+    private String endpoint; // 符号关联的 HTTP 接口信息
+    private String annotations; // 符号声明上的注解序列化文本
+    private String details; // 用于语义分析的源码及结构化摘要
 
     public SemanticSymbol(UUID taskId, Long chunkId, String kind, String qualifiedName, String simpleName,
                           String ownerName, String signature, String returnType, String parameterTypes,

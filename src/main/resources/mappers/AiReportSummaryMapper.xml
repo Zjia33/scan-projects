@@ -4,15 +4,14 @@
     <resultMap id="SummaryResultMap" type="com.deepaudit.domain.AiReportSummary">
         <id column="task_id" property="taskId"/>
         <result column="executive_summary" property="executiveSummary"/>
-        <result column="coverage_summary" property="coverageSummary"/>
         <result column="generated_at" property="generatedAt"/>
     </resultMap>
     <insert id="insert" parameterType="com.deepaudit.domain.AiReportSummary">
-        INSERT INTO ai_report_summary (task_id, executive_summary, coverage_summary, generated_at)
-        VALUES (#{taskId}, #{executiveSummary}, #{coverageSummary}, #{generatedAt})
+        INSERT INTO ai_report_summary (task_id, executive_summary, generated_at)
+        VALUES (#{taskId}, #{executiveSummary}, #{generatedAt})
     </insert>
     <select id="findByTaskId" resultMap="SummaryResultMap">
-        SELECT task_id, executive_summary, coverage_summary, generated_at
+        SELECT task_id, executive_summary, generated_at
         FROM ai_report_summary WHERE task_id=#{taskId}
     </select>
     <delete id="deleteByTaskId">DELETE FROM ai_report_summary WHERE task_id=#{taskId}</delete>

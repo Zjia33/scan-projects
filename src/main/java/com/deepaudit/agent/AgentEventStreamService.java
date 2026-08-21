@@ -23,7 +23,7 @@ public class AgentEventStreamService {
 
     // 注册任务级 SSE 订阅并先回放已持久化事件，避免连接前的日志缺失。
     public SseEmitter subscribe(UUID taskId) {
-        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
+        SseEmitter emitter = createEmitter();
         CopyOnWriteArrayList<SseEmitter> taskSubscribers =
                 subscribers.computeIfAbsent(taskId, ignored -> new CopyOnWriteArrayList<>());
         taskSubscribers.add(emitter);
@@ -31,18 +31,41 @@ public class AgentEventStreamService {
         emitter.onCompletion(cleanup);
         emitter.onTimeout(() -> {
             cleanup.run();
-            emitter.complete();
+            safeComplete(emitter);
         });
         emitter.onError(ignored -> cleanup.run());
         try {
             emitter.send(SseEmitter.event().name("connected").data(taskId.toString()));
-            List<AgentEvent> backlog = eventMapper.findByTaskId(taskId);
-            for (AgentEvent event : backlog) send(emitter, event);
         } catch (Exception exception) {
+            // 浏览器刷新、切换任务或网络断开都可能中止首次写入；按 SSE 生命周期结束处理，
+            // 不再通过 completeWithError 分派给返回 JSON 的全局异常处理器。
             cleanup.run();
-            emitter.completeWithError(exception);
+            safeComplete(emitter);
+            return emitter;
+        }
+        List<AgentEvent> backlog;
+        try {
+            backlog = eventMapper.findByTaskId(taskId);
+        } catch (RuntimeException exception) {
+            cleanup.run();
+            safeCompleteWithError(emitter, exception);
+            return emitter;
+        }
+        for (AgentEvent event : backlog) {
+            try {
+                send(emitter, event);
+            } catch (Exception exception) {
+                cleanup.run();
+                safeComplete(emitter);
+                break;
+            }
         }
         return emitter;
+    }
+
+    // 独立创建 emitter，便于验证首次写入失败时的连接关闭语义。
+    SseEmitter createEmitter() {
+        return new SseEmitter(STREAM_TIMEOUT_MILLIS);
     }
 
     // 将新事件广播给同一任务的所有在线订阅者并清理失效连接。
@@ -54,7 +77,8 @@ public class AgentEventStreamService {
                 send(emitter, event);
             } catch (Exception exception) {
                 remove(event.getTaskId(), emitter);
-                emitter.complete();
+                // send 失败时 Servlet 容器可能已经完成 AsyncContext 并执行 onError。
+                // 此处只注销订阅，不能再次 complete/dispatch，更不能让连接异常影响审计线程。
             }
         }
     }
@@ -72,5 +96,21 @@ public class AgentEventStreamService {
             current.remove(emitter);
             return current.isEmpty() ? null : current;
         });
+    }
+
+    private void safeComplete(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (RuntimeException ignored) {
+            // AsyncContext 可能已由 Tomcat 在断连或超时路径中完成。
+        }
+    }
+
+    private void safeCompleteWithError(SseEmitter emitter, Exception exception) {
+        try {
+            emitter.completeWithError(exception);
+        } catch (RuntimeException ignored) {
+            // 容器已处理异步错误时，不再尝试二次 dispatch。
+        }
     }
 }

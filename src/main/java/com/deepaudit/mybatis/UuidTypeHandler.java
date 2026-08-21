@@ -18,6 +18,7 @@ import java.util.UUID;
 @MappedJdbcTypes(value = {JdbcType.OTHER, JdbcType.VARCHAR}, includeNullJdbcType = true)
 public class UuidTypeHandler extends BaseTypeHandler<UUID> {
 
+    // 设置 NonNullParameter 对应的状态。
     @Override
     public void setNonNullParameter(PreparedStatement ps, int index, UUID parameter, JdbcType jdbcType)
             throws SQLException {
