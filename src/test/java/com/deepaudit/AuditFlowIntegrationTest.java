@@ -139,7 +139,7 @@ class AuditFlowIntegrationTest {
         assertThat(types).contains("SQL_INJECTION", "AUTHORIZATION",
                 "SENSITIVE_INFORMATION_DISCLOSURE", "STORED_XSS", "VALIDATION_BYPASS");
         assertThat(findingsJson).doesNotContain("[SEMANTIC_FLOW]", "[CRITIC]");
-        assertThat(findingsJson).contains("\\n\\nCritic Agent 复核：");
+        assertThat(findingsJson).doesNotContain("Critic Agent 复核：");
         assertThat(findingsJson).containsAnyOf("[漏洞根因]", "[责任锚点]").contains(">>>");
         assertThat(findingsJson).contains("\"deltaStatus\":\"NEW\"");
 
@@ -156,7 +156,8 @@ class AuditFlowIntegrationTest {
                 .andExpect(status().isOk()).andReturn().getResponse()
                 .getContentAsString(StandardCharsets.UTF_8);
         assertThat(events).contains("RECON", "ORCHESTRATOR", "MODEL_CALL", "REASONING", "TOOL_CALL",
-                "CRITIC", "REPORT", "SEMANTIC_EVIDENCE", "Spring MVC");
+                "REPORT", "SEMANTIC_EVIDENCE", "Spring MVC");
+        assertThat(events).doesNotContain("\"agentType\":\"CRITIC\"");
 
         String jsonReport = mockMvc.perform(get("/api/tasks/{taskId}/report.json", taskId))
                 .andExpect(status().isOk()).andReturn().getResponse()

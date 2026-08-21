@@ -50,6 +50,34 @@ public final class FindingLocationResolver {
                 .orElseGet(() -> infer(proposal.type(), proposal.title() + " " + proposal.description(), chunk));
     }
 
+    // 专业 Agent 必须显式提交真实可执行代码范围；允许范围超过 5 行。
+    public static ExplicitLocationValidation validateProfessionalExplicit(
+            Integer proposedStart, Integer proposedEnd, CodeChunk chunk) {
+        if (chunk == null) {
+            return ExplicitLocationValidation.invalid("primaryChunkId 对应的代码块不存在");
+        }
+        if (proposedStart == null || proposedEnd == null) {
+            return ExplicitLocationValidation.invalid(
+                    "vulnerabilityStartLine 和 vulnerabilityEndLine 不能为空");
+        }
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        int chunkEnd = Math.max(chunkStart, chunk.getEndLine());
+        if (proposedStart > proposedEnd) {
+            return ExplicitLocationValidation.invalid(
+                    "vulnerabilityStartLine 不能大于 vulnerabilityEndLine");
+        }
+        if (proposedStart < chunkStart || proposedEnd > chunkEnd) {
+            return ExplicitLocationValidation.invalid(
+                    "漏洞行号 " + proposedStart + "-" + proposedEnd
+                            + " 超出 primary 代码块范围 " + chunkStart + "-" + chunkEnd);
+        }
+        Location location = new Location(proposedStart, proposedEnd);
+        if (!hasExecutableCode(chunk, location)) {
+            return ExplicitLocationValidation.invalid("选定范围内没有有效可执行代码");
+        }
+        return ExplicitLocationValidation.valid(location);
+    }
+
     // 严格校验模型或 Critic 返回的位置；无效范围不能被静默裁剪后写入最终报告。
     public static Optional<Location> validateExplicit(Integer proposedStart, Integer proposedEnd, CodeChunk chunk) {
         int chunkStart = Math.max(1, chunk.getStartLine());
@@ -777,6 +805,20 @@ public final class FindingLocationResolver {
         return false;
     }
 
+    private static boolean hasExecutableCode(CodeChunk chunk, Location location) {
+        String[] lines = codeLines(contentLines(chunk));
+        int chunkStart = Math.max(1, chunk.getStartLine());
+        for (int line = location.startLine(); line <= location.endLine(); line++) {
+            int index = line - chunkStart;
+            if (index >= 0 && index < lines.length
+                    && isExecutableCandidate(lines[index])
+                    && !isStructuralDeclaration(lines[index])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // 在词法识别前剔除行注释和跨行块注释，避免注释中的 API 名称污染安全角色。
     private static String[] codeLines(String[] sourceLines) {
         String[] result = new String[sourceLines.length];
@@ -869,7 +911,9 @@ public final class FindingLocationResolver {
                 .map(chunk -> {
                     boolean primary = chunk.getId().equals(proposal.primaryChunkId());
                     Integer callSiteLine = callSiteLines.get(chunk.getId());
-                    Location location = primary ? resolve(proposal, chunk)
+                    Location location = primary ? validateProfessionalExplicit(
+                            proposal.vulnerabilityStartLine(), proposal.vulnerabilityEndLine(), chunk)
+                            .location().orElseGet(() -> resolve(proposal, chunk))
                             : validCallSite(callSiteLine, chunk).orElseGet(() ->
                             infer(proposal.type(), proposal.description(), chunk));
                     String label;
@@ -1107,6 +1151,20 @@ public final class FindingLocationResolver {
     }
 
     public record Location(int startLine, int endLine) {
+    }
+
+    public record ExplicitLocationValidation(Optional<Location> location, String reason) {
+        private static ExplicitLocationValidation valid(Location location) {
+            return new ExplicitLocationValidation(Optional.of(location), "");
+        }
+
+        private static ExplicitLocationValidation invalid(String reason) {
+            return new ExplicitLocationValidation(Optional.empty(), reason);
+        }
+
+        public boolean valid() {
+            return location.isPresent();
+        }
     }
 
     public record CriticEvidencePackage(String text, List<LlmGateway.LocationCandidate> candidates,

@@ -48,7 +48,7 @@ final class AgentPrompts {
              - 缺调用方、被调用方或可达路径时用 explore_call_graph；缺输入到危险操作的传递依据时用 trace_value；核对数据访问、参数绑定或对象/租户条件时用 resolve_data_access；核对接口鉴权、过滤器或安全配置时用 inspect_security_policy；核对 Base/Target 变化时用 get_change_context。
              - 搜索结果先用 read_source 判断相关性，只有最终需要引用或作为新锚点的候选才用 verify_relation。连续工具结果没有提供新事实时，停止搜索并根据现有证据返回 FINDING 或 REJECT。
              - FINDING 只能引用 target、semanticEvidence.evidenceChunkIds 或工具返回的 evidenceChunkIds。primaryChunkId 必须包含在 evidenceChunkIds 中，并优先指向不安全构造、错误安全决策、失效边界或不安全输出等根因；只有授权或校验完全缺失、源码中不存在可指向的错误判断时，才使用本应实施控制的敏感操作作为责任锚点。执行终点、入口和转发调用通常只作关联证据。
-            - vulnerabilityStartLine/endLine 使用 primaryChunkId 的真实 Target 行，只覆盖关键语句，不得填写整个方法。
+            - vulnerabilityStartLine/endLine 均必须填写 primaryChunkId 的真实 Target 行，范围内至少包含一条有效可执行代码，只覆盖关键语句，不得填写整个方法。空行号、越界范围或纯注释/结构声明会被拒绝并返回原因，系统不会自动改到其他行。
             - 增量调查必须在 evidenceChunkIds 保留当前 CHANGED target，并说明风险与直接变更或语义影响的关系；IMPACTED 可作位置或证据但不能替代 CHANGED。差异中 - 为 Base、+ 为 Target，B/T 为旧/新实际行号。禁止报告无关历史漏洞。
             """;
 
@@ -80,7 +80,7 @@ final class AgentPrompts {
             """;
 
     private static final String REPORT_AGENT = """
-            你是 Report Agent，只将已通过 Critic 的事实改写为 executiveSummary，不做新分析。概括确认问题数量、主要类型、严重程度和总体影响；无确认问题时只能说“当前证据范围内未形成确认漏洞”，不得声称绝对安全。不得新增漏洞、改变类型/等级或扩大影响。executiveSummary 面向报告读者，禁止出现 Chunk/代码块编号、CHUNK_ID、primaryChunkId、evidenceChunkIds、candidateChunkIds、工具名或内部证据标签；如需定位，只写类名、方法名、文件路径或真实行号。
+            你是 Report Agent，只将已通过专业 Agent 证据与显式位置门禁的事实改写为 executiveSummary，不做新分析。概括确认问题数量、主要类型、严重程度和总体影响；无确认问题时只能说“当前证据范围内未形成确认漏洞”，不得声称绝对安全。不得新增漏洞、改变类型/等级或扩大影响。executiveSummary 面向报告读者，禁止出现 Chunk/代码块编号、CHUNK_ID、primaryChunkId、evidenceChunkIds、candidateChunkIds、工具名或内部证据标签；如需定位，只写类名、方法名、文件路径或真实行号。
             """;
 
     private AgentPrompts() {

@@ -4,13 +4,12 @@ import com.deepaudit.agent.AgentCandidate;
 import com.deepaudit.agent.AgentCandidateConsolidator;
 import com.deepaudit.agent.AgentTask;
 import com.deepaudit.agent.AgentTraceService;
-import com.deepaudit.agent.CriticAgentService;
+import com.deepaudit.agent.FindingFingerprint;
 import com.deepaudit.agent.OrchestratorAgentService;
 import com.deepaudit.agent.ProfessionalAgentRunner;
 import com.deepaudit.agent.ReconAgentService;
 import com.deepaudit.agent.ReportAgentService;
 import com.deepaudit.ai.LlmGateway;
-import com.deepaudit.ai.AiResponseFormatException;
 import com.deepaudit.ai.AiUnavailableException;
 import com.deepaudit.codegraph.CodeGraphIntegrationService;
 import com.deepaudit.domain.CodeChunk;
@@ -55,7 +54,6 @@ public class AnalysisService {
     private final ReconAgentService reconAgent;
     private final OrchestratorAgentService orchestratorAgent;
     private final ProfessionalAgentRunner professionalAgentRunner;
-    private final CriticAgentService criticAgent;
     private final ReportAgentService reportAgent;
     private final SemanticAnalysisService semanticAnalysisService;
     private final SemanticEvidenceService semanticEvidenceService;
@@ -66,7 +64,7 @@ public class AnalysisService {
     private final AiReportSummaryMapper reportSummaryMapper;
     private final AuditCancellationService cancellationService;
 
-    // 执行从语义索引和调查线索到 Critic 确认、落库及报告生成的完整分析链。
+    // 执行从语义索引和调查线索到专业证据收口、落库及报告生成的完整分析链。
     public AnalysisResult analyze(UUID taskId, Path projectRoot, ReconSummary reconSummary,
                                   String projectName, AuditTask task) {
         long analysisStarted = ExecutionTiming.start();
@@ -194,36 +192,31 @@ public class AnalysisService {
                 "plannedTasks=" + plan.size() + ",candidates=" + candidates.size()
                         + ",formatFailures=" + investigation.formatFailures());
 
-        // Critic 前只合并同一主代码块、同一类型且建议行范围重叠的明确重复候选，
-        // 减少重复模型调用；最终权威去重仍以 Critic 重定位后的真实位置为准。
-        List<AgentCandidate> criticCandidates = AgentCandidateConsolidator.consolidate(candidates);
-        if (criticCandidates.size() < candidates.size()) {
-            TimingDetailLog.info("任务 {} 在 Critic 前合并了 {} 个位置完全重叠的专业 Agent 候选",
-                    taskId, candidates.size() - criticCandidates.size());
+        // 合并同一主代码块、同一类型且建议行范围重叠的明确重复候选。
+        List<AgentCandidate> consolidatedCandidates = AgentCandidateConsolidator.consolidate(candidates);
+        if (consolidatedCandidates.size() < candidates.size()) {
+            TimingDetailLog.info("任务 {} 合并了 {} 个位置完全重叠的专业 Agent 候选",
+                    taskId, candidates.size() - consolidatedCandidates.size());
         }
         List<Finding> reviewedFindings = new ArrayList<>();
         stageStarted = ExecutionTiming.start();
-        for (AgentCandidate candidate : criticCandidates) {
+        for (AgentCandidate candidate : consolidatedCandidates) {
             cancellationService.throwIfCancellationRequested(taskId);
-            try {
-                criticAgent.review(taskId, candidate, recon, chunks)
-                        .filter(finding -> validateEvidence(projectRoot, finding))
-                        .ifPresent(reviewedFindings::add);
-            } catch (AiResponseFormatException exception) {
-                log.warn("任务 {} 的 Critic 对候选 {} 返回不可解析 JSON，候选不进入最终报告",
-                        taskId, candidate.proposal().primaryChunkId());
+            Finding finding = toFinding(taskId, candidate, chunks);
+            if (finding != null && validateEvidence(projectRoot, finding)) {
+                reviewedFindings.add(finding);
             }
         }
-        logTiming(taskId, "CRITIC_REVIEW", stageStarted, analysisStarted,
-                "candidates=" + criticCandidates.size() + ",reviewedFindings=" + reviewedFindings.size());
-        log.info("阶段耗时：taskId={}，阶段=Critic独立复核，耗时={}ms，说明=验证漏洞因果、反证和精确位置，候选数={}，通过定位审查数={}",
-                taskId, ExecutionTiming.elapsedMillis(stageStarted), criticCandidates.size(),
+        logTiming(taskId, "PROFESSIONAL_FINDING_ASSEMBLY", stageStarted, analysisStarted,
+                "candidates=" + consolidatedCandidates.size() + ",reviewedFindings=" + reviewedFindings.size());
+        log.info("阶段耗时：taskId={}，阶段=专业候选证据收口，耗时={}ms，说明=按专业 Agent 的显式位置生成正式漏洞，候选数={}，通过证据校验数={}",
+                taskId, ExecutionTiming.elapsedMillis(stageStarted), consolidatedCandidates.size(),
                 reviewedFindings.size());
         // 不使用标题、endpoint 或证据链顺序判断身份。相同漏洞类型、文件、方法且最终
         // 行范围重叠的结果会合并，并基于合并后的真实源码锚点重新生成稳定指纹。
         List<Finding> confirmed = FindingConsolidator.consolidate(reviewedFindings, chunks);
         if (confirmed.size() < reviewedFindings.size()) {
-            TimingDetailLog.info("任务 {} 在 Critic 后合并了 {} 个定位到同一代码位置的确认漏洞",
+            TimingDetailLog.info("任务 {} 合并了 {} 个定位到同一代码位置的专业 Agent 漏洞",
                     taskId, reviewedFindings.size() - confirmed.size());
         }
         // 批量持久化确认结果，最终报告只接收这一组经过证据门禁的发现。
@@ -243,7 +236,7 @@ public class AnalysisService {
         cancellationService.throwIfCancellationRequested(taskId);
         logTiming(taskId, "REPORT_AGENT", stageStarted, analysisStarted,
                 "confirmed=" + confirmed.size() + ",rejected=" + rejectedHypotheses);
-        TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、Critic和报告，专业任务数={}，候选数={}，正式漏洞数={}",
+        TimingDetailLog.info("阶段明细：taskId={}，阶段=智能审计分析总计，耗时={}ms，说明=完成范围分析、分诊、专业调查、证据校验和报告，专业任务数={}，候选数={}，正式漏洞数={}",
                 taskId, ExecutionTiming.elapsedMillis(analysisStarted), plan.size(), candidates.size(), confirmed.size());
         return new AnalysisResult(confirmed.size(), plan.size(), candidates.size(), recon.architectureSummary());
     }
@@ -285,7 +278,7 @@ public class AnalysisService {
         for (VulnerabilityAnalyzer provider : hintProviders) {
             if (provider.type() == null) continue;
             try {
-                // 每个分析器只生成线索草稿，不能绕过专业 Agent 和 Critic 直接形成发现。
+                // 每个分析器只生成线索草稿，不能绕过专业 Agent 的证据门禁直接形成发现。
                 for (FindingDraft draft : provider.analyze(context)) {
                     findChunk(changedChunks, draft).ifPresent(chunk -> {
                         types.computeIfAbsent(chunk.getId(), ignored -> new LinkedHashSet<>()).add(draft.type());
@@ -326,6 +319,41 @@ public class AnalysisService {
 
     private String shortSha(String value) {
         return value == null ? "" : value.substring(0, Math.min(8, value.length()));
+    }
+
+    // Critic 已从运行链路移除；正式漏洞直接使用专业 Agent 已通过门禁的原始说明和显式位置。
+    private Finding toFinding(UUID taskId, AgentCandidate candidate, List<CodeChunk> chunks) {
+        if (candidate == null || candidate.proposal() == null) return null;
+        LlmGateway.FindingProposal proposal = candidate.proposal();
+        CodeChunk primary = chunks.stream()
+                .filter(chunk -> chunk.getId() != null && chunk.getId().equals(proposal.primaryChunkId()))
+                .findFirst().orElse(null);
+        var locationValidation = com.deepaudit.agent.FindingLocationResolver.validateProfessionalExplicit(
+                proposal.vulnerabilityStartLine(), proposal.vulnerabilityEndLine(), primary);
+        if (!locationValidation.valid()) return null;
+        var location = locationValidation.location().orElseThrow();
+        String endpoint = proposal.evidenceChunkIds().stream()
+                .map(id -> chunks.stream()
+                        .filter(chunk -> chunk.getId() != null && chunk.getId().equals(id))
+                        .findFirst().orElse(null))
+                .filter(java.util.Objects::nonNull)
+                .map(CodeChunk::getEndpoint)
+                .filter(value -> value != null && !value.isBlank())
+                .findFirst().orElse(primary.getEndpoint());
+        String title = proposal.title() == null || proposal.title().isBlank()
+                ? "AI Agent 发现潜在安全问题" : proposal.title().strip();
+        title = title.substring(0, Math.min(500, title.length()));
+        Finding finding = new Finding(taskId, proposal.type(),
+                proposal.severity() == null ? com.deepaudit.domain.Severity.HIGH : proposal.severity(),
+                proposal.confidence() == null ? com.deepaudit.domain.Confidence.MEDIUM : proposal.confidence(),
+                title, primary.getFilePath(), location.startLine(), location.endLine(), endpoint,
+                proposal.description() == null ? "" : proposal.description().strip(),
+                candidate.evidence() == null ? "" : candidate.evidence().strip(),
+                proposal.remediation() == null ? "" : proposal.remediation().strip());
+        finding.setLocationKind(com.deepaudit.domain.FindingLocationKind.UNCLASSIFIED);
+        finding.setFingerprint(FindingFingerprint.create(
+                proposal.type(), primary, location.startLine(), location.endLine()));
+        return finding;
     }
 
     // 在落库前确认主证据路径位于项目根目录且引用了真实有效行号。

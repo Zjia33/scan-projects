@@ -2,10 +2,13 @@ package com.deepaudit.agent;
 
 import com.deepaudit.ai.AiProperties;
 import com.deepaudit.ai.LlmGateway;
+import com.deepaudit.domain.AnalysisScope;
 import com.deepaudit.domain.AgentEventType;
 import com.deepaudit.domain.AgentRun;
 import com.deepaudit.domain.AgentType;
 import com.deepaudit.domain.CodeChunk;
+import com.deepaudit.domain.Confidence;
+import com.deepaudit.domain.Severity;
 import com.deepaudit.domain.VulnerabilityType;
 import com.deepaudit.mapper.AuditHypothesisMapper;
 import com.deepaudit.orchestrator.AuditCancellationService;
@@ -123,8 +126,79 @@ class AgentRuntimeTest {
         assertThat(rejectionSummaryEventTypes).containsExactly(AgentEventType.REJECTED);
     }
 
+    @Test
+    void rejectsInvalidExplicitLocationsThenAcceptsRangeLongerThanFiveLines() {
+        UUID taskId = UUID.randomUUID();
+        LlmGateway gateway = mock(LlmGateway.class);
+        AiProperties properties = new AiProperties();
+        properties.setMaxIterationsPerAgent(4);
+        properties.setMaxToolCallsPerAgent(1);
+        AuditToolService toolService = mock(AuditToolService.class);
+        AgentTraceService traceService = mock(AgentTraceService.class);
+        AuditHypothesisMapper hypothesisMapper = mock(AuditHypothesisMapper.class);
+        SemanticEvidenceService semanticEvidenceService = mock(SemanticEvidenceService.class);
+        AuditCancellationService cancellationService = mock(AuditCancellationService.class);
+        AgentRuntime runtime = new AgentRuntime(gateway, properties, toolService, traceService,
+                hypothesisMapper, semanticEvidenceService, cancellationService);
+        CodeChunk target = new CodeChunk(taskId, "demo/OrderService.java", "OrderService#remove", "/orders",
+                10, 19, """
+                public void remove(String id) {
+                    // only a comment
+                    audit(id);
+                    load(id);
+                    validate(id);
+                    authorize(id);
+                    repository.delete(id);
+                    publish(id);
+                    return;
+                }
+                """, "JAVA_METHOD", "String id", "", "delete,publish");
+        target.setId(1L);
+        target.setAnalysisScope(AnalysisScope.CHANGED);
+        AgentTask task = new AgentTask(1L, AgentType.AUTHORIZATION,
+                VulnerabilityType.AUTHORIZATION, "检查授权", "规则线索");
+
+        when(traceService.start(eq(taskId), eq(AgentType.AUTHORIZATION), eq(1L), any()))
+                .thenReturn(new AgentRun(taskId, AgentType.AUTHORIZATION, 1L, "remove"));
+        when(semanticEvidenceService.query(taskId, 1L, 10, VulnerabilityType.AUTHORIZATION))
+                .thenReturn(new SemanticEvidenceService.EvidenceResult("", Set.of()));
+        when(semanticEvidenceService.callSiteLines(eq(taskId), eq(1L), any()))
+                .thenReturn(Map.of());
+        when(gateway.decide(any())).thenReturn(
+                finding(1L, null, null),
+                finding(1L, 99, 99),
+                finding(1L, 11, 11),
+                finding(1L, 10, 19));
+
+        var result = runtime.investigate(taskId, task, null, List.of(target));
+
+        assertThat(result).isPresent();
+        assertThat(result.orElseThrow().proposal().vulnerabilityStartLine()).isEqualTo(10);
+        assertThat(result.orElseThrow().proposal().vulnerabilityEndLine()).isEqualTo(19);
+        ArgumentCaptor<LlmGateway.AgentTurn> turns = ArgumentCaptor.forClass(LlmGateway.AgentTurn.class);
+        verify(gateway, times(4)).decide(turns.capture());
+        List<String> feedback = turns.getAllValues().stream()
+                .flatMap(turn -> turn.observations().stream())
+                .filter(observation -> "evidence_validator".equals(observation.tool()))
+                .map(LlmGateway.Observation::result)
+                .toList();
+        assertThat(feedback)
+                .anyMatch(text -> text.contains("vulnerabilityStartLine 和 vulnerabilityEndLine 不能为空"))
+                .anyMatch(text -> text.contains("超出 primary 代码块范围"))
+                .anyMatch(text -> text.contains("没有有效可执行代码"))
+                .allMatch(text -> text.contains("系统不会自动改到其他行"));
+    }
+
     private LlmGateway.AgentDecision tool(String tool, Map<String, Object> arguments, String summary) {
         return new LlmGateway.AgentDecision("TOOL", tool, arguments, summary, null);
+    }
+
+    private LlmGateway.AgentDecision finding(long primaryChunkId, Integer startLine, Integer endLine) {
+        LlmGateway.FindingProposal proposal = new LlmGateway.FindingProposal(
+                VulnerabilityType.AUTHORIZATION, Severity.HIGH, Confidence.HIGH,
+                "删除订单前缺少授权", "删除操作没有验证当前用户是否拥有目标订单", "增加资源所有权校验",
+                primaryChunkId, List.of(primaryChunkId), startLine, endLine);
+        return new LlmGateway.AgentDecision("FINDING", null, Map.of(), "提交漏洞", proposal);
     }
 
     private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {

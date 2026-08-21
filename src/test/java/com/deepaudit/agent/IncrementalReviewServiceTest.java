@@ -134,13 +134,16 @@ class IncrementalReviewServiceTest {
     }
 
     @Test
-    void skipsChangedDtoAndEntityFilesUnlessMandatoryEvidenceRequiresInvestigation() {
+    void skipsChangedDataCarrierFilesEvenWhenMandatoryEvidenceMatchesButKeepsContextReadable() {
         UUID taskId = UUID.randomUUID();
         SecurityFlowMapper flowMapper = mock(SecurityFlowMapper.class);
         SemanticCallEdgeMapper edgeMapper = mock(SemanticCallEdgeMapper.class);
         SemanticMethodChangeMapper changeMapper = mock(SemanticMethodChangeMapper.class);
         when(flowMapper.findByTaskId(taskId)).thenReturn(List.of());
-        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of());
+        SemanticCallEdge contextEdge = new SemanticCallEdge(taskId, UUID.randomUUID(), UUID.randomUUID(),
+                23L, 26L, 2, "toResult", "toResult(order)", "CODEGRAPH_CALL",
+                Confidence.HIGH, "CodeGraph confirmed", "order -> order");
+        when(edgeMapper.findByTaskId(taskId)).thenReturn(List.of(contextEdge));
         when(changeMapper.findByTaskId(taskId)).thenReturn(List.of());
         IncrementalReviewService service = new IncrementalReviewService(flowMapper, edgeMapper, changeMapper);
 
@@ -159,16 +162,23 @@ class IncrementalReviewServiceTest {
         CodeChunk mandatoryDto = chunk(taskId, 25L, "CredentialDTO#getToken", "return token;");
         mandatoryDto.setFilePath("src/main/java/demo/dto/CredentialDTO.java");
         mandatoryDto.setAnalysisScope(AnalysisScope.CHANGED);
+        CodeChunk contextDto = chunk(taskId, 26L, "OrderResultDTO#getId", "return orderId;");
+        contextDto.setFilePath("src/main/java/demo/dto/OrderResultDTO.java");
+        contextDto.setAnalysisScope(AnalysisScope.CONTEXT);
 
         List<IncrementalReviewUnit> units = service.build(taskId,
-                List.of(dto, entity, regular, dtoPackageOnly, mandatoryDto),
+                List.of(dto, entity, regular, dtoPackageOnly, mandatoryDto, contextDto),
                 Map.of(25L, java.util.Set.of(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE)),
                 Map.of(25L, "确定性敏感信息调查线索"));
 
         assertThat(units).extracting(IncrementalReviewUnit::primaryChunkId)
-                .containsExactly(23L, 24L, 25L);
-        assertThat(units.get(2).mandatoryTypes())
-                .containsExactly(VulnerabilityType.SENSITIVE_INFORMATION_DISCLOSURE);
+                .containsExactly(23L, 24L);
+        IncrementalReviewUnit enriched = service.enrich(taskId, units,
+                List.of(dto, entity, regular, dtoPackageOnly, mandatoryDto, contextDto)).stream()
+                .filter(unit -> unit.primaryChunkId() == 23L)
+                .findFirst().orElseThrow();
+        assertThat(enriched.relatedContext()).contains(
+                "[CONTEXT CHUNK_ID=26]", "OrderResultDTO#getId", "return orderId;");
     }
 
     private CodeChunk chunk(UUID taskId, long id, String symbol, String content) {

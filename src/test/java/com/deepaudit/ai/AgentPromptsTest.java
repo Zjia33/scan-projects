@@ -130,7 +130,7 @@ class AgentPromptsTest {
         String prompt = AgentPrompts.reportAgent();
 
         assertThat(prompt)
-                .contains("只将已通过 Critic 的事实改写")
+                .contains("只将已通过专业 Agent 证据与显式位置门禁的事实改写")
                 .contains("executiveSummary")
                 .contains("当前证据范围内未形成确认漏洞", "不得声称绝对安全")
                 .contains("不得新增漏洞、改变类型/等级或扩大影响")

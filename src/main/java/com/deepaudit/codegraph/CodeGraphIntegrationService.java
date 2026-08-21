@@ -189,8 +189,6 @@ public class CodeGraphIntegrationService {
             try {
                 List<CodeGraphClient.CodeGraphLocation> callers = client.callers(
                         taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
-                List<CodeGraphClient.CodeGraphLocation> callees = client.callees(
-                        taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
                 for (CodeGraphClient.CodeGraphLocation callerLocation : callers) {
                     locations.add(callerLocation);
                     CodeChunk caller = resultMapper.mapLocation(chunks, callerLocation);
@@ -201,6 +199,14 @@ public class CodeGraphIntegrationService {
                     contextIds.add(caller.getId());
                     addRelation(relations, caller, current, "CODEGRAPH_CALLER");
                 }
+            } catch (RuntimeException exception) {
+                failed++;
+                log.warn("任务 {} CodeGraph 作用域 callers 查询失败，symbol={}：{}",
+                        taskId, symbol, exception.getMessage());
+            }
+            try {
+                List<CodeGraphClient.CodeGraphLocation> callees = client.callees(
+                        taskId, CodeGraphSnapshot.TARGET, symbol, safeRelationLimit());
                 for (CodeGraphClient.CodeGraphLocation calleeLocation : callees) {
                     locations.add(calleeLocation);
                     CodeChunk callee = resultMapper.mapLocation(chunks, calleeLocation);
@@ -213,13 +219,14 @@ public class CodeGraphIntegrationService {
                 }
             } catch (RuntimeException exception) {
                 failed++;
-                log.warn("任务 {} CodeGraph 作用域关系查询失败，symbol={}：{}",
+                log.warn("任务 {} CodeGraph 作用域 callees 查询失败，symbol={}：{}",
                         taskId, symbol, exception.getMessage());
             }
         }
         contextIds.removeAll(primaryScopeIds);
         if (failed > 0) {
-            throw new CodeGraphException("CodeGraph 有 " + failed + " 个作用域关系查询失败");
+            log.warn("任务 {} CodeGraph 有 {} 个作用域关系查询失败，保留成功关系并降级到本地语义分析继续扫描",
+                    taskId, failed);
         }
         return new ScopedTopology(List.copyOf(relations.values()), Set.copyOf(contextIds),
                 List.copyOf(locations), unmapped, failed);

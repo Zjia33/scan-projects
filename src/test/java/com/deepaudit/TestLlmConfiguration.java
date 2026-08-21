@@ -73,7 +73,7 @@ public class TestLlmConfiguration {
                         title(type), "测试 Agent 根据目标代码和工具返回的实际代码形成证据链。",
                         "根据漏洞类型补充服务端校验并避免信任客户端输入。", turn.target().chunkId(),
                         evidenceIds(turn), turn.target().startLine(), turn.target().endLine());
-                return new AgentDecision("FINDING", null, Map.of(), "证据足以提交 Critic", finding);
+                return new AgentDecision("FINDING", null, Map.of(), "证据与显式位置充分，可以提交漏洞候选", finding);
             }
 
             @Override

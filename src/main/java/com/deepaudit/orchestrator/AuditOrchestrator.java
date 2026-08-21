@@ -130,10 +130,9 @@ public class AuditOrchestrator {
                             taskId, targetRoot, recon, project.getName(), task);
                     logTiming(taskId, "ANALYSIS_AGENT_PIPELINE", stageStarted, taskStarted,
                             "plannedTasks=" + analysis.plannedAgentTasks() + ",findings=" + analysis.findingCount());
-                    TimingDetailLog.info("阶段明细：taskId={}，阶段=智能增量审计，耗时={}ms，说明=完成影响分析、分诊、专业调查、Critic复核和报告生成，正式漏洞数={}",
+                    TimingDetailLog.info("阶段明细：taskId={}，阶段=智能增量审计，耗时={}ms，说明=完成影响分析、分诊、专业调查、证据校验和报告生成，正式漏洞数={}",
                             taskId, ExecutionTiming.elapsedMillis(stageStarted), analysis.findingCount());
 
-                    task = update(task, AuditStatus.CRITIC_REVIEW, 90, "Critic Agent 已完成独立反证复核");
                     task = update(task, AuditStatus.RESULT_VALIDATION, 94, "校验提交、文件、行号和代码证据");
                     task = update(task, AuditStatus.REPORTING, 97, "Report Agent 汇总 Git 安全审计报告");
                     update(task, AuditStatus.COMPLETED, 100,

@@ -67,6 +67,7 @@ public class IncrementalReviewService {
         List<IncrementalReviewUnit> result = new ArrayList<>();
         for (CodeChunk chunk : chunks) {
             if (chunk.getId() == null || !insideIncrementalScope(chunk)) continue;
+            if (isDtoOrEntityFile(chunk.getFilePath())) continue;
             List<SemanticCallEdge> relatedEdges = relatedEdges(chunk.getId(), edges);
             List<SecurityFlow> relatedFlows = flows.stream()
                     .filter(flow -> flow.getPrimaryChunkId() != null && flow.getPrimaryChunkId().equals(chunk.getId()))
@@ -76,7 +77,6 @@ public class IncrementalReviewService {
                     hints.getOrDefault(chunk.getId(), Set.of()));
             Set<VulnerabilityType> mandatoryTypes = mandatoryTypes(
                     hints.getOrDefault(chunk.getId(), Set.of()), relatedChanges, relatedFlows);
-            if (isDtoOrEntityFile(chunk.getFilePath()) && mandatoryTypes.isEmpty()) continue;
             String deterministicEvidence = joinNonBlank(hintDescriptions.get(chunk.getId()),
                     flowSummary(relatedFlows));
             String changeContext = AgentPromptSupport.changeContext(chunk);
@@ -147,7 +147,7 @@ public class IncrementalReviewService {
         return chunk.getAnalysisScope() == AnalysisScope.CHANGED;
     }
 
-    // 普通 DTO/Entity 变更保留在代码索引中但不作为独立审查目标；强制证据命中时仍须调查。
+    // DTO/Entity/VO/PO 保留在代码索引和调用链中，但无论是否命中规则都不作为独立审查目标。
     private boolean isDtoOrEntityFile(String filePath) {
         if (filePath == null || filePath.isBlank()) return false;
         String normalized = filePath.replace('\\', '/');

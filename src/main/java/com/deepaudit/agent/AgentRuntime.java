@@ -115,17 +115,18 @@ public class AgentRuntime {
                 }
                 if ("FINDING".equals(action)) {
                     // FINDING 必须匹配任务类型且只能引用当前已获准的代码块。
-                    LlmGateway.FindingProposal proposal = validate(
-                            decision.finding(), task, allowedEvidence, byId);
-                    if (proposal == null) {
-                        String feedback = invalidEvidenceFeedback(decision.finding(), allowedEvidence, candidateEvidence);
+                    ProposalValidation validation = validate(
+                            decision.finding(), task, allowedEvidence, candidateEvidence, byId);
+                    if (!validation.accepted()) {
+                        String feedback = validation.rejectionReason();
                         observations.add(new RuntimeObservation("evidence_validator",
-                                Map.of("operation", "验证漏洞证据引用"), feedback,
+                                Map.of("operation", "验证漏洞证据与显式位置"), feedback,
                                 ToolResult.Status.DENIED, Set.of(), Set.of()));
                         traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.OBSERVATION, feedback);
                         traceService.update(run);
                         continue;
                     }
+                    LlmGateway.FindingProposal proposal = validation.proposal();
                     String evidence = buildEvidence(taskId, proposal, byId);
                     if (!semanticEvidence.evidenceChunkIds().isEmpty()) {
                         evidence += "\n\n[SEMANTIC_FLOW]\n" + semanticEvidence.text();
@@ -138,7 +139,7 @@ public class AgentRuntime {
                     hypothesisMapper.insert(hypothesis);
                     traceService.event(taskId, run.getId(), task.agentType(), AgentEventType.HYPOTHESIS,
                             safe(decision.summary()));
-                    run.complete("已形成待 Critic 复核的漏洞假设");
+                    run.complete("已形成通过证据与显式位置门禁的漏洞候选");
                     traceService.update(run);
                     return Optional.of(new AgentCandidate(task.agentType(), proposal, evidence, hypothesis));
                 }
@@ -169,51 +170,71 @@ public class AgentRuntime {
         }
     }
 
-    // 校验漏洞类型和所有证据 ID，并为缺省风险等级填入保守值。
-    private LlmGateway.FindingProposal validate(LlmGateway.FindingProposal proposal, AgentTask task,
-                                                Set<Long> allowedEvidence, Map<Long, CodeChunk> chunks) {
-        if (proposal == null || proposal.type() != task.vulnerabilityType()
-                || proposal.primaryChunkId() == null || !allowedEvidence.contains(proposal.primaryChunkId())) {
-            return null;
+    // 校验证据资格和专业 Agent 明确提交的位置；位置无效时返回原因，不再推断到其他代码行。
+    private ProposalValidation validate(LlmGateway.FindingProposal proposal, AgentTask task,
+                                        Set<Long> allowedEvidence, Set<Long> candidateEvidence,
+                                        Map<Long, CodeChunk> chunks) {
+        if (proposal == null) {
+            return ProposalValidation.rejected(
+                    "[EVIDENCE_REJECTED] FINDING 缺少 finding 对象，请重新调查。");
         }
-        if (proposal.evidenceChunkIds().stream().anyMatch(id -> !allowedEvidence.contains(id))) return null;
+        if (proposal.type() != task.vulnerabilityType()) {
+            return ProposalValidation.rejected(
+                    "[EVIDENCE_REJECTED] 漏洞类型与当前专业 Agent 任务不一致，请重新提交 FINDING。");
+        }
+        if (proposal.primaryChunkId() == null) {
+            return ProposalValidation.rejected(
+                    "[LOCATION_REJECTED] primaryChunkId 不能为空，请重新选择主证据和漏洞行。");
+        }
+        Set<Long> submitted = new LinkedHashSet<>(proposal.evidenceChunkIds());
+        submitted.add(proposal.primaryChunkId());
+        Set<Long> unverifiedCandidates = submitted.stream().filter(candidateEvidence::contains)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (!unverifiedCandidates.isEmpty()) {
+            return ProposalValidation.rejected("[EVIDENCE_REJECTED] 代码块 " + unverifiedCandidates
+                    + " 仍是未验证候选。必须逐个调用 verify_relation，验证通过后才能提交 FINDING。");
+        }
+        Set<Long> invalid = submitted.stream().filter(id -> !allowedEvidence.contains(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (!invalid.isEmpty()) {
+            return ProposalValidation.rejected("[EVIDENCE_REJECTED] 存在未获准的代码块=" + invalid
+                    + "。请只引用当前目标、SEMANTIC_EVIDENCE 或 VERIFIED_EVIDENCE。");
+        }
         List<Long> ids = new ArrayList<>(proposal.evidenceChunkIds());
         if (!ids.contains(proposal.primaryChunkId())) ids.add(0, proposal.primaryChunkId());
         if (!ids.contains(task.chunkId())) ids.add(task.chunkId());
         Severity severity = proposal.severity() == null ? Severity.HIGH : proposal.severity();
         Confidence confidence = proposal.confidence() == null ? Confidence.MEDIUM : proposal.confidence();
         CodeChunk primary = chunks.get(proposal.primaryChunkId());
-        if (primary == null) return null;
+        if (primary == null) {
+            return ProposalValidation.rejected(
+                    "[LOCATION_REJECTED] primaryChunkId 对应的代码块不存在，请重新选择主证据。");
+        }
         CodeChunk investigationTarget = chunks.get(task.chunkId());
-        if (investigationTarget == null) return null;
+        if (investigationTarget == null) {
+            return ProposalValidation.rejected(
+                    "[EVIDENCE_REJECTED] 当前调查目标不存在，无法提交 FINDING。");
+        }
         boolean incrementalTarget = investigationTarget.getAnalysisScope()
                 == com.deepaudit.domain.AnalysisScope.CHANGED;
         boolean incrementalPrimary = primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.CHANGED
                 || primary.getAnalysisScope() == com.deepaudit.domain.AnalysisScope.IMPACTED;
-        if (!incrementalTarget || !incrementalPrimary) return null;
-        FindingLocationResolver.Location location = FindingLocationResolver.resolve(proposal, primary);
-        return new LlmGateway.FindingProposal(proposal.type(), severity, confidence,
-                proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids,
-                location.startLine(), location.endLine());
-    }
-
-    // 向模型解释证据拒绝原因，引导其先验证候选关系再重试。
-    private String invalidEvidenceFeedback(LlmGateway.FindingProposal proposal, Set<Long> allowedEvidence,
-                                           Set<Long> candidateEvidence) {
-        if (proposal == null) return "[EVIDENCE_REJECTED] FINDING 缺少 finding 对象，请重新调查。";
-        Set<Long> submitted = new LinkedHashSet<>(proposal.evidenceChunkIds());
-        if (proposal.primaryChunkId() != null) submitted.add(proposal.primaryChunkId());
-        Set<Long> unverifiedCandidates = submitted.stream().filter(candidateEvidence::contains)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (!unverifiedCandidates.isEmpty()) {
-            return "[EVIDENCE_REJECTED] 代码块 " + unverifiedCandidates
-                    + " 仍是未验证候选。必须逐个调用 verify_relation，验证通过后才能提交 FINDING。";
+        if (!incrementalTarget || !incrementalPrimary) {
+            return ProposalValidation.rejected(
+                    "[EVIDENCE_REJECTED] FINDING 必须具有 CHANGED 调查目标，primary 只能是 CHANGED 或 IMPACTED。");
         }
-        Set<Long> invalid = submitted.stream().filter(id -> !allowedEvidence.contains(id))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        return "[EVIDENCE_REJECTED] 漏洞类型、主证据或证据引用无效"
-                + (invalid.isEmpty() ? "" : "，未获准的代码块=" + invalid)
-                + "。请只引用当前目标、SEMANTIC_EVIDENCE 或 VERIFIED_EVIDENCE。";
+        FindingLocationResolver.ExplicitLocationValidation locationValidation =
+                FindingLocationResolver.validateProfessionalExplicit(
+                        proposal.vulnerabilityStartLine(), proposal.vulnerabilityEndLine(), primary);
+        if (!locationValidation.valid()) {
+            return ProposalValidation.rejected("[LOCATION_REJECTED] " + locationValidation.reason()
+                    + "。请在 primaryChunkId 中重新选择直接支持漏洞说明的真实可执行代码行后再次提交 FINDING；"
+                    + "系统不会自动改到其他行。");
+        }
+        FindingLocationResolver.Location location = locationValidation.location().orElseThrow();
+        return ProposalValidation.accepted(new LlmGateway.FindingProposal(proposal.type(), severity, confidence,
+                proposal.title(), proposal.description(), proposal.remediation(), proposal.primaryChunkId(), ids,
+                location.startLine(), location.endLine()));
     }
 
     // 只从已加载的真实代码块构造带文件和行号的证据正文。
@@ -464,6 +485,20 @@ public class AgentRuntime {
 
     private String safe(String value) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), 2_000));
+    }
+
+    private record ProposalValidation(LlmGateway.FindingProposal proposal, String rejectionReason) {
+        private static ProposalValidation accepted(LlmGateway.FindingProposal proposal) {
+            return new ProposalValidation(proposal, "");
+        }
+
+        private static ProposalValidation rejected(String reason) {
+            return new ProposalValidation(null, reason);
+        }
+
+        private boolean accepted() {
+            return proposal != null;
+        }
     }
 
     private record RuntimeObservation(String tool, Map<String, Object> arguments, String result,

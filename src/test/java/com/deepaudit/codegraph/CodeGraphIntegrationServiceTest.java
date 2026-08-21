@@ -120,6 +120,33 @@ class CodeGraphIntegrationServiceTest {
     }
 
     @Test
+    void keepsSuccessfulScopedRelationsAndContinuesWhenOneDirectionFails() {
+        UUID taskId = UUID.randomUUID();
+        CodeChunk current = chunk(taskId, 1L, "src/OrderService.java", "OrderService#load", 10, 20);
+        CodeChunk caller = chunk(taskId, 2L, "src/OrderController.java", "OrderController#show", 4, 9);
+        CodeGraphProperties properties = new CodeGraphProperties();
+        CodeGraphClient client = mock(CodeGraphClient.class);
+        when(client.callers(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 100))
+                .thenReturn(List.of(new CodeGraphClient.CodeGraphLocation(
+                        "OrderController.show", "method", "src/OrderController.java", 6)));
+        when(client.callees(taskId, CodeGraphSnapshot.TARGET, "OrderService.load", 100))
+                .thenThrow(new CodeGraphException("callees command timed out"));
+        CodeGraphIntegrationService service = new CodeGraphIntegrationService(
+                properties, client, new CodeGraphResultMapper());
+        service.prepare(taskId, Path.of("unused-base"), Path.of("unused-target"));
+
+        CodeGraphIntegrationService.ScopedTopology topology = service.scopedTopology(
+                taskId, List.of(current, caller), Set.of(1L));
+
+        assertThat(topology.failedQueries()).isEqualTo(1);
+        assertThat(topology.contextChunkIds()).containsExactly(2L);
+        assertThat(topology.relations()).singleElement().satisfies(relation -> {
+            assertThat(relation.callerChunkId()).isEqualTo(2L);
+            assertThat(relation.calleeChunkId()).isEqualTo(1L);
+        });
+    }
+
+    @Test
     void keepsDirectCodeGraphRelationAsCandidateWithoutLocalCallSiteProof() {
         Fixture fixture = fixture();
         when(fixture.client.callers(fixture.taskId, CodeGraphSnapshot.TARGET,
