@@ -8,3 +8,4 @@ target/
 *.log
 *.part-*
 data/
+/logs/
